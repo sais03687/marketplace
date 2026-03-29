@@ -1,0 +1,5 @@
+{
+  "taskType": "meeting-prep",
+  "input": "Calendar event in 30 minutes: 'Q4 Planning with Acme Corp' — Attendees: jane@acme.com, mike@company.com",
+  "output": "Meeting: Q4 Planning with Acme Corp\nTime: 2:00 PM (30 min)\nAttendees: Jane Smith (VP Sales, Acme Corp), Mike Chen (Head of Ops)\n\nContext:\nAcme is our second-largest client. Last meeting (Oct 3) discussed expanding the pilot program. Jane mentioned budget approval was pending Q4 planning.\n\nKey points to discuss:\n- Pilot expansion timeline\n- Q4 budget confirmation\n- New feature requests from Acme's team\n\nOpen items from last time:\n- Jane to confirm budget (pending)\n- Mike to send updated SLA (completed Oct 5)"
+}

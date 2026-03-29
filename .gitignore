@@ -1,0 +1,55 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+.next
+.turbo
+
+# Environment files (contain API keys & secrets)
+.env
+.env.local
+.env.development
+.env.production
+.env.development.local
+.env.production.local
+
+# Database
+.prisma
+*.db
+*.sqlite
+*.sqlite-journal
+
+# Deployment runtime state (contains per-agent secrets)
+apps/provisioning-service/data/
+
+# Google OAuth credential files
+google-oauth-desktop.json
+google-oauth-web.json
+client_secret_*.json
+*.credentials.json
+
+# Service account keys
+*-service-account-key.json
+ai-employee-*.json
+
+# Test files with hardcoded keys
+test-agent-live.py
+test-agentmind-e2e.mjs
+
+# Python
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# Archives
+*.tar.gz
+*.zip

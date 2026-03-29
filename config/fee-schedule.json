@@ -1,0 +1,22 @@
+{
+  "tiers": [
+    {
+      "maxMonthlyRevenue": 20000,
+      "platformFeePercent": 30,
+      "label": "Under $200/mo"
+    },
+    {
+      "maxMonthlyRevenue": 50000,
+      "platformFeePercent": 25,
+      "label": "$200-$500/mo"
+    },
+    {
+      "maxMonthlyRevenue": null,
+      "platformFeePercent": 20,
+      "label": "Above $500/mo"
+    }
+  ],
+  "payoutSchedule": "monthly",
+  "payoutMinimum": 5000,
+  "currency": "usd"
+}

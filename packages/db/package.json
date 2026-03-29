@@ -1,0 +1,18 @@
+{
+  "name": "@marketplace/db",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "echo 'db package uses prisma generate'",
+    "prisma": "prisma"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.6.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.6.0",
+    "typescript": "^5.8.0"
+  }
+}

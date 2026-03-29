@@ -1,0 +1,37 @@
+[
+  {
+    "id": "key_people",
+    "order": 1,
+    "question": "Who are the key people I should know about? For each person, their name, role, email, and anything important about how they prefer to communicate.",
+    "memoryKey": "people.key_contacts",
+    "required": true
+  },
+  {
+    "id": "top_tasks",
+    "order": 2,
+    "question": "What are the top 5 recurring tasks or requests that take up the most time on your team? I'll prioritize learning these first.",
+    "memoryKey": "workflows.top_recurring",
+    "required": true
+  },
+  {
+    "id": "escalation",
+    "order": 3,
+    "question": "What topics, people, or situations should I always loop you in on directly — never handle on my own, even with approval?",
+    "memoryKey": "escalation.always_escalate",
+    "required": true
+  },
+  {
+    "id": "communication_norms",
+    "order": 4,
+    "question": "How does your team communicate? Any norms I should know — preferred sign-offs, level of formality with different people, things to always or never say?",
+    "memoryKey": "norms.communication",
+    "required": false
+  },
+  {
+    "id": "external_contacts",
+    "order": 5,
+    "question": "Are there external contacts — clients, vendors, partners — where I should be especially careful about how I communicate? Who are they and what should I know?",
+    "memoryKey": "people.external_contacts",
+    "required": false
+  }
+]

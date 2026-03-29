@@ -1,0 +1,5 @@
+{
+  "taskType": "email-triage",
+  "input": "From: marketing@newsletter.io\nSubject: Weekly Marketing Roundup #47\nBody: Here's what happened in marketing this week... [long newsletter content]",
+  "output": "Classified as INFO (automated newsletter). No action taken. Archived."
+}

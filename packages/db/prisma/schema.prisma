@@ -1,0 +1,311 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum AgentCategory {
+  SALES_OPERATIONS
+  CUSTOMER_SUCCESS
+  EXECUTIVE_ASSISTANT
+  RESEARCH
+  MARKETING_OPS
+  HR_OPS
+  FINANCE_OPS
+  ENGINEERING_OPS
+  GENERAL
+}
+
+enum AgentRuntime {
+  OPENCLAW
+  CUSTOM
+}
+
+enum AgentStatus {
+  DRAFT
+  IN_REVIEW
+  LIVE
+  SUSPENDED
+}
+
+enum VetStatus {
+  PENDING
+  PASSED
+  FAILED
+  MANUALLY_APPROVED
+}
+
+enum DeploymentStatus {
+  PROVISIONING
+  ONBOARDING
+  ACTIVE
+  PAUSED
+  FIRED
+  ERROR
+}
+
+enum OnboardingState {
+  INTERVIEW
+  OBSERVATION
+  INTRODUCTION
+  LIVE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  EDITED
+  REJECTED
+  EXPIRED
+}
+
+enum ModelTier {
+  HAIKU
+  SONNET
+  OPUS
+}
+
+enum CompanyPlan {
+  PAY_PER_AGENT
+  TEAM
+  ENTERPRISE
+}
+
+enum ContributionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ContributionType {
+  CORRECTION
+  PATTERN
+  RESPONSE_TEMPLATE
+  TASK_RECIPE
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model Creator {
+  id              String   @id @default(cuid())
+  clerkUserId     String   @unique
+  displayName     String
+  email           String   @unique
+  stripeAccountId String?
+  stripeOnboarded Boolean  @default(false)
+  agents          Agent[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Agent {
+  id               String                  @id @default(cuid())
+  slug             String                  @unique
+  name             String
+  tagline          String
+  description      String                  @db.Text
+  category         AgentCategory
+  pricePerMonth    Int
+  modelTier        ModelTier
+  creatorId        String
+  creator          Creator                 @relation(fields: [creatorId], references: [id])
+  status           AgentStatus             @default(DRAFT)
+  runtime          AgentRuntime            @default(OPENCLAW)
+  currentVersion   String?
+  packageUrl       String?
+  versions         AgentVersion[]
+  deployments      Deployment[]
+  reviews          Review[]
+  capabilities     Capability[]
+  averageRating    Float?
+  totalDeployments Int                     @default(0)
+  avgApprovalRate  Float?
+  contributions    KnowledgeContribution[]
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+}
+
+model AgentVersion {
+  id          String    @id @default(cuid())
+  agentId     String
+  agent       Agent     @relation(fields: [agentId], references: [id])
+  version     String
+  packageUrl  String
+  changelog   String?   @db.Text
+  testResults Json?
+  vetStatus   VetStatus @default(PENDING)
+  vetNotes    String?   @db.Text
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model Capability {
+  id          String @id @default(cuid())
+  agentId     String
+  agent       Agent  @relation(fields: [agentId], references: [id])
+  name        String
+  description String
+}
+
+model Company {
+  id               String       @id @default(cuid())
+  clerkOrgId       String       @unique
+  name             String
+  domain           String
+  stripeCustomerId String?
+  plan             CompanyPlan  @default(PAY_PER_AGENT)
+  deployments      Deployment[]
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+}
+
+model Deployment {
+  id                   String                  @id @default(cuid())
+  companyId            String
+  company              Company                 @relation(fields: [companyId], references: [id])
+  agentId              String
+  agent                Agent                   @relation(fields: [agentId], references: [id])
+  agentVersion         String
+  status               DeploymentStatus        @default(PROVISIONING)
+  agentName            String
+  agentEmail           String?
+  agentEmailApiKey     String? // encrypted AgentMail key
+  slackBotToken        String? // encrypted
+  slackAppToken        String? // encrypted
+  slackAppId           String?
+  containerName        String?
+  stripeSubscriptionId String?
+  autonomyConfig       Json
+  onboardingState      OnboardingState         @default(INTERVIEW)
+  onboardingData       Json?
+  approvalWebhookToken String                  @default(cuid())
+  weeklyDigestEmail    String?
+  autoUpdate           Boolean                 @default(true)
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  pausedAt             DateTime?
+  firedAt              DateTime?
+  approvals            Approval[]
+  trustScores          TrustScore[]
+  reviews              Review[]
+  contributions        KnowledgeContribution[]
+  knowledgeVotes       KnowledgeVote[]
+
+  @@index([status])
+  @@index([companyId])
+}
+
+model Approval {
+  id                 String         @id @default(cuid())
+  deploymentId       String
+  deployment         Deployment     @relation(fields: [deploymentId], references: [id])
+  taskType           String
+  channel            String
+  draft              String         @db.Text
+  reasoning          String         @db.Text
+  originalRequest    String         @db.Text
+  stakesScore        Float
+  ambiguityScore     Float
+  reversibilityScore Float
+  combinedScore      Float
+  status             ApprovalStatus @default(PENDING)
+  resolvedBy         String?
+  resolutionAction   String?        @db.Text
+  editDiff           String?        @db.Text
+  rejectionReason    String?
+  threadId           String?
+  createdAt          DateTime       @default(now())
+  resolvedAt         DateTime?
+  expiresAt          DateTime // createdAt + 48h; cron marks EXPIRED
+
+  @@index([status])
+  @@index([deploymentId])
+}
+
+model TrustScore {
+  id             String     @id @default(cuid())
+  deploymentId   String
+  deployment     Deployment @relation(fields: [deploymentId], references: [id])
+  taskType       String
+  approvedNoEdit Int        @default(0)
+  edited         Int        @default(0)
+  rejected       Int        @default(0)
+  weightedScore  Float      @default(0)
+  autonomyLevel  String     @default("always_queue")
+  lastUpdated    DateTime   @default(now())
+
+  @@unique([deploymentId, taskType])
+}
+
+model Review {
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id])
+  agentId      String
+  agent        Agent      @relation(fields: [agentId], references: [id])
+  rating       Int
+  headline     String
+  body         String     @db.Text
+  verifiedHire Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+}
+
+model ProvisioningLog {
+  id           String   @id @default(cuid())
+  deploymentId String
+  step         String // "agentmail_inbox" | "slack_install" | "container_start" | etc.
+  attempt      Int      @default(1)
+  status       String // "started" | "succeeded" | "failed" | "retrying"
+  message      String?  @db.Text
+  errorStack   String?  @db.Text
+  durationMs   Int?
+  createdAt    DateTime @default(now())
+
+  @@index([deploymentId])
+}
+
+// ─── AgentMind ────────────────────────────────────────────────────────────────
+
+model KnowledgeContribution {
+  id              String             @id @default(cuid())
+  agentId         String
+  agent           Agent              @relation(fields: [agentId], references: [id])
+  deploymentId    String
+  deployment      Deployment         @relation(fields: [deploymentId], references: [id])
+  type            ContributionType
+  title           String
+  content         String             @db.Text
+  rawContent      String             @db.Text
+  context         String?            @db.Text
+  tags            String[]
+  status          ContributionStatus @default(PENDING)
+  reviewNote      String?
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  usageCount      Int                @default(0)
+  upvotes         Int                @default(0)
+  downvotes       Int                @default(0)
+  sanitizationLog Json?
+  votes           KnowledgeVote[]
+  createdAt       DateTime           @default(now())
+
+  @@index([agentId, status])
+  @@index([status])
+}
+
+model KnowledgeVote {
+  id             String                @id @default(cuid())
+  contributionId String
+  contribution   KnowledgeContribution @relation(fields: [contributionId], references: [id])
+  deploymentId   String
+  deployment     Deployment            @relation(fields: [deploymentId], references: [id])
+  vote           Int
+  createdAt      DateTime              @default(now())
+
+  @@unique([contributionId, deploymentId])
+}
