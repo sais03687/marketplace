@@ -13,8 +13,28 @@ export interface ContainerEnv {
   COMPANY_NAME: string;
   COMPANY_DOMAIN: string;
   MARKETPLACE_APPROVAL_WEBHOOK: string;
+  MARKETPLACE_URL?: string;
   APPROVAL_WEBHOOK_TOKEN: string;
   MODEL: string;
+  WEEKLY_DIGEST_EMAIL?: string;
+  GEMINI_API_KEY?: string;
+  LLM_API_KEY?: string;
+  LLM_BASE_URL?: string;
+  LLM_MODEL?: string;
+  // Approval policy configuration (driven by autonomyConfig + onboarding answers)
+  // "always"        — every outbound email requires approval (strictest)
+  // "external-only" — emails to the manager or @COMPANY_DOMAIN auto-approve; everyone else needs approval (default)
+  // "risk-based"    — LLM risk score >= APPROVAL_RISK_THRESHOLD requires approval (else auto-send)
+  // "never"         — auto-approve everything (most permissive; use with caution)
+  APPROVAL_POLICY?: string;
+  APPROVAL_RISK_THRESHOLD?: string;   // float, default "6.0"
+  AUTO_APPROVE_LIST?: string;         // comma-separated emails/domains that always auto-approve
+  REQUIRE_APPROVAL_LIST?: string;     // comma-separated emails/domains that always require approval
+  // Fully rendered markdown section describing the policy in natural language.
+  // Appended to /agent/workspace/AGENTS.md by startup.sh so the OpenClaw agent's
+  // LLM reads the hired-manager's configured policy at every session.
+  // CUSTOM runtime ignores this — adapter.py enforces policy deterministically.
+  APPROVAL_POLICY_SECTION?: string;
 }
 
 function envToArray(env: ContainerEnv): string[] {
@@ -24,6 +44,7 @@ function envToArray(env: ContainerEnv): string[] {
 export async function createAndStartContainer(
   name: string,
   env: ContainerEnv,
+  volumeBinds?: string[],  // optional extra bind mounts (e.g. creator package)
 ): Promise<{ containerId: string; containerName: string }> {
   const container = await docker.createContainer({
     Image: config.openclawImage,
@@ -35,6 +56,13 @@ export async function createAndStartContainer(
         "4000/tcp": [{ HostPort: "0" }], // random available port
       },
       RestartPolicy: { Name: "unless-stopped" },
+      ...(volumeBinds && volumeBinds.length > 0 ? { Binds: volumeBinds } : {}),
+      // Security: resource limits
+      Memory: 512 * 1024 * 1024,        // 512 MB hard limit
+      MemorySwap: 512 * 1024 * 1024,    // no swap (same as memory = swap disabled)
+      NanoCpus: 1_000_000_000,           // 1 CPU core
+      PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
+      SecurityOpt: ["no-new-privileges"],
     },
   });
 

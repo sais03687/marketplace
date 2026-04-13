@@ -216,6 +216,7 @@ async function forwardToGateway(msg) {
     event_type: "message.received",
     event_id: msg.message_id,
     message: {
+      message_id: msg.message_id,
       inbox_id: msg.inbox_id,
       thread_id: msg.thread_id,
       from: msg.from,

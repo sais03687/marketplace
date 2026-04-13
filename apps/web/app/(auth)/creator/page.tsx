@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Plus } from "lucide-react";
+import { Plus, Pencil, GitBranch } from "lucide-react";
 import Link from "next/link";
 import { formatPrice } from "@/lib/utils";
 
@@ -114,6 +114,20 @@ export default async function CreatorDashboardPage() {
                     <span className="text-muted-foreground">
                       {agent._count.deployments} deployments
                     </span>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href={`/creator/agents/${agent.slug}/edit`}>
+                        <Pencil className="mr-1 h-3 w-3" />
+                        Edit
+                      </Link>
+                    </Button>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link href={`/creator/agents/${agent.slug}/versions`}>
+                        <GitBranch className="mr-1 h-3 w-3" />
+                        Versions
+                      </Link>
+                    </Button>
                   </div>
                 </CardContent>
               </Card>

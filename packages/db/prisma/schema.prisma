@@ -125,23 +125,27 @@ model Agent {
   averageRating    Float?
   totalDeployments Int                     @default(0)
   avgApprovalRate  Float?
-  contributions    KnowledgeContribution[]
-  createdAt        DateTime                @default(now())
-  updatedAt        DateTime                @updatedAt
+  onboardingQuestions Json?                  // parsed questions.json from zip
+  memoryTemplate      String?                @db.Text // MEMORY_TEMPLATE.md content
+  contributions       KnowledgeContribution[]
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
 }
 
 model AgentVersion {
-  id          String    @id @default(cuid())
-  agentId     String
-  agent       Agent     @relation(fields: [agentId], references: [id])
-  version     String
-  packageUrl  String
-  changelog   String?   @db.Text
-  testResults Json?
-  vetStatus   VetStatus @default(PENDING)
-  vetNotes    String?   @db.Text
-  publishedAt DateTime?
-  createdAt   DateTime  @default(now())
+  id           String    @id @default(cuid())
+  agentId      String
+  agent        Agent     @relation(fields: [agentId], references: [id])
+  version      String
+  packageUrl   String
+  changelog    String?   @db.Text
+  testResults  Json?
+  manifestData Json?     // full parsed marketplace.json
+  storagePath  String?   // filesystem path "storage/packages/{slug}/{version}/"
+  vetStatus    VetStatus @default(PENDING)
+  vetNotes     String?   @db.Text
+  publishedAt  DateTime?
+  createdAt    DateTime  @default(now())
 }
 
 model Capability {
@@ -174,6 +178,7 @@ model Deployment {
   status               DeploymentStatus        @default(PROVISIONING)
   agentName            String
   agentEmail           String?
+  agentEmailInboxId    String?
   agentEmailApiKey     String? // encrypted AgentMail key
   slackBotToken        String? // encrypted
   slackAppToken        String? // encrypted
@@ -184,6 +189,7 @@ model Deployment {
   onboardingState      OnboardingState         @default(INTERVIEW)
   onboardingData       Json?
   approvalWebhookToken String                  @default(cuid())
+  portalToken          String?                 @unique @default(cuid())
   weeklyDigestEmail    String?
   autoUpdate           Boolean                 @default(true)
   createdAt            DateTime                @default(now())

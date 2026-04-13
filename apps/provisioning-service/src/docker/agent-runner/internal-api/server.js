@@ -102,6 +102,32 @@ app.get("/internal/memory", (_req, res) => {
   res.json({ memory, dailyNotes });
 });
 
+// ─── Approval Policy Hot-Reload ──────────────────────────────────────────────
+
+app.post("/internal/approval-policy", (req, res) => {
+  const { policySection } = req.body;
+  if (!policySection) {
+    return res.status(400).json({ error: "policySection required" });
+  }
+
+  const agentsMdPath = join(WORKSPACE, "AGENTS.md");
+  if (!existsSync(agentsMdPath)) {
+    return res.status(404).json({ error: "AGENTS.md not found" });
+  }
+
+  let content = readFileSync(agentsMdPath, "utf-8");
+  // Replace existing policy section (between markers) or append
+  const START = "<!-- APPROVAL_POLICY_SECTION";
+  const idx = content.indexOf(START);
+  if (idx >= 0) {
+    content = content.substring(0, idx) + policySection;
+  } else {
+    content += "\n\n" + policySection;
+  }
+  writeFileSync(agentsMdPath, content);
+  res.json({ ok: true });
+});
+
 // ─── Start Onboarding ────────────────────────────────────────────────────────
 
 app.post("/internal/start-onboarding", (_req, res) => {

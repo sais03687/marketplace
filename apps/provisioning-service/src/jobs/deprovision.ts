@@ -35,12 +35,11 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
     }
   }
 
-  // 2. Delete AgentMail inbox (find by email)
-  if (deployment.agentEmail) {
+  // 2. Delete AgentMail inbox
+  if (deployment.agentEmailInboxId) {
     try {
-      // We'd need the inbox ID — for now, log a warning
-      // In production, store inboxId on the deployment record
-      console.log(`[deprovision] Would delete inbox for ${deployment.agentEmail}`);
+      await deleteInbox(deployment.agentEmailInboxId);
+      console.log(`[deprovision] Deleted inbox ${deployment.agentEmailInboxId} (${deployment.agentEmail})`);
     } catch (err: any) {
       console.warn(`[deprovision] Failed to delete inbox: ${err.message}`);
     }

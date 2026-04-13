@@ -4,13 +4,14 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SafeUserButton } from "@/components/auth/safe-user-button";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, Upload, BarChart3, DollarSign } from "lucide-react";
+import { LayoutDashboard, Upload, BarChart3, DollarSign, Settings } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/creator", label: "Dashboard", icon: LayoutDashboard },
   { href: "/creator/publish", label: "Publish", icon: Upload },
   { href: "/creator/analytics", label: "Analytics", icon: BarChart3 },
   { href: "/creator/payouts", label: "Payouts", icon: DollarSign },
+  { href: "/creator/settings", label: "Settings", icon: Settings },
 ];
 
 export default function CreatorLayout({

@@ -1,6 +1,6 @@
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
-import { createInbox } from "../clients/agentmail.js";
+import { createInbox, setInboxWebhook, sendEmail } from "../clients/agentmail.js";
 import {
   createAndStartContainer,
   getContainerPort,
@@ -8,6 +8,7 @@ import {
   type ContainerEnv,
 } from "../clients/docker.js";
 import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
+import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 
 async function log(
   deploymentId: string,
@@ -96,7 +97,10 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   // 1. Validate deployment exists and is in PROVISIONING state
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
-    include: { agent: true, company: true },
+    include: {
+      agent: { include: { capabilities: { select: { name: true, description: true } } } },
+      company: true,
+    },
   });
 
   if (!deployment) {
@@ -108,9 +112,49 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     );
   }
 
+  // Look up the matching AgentVersion to get the creator's uploaded package path.
+  // This is the critical link: storagePath points to the actual uploaded code/workspace,
+  // replacing the hardcoded starter templates.
+  const agentVersion = await prisma.agentVersion.findFirst({
+    where: {
+      agentId: deployment.agentId,
+      version: deployment.agentVersion,
+      vetStatus: "MANUALLY_APPROVED",
+    },
+    select: { storagePath: true, manifestData: true },
+  });
+
   const agentName = deployment.agentName;
   const companyName = deployment.company.name;
   const companyDomain = deployment.company.domain;
+
+  // Extract approval policy from autonomyConfig. Shape:
+  //   { approvalPolicy: "always"|"external-only"|"risk-based"|"never",
+  //     approvalRiskThreshold?: number,
+  //     autoApproveList?: string[] | string,
+  //     requireApprovalList?: string[] | string }
+  // Defaults to "external-only" to match prior hardcoded behavior.
+  const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;
+  const approvalPolicy = typeof ac.approvalPolicy === "string" ? ac.approvalPolicy : "external-only";
+  const approvalRiskThreshold =
+    typeof ac.approvalRiskThreshold === "number"
+      ? String(ac.approvalRiskThreshold)
+      : typeof ac.approvalRiskThreshold === "string"
+        ? ac.approvalRiskThreshold
+        : "6.0";
+  const normalizeList = (v: unknown): string =>
+    Array.isArray(v) ? v.map(String).join(",") : typeof v === "string" ? v : "";
+  const autoApproveList = normalizeList(ac.autoApproveList);
+  const requireApprovalList = normalizeList(ac.requireApprovalList);
+
+  // Render the policy as a markdown section for OpenClaw's AGENTS.md.
+  // CUSTOM runtime reads the individual env vars directly via adapter.py;
+  // OPENCLAW reads this rendered section at session start (startup.sh
+  // appends it to /agent/workspace/AGENTS.md).
+  const approvalPolicySection = buildApprovalPolicySection(
+    ac,
+    companyDomain,
+  );
 
   let agentEmail: string;
   let inboxId: string | undefined;
@@ -151,8 +195,18 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     COMPANY_NAME: companyName,
     COMPANY_DOMAIN: companyDomain,
     MARKETPLACE_APPROVAL_WEBHOOK: config.approvalWebhookUrl.replace("localhost", "host.docker.internal"),
+    MARKETPLACE_URL: config.approvalWebhookUrl.replace("localhost", "host.docker.internal"),
     APPROVAL_WEBHOOK_TOKEN: config.approvalWebhookToken,
     MODEL: deployment.agent.modelTier,
+    WEEKLY_DIGEST_EMAIL: deployment.weeklyDigestEmail || "",
+    LLM_API_KEY: config.llmApiKey,
+    LLM_BASE_URL: config.llmBaseUrl,
+    LLM_MODEL: config.llmModel,
+    APPROVAL_POLICY: approvalPolicy,
+    APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,
+    AUTO_APPROVE_LIST: autoApproveList,
+    REQUIRE_APPROVAL_LIST: requireApprovalList,
+    APPROVAL_POLICY_SECTION: approvalPolicySection,
   };
 
   const runtime = deployment.agent.runtime || "OPENCLAW";
@@ -162,7 +216,10 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       // Custom runtime: always Docker, regardless of RUNNER_MODE
       const { spawnCustomAgent } = await import("./custom-runner.js");
       const { resolve } = await import("node:path");
-      const pkgPath = resolve(config.customStarterPath);
+      // Resolve the creator's actual package — fall back to starter template for seed data
+      const pkgPath = agentVersion?.storagePath
+        ? resolve(config.webAppRoot, agentVersion.storagePath)
+        : resolve(config.customStarterPath);
 
       const result = await withRetry(
         () => spawnCustomAgent(deploymentId, containerEnv, pkgPath),
@@ -172,16 +229,31 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       healthPort = result.port;
     } else if (config.runnerMode === "docker") {
       const cName = `agent-${deployment.agent.slug}-${deploymentId.slice(0, 8)}`;
+      const { resolve } = await import("node:path");
+
+      // If creator package exists, bind-mount it as the workspace
+      const creatorPkgPath = agentVersion?.storagePath
+        ? resolve(config.webAppRoot, agentVersion.storagePath)
+        : null;
+      const volumeBinds = creatorPkgPath
+        ? [`${creatorPkgPath}:/agent/workspace:ro`]  // read-only mount
+        : [];
+
       const result = await withRetry(
-        () => createAndStartContainer(cName, containerEnv),
+        () => createAndStartContainer(cName, containerEnv, volumeBinds),
         { step: "create_container", deploymentId },
       );
       containerName = result.containerName;
       healthPort = await getContainerPort(containerName);
     } else {
       // Local mode: spawn a child process (OpenClaw only)
+      const { resolve } = await import("node:path");
+      const packageOverride = agentVersion?.storagePath
+        ? resolve(config.webAppRoot, agentVersion.storagePath)
+        : undefined;
+
       const result = await withRetry(
-        () => spawnLocalAgent(deploymentId, containerEnv),
+        () => spawnLocalAgent(deploymentId, containerEnv, packageOverride),
         { step: "spawn_local_agent", deploymentId },
       );
       containerName = result.processLabel;
@@ -217,7 +289,20 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     );
   }
 
-  // 5. Update deployment to ONBOARDING
+  // 5. Set AgentMail webhook so inbound emails reach the agent container
+  if (inboxId) {
+    const containerUrl = containerName?.startsWith("http")
+      ? containerName
+      : `http://${healthHost}:${healthPort}`;
+    try {
+      await setInboxWebhook(inboxId, `${containerUrl}/hooks/agentmail`);
+    } catch (err: any) {
+      console.warn(`[provision] Failed to set inbox webhook: ${err.message}`);
+      // Non-fatal: agent can still send outbound email, just won't receive inbound
+    }
+  }
+
+  // 6. Update deployment to ONBOARDING
   await prisma.deployment.update({
     where: { id: deploymentId },
     data: {
@@ -225,13 +310,53 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       onboardingState: "INTERVIEW",
       containerName,
       agentEmail,
+      agentEmailInboxId: inboxId,
     },
   });
 
-  // 6. Trigger onboarding
+  // 7. Send standardized intro email (platform-side, no LLM needed)
   const managerEmail = deployment.weeklyDigestEmail || `admin@${deployment.company.domain}`;
+
+  const capabilities = deployment.agent.capabilities;
+  const capList = capabilities.length > 0
+    ? capabilities.map((c) => `  - ${c.name}: ${c.description}`).join("\n")
+    : "  - Email management, research, and task execution";
+
+  const googleLine = config.googleServiceAccountEmail
+    ? `\nI also have access to Google Workspace. To share Google Drive files, Sheets, or Docs with me, share them with: ${config.googleServiceAccountEmail}\n`
+    : "";
+
+  const introText = [
+    `Hi there,`,
+    ``,
+    `I'm ${agentName}, your new AI employee at ${companyName}. I've just been set up and I'm ready to start working with you.`,
+    ``,
+    `Here's what I can help with:`,
+    capList,
+    ``,
+    `You can reach me anytime by emailing ${agentEmail}.`,
+    googleLine,
+    `What would you like me to focus on first? Just reply to this email and I'll get started.`,
+    ``,
+    `Best,`,
+    agentName,
+  ].join("\n");
+
+  await withRetry(
+    async () => {
+      await sendEmail(
+        inboxId || agentEmail,
+        managerEmail,
+        `Hi from ${agentName} — your new AI employee`,
+        introText,
+      );
+    },
+    { step: "send_intro_email", deploymentId },
+  );
+
+  // 8. Send context to the agent so it knows who it is for subsequent conversations
   const onboardingMessage = [
-    `You are ${agentName}, an AI employee just hired by ${companyName}.`,
+    `You are ${agentName}, an AI employee at ${companyName}.`,
     `Your email address is ${agentEmail}.`,
     `The hiring manager's email is ${managerEmail}.`,
     ...(config.googleServiceAccountEmail
@@ -240,18 +365,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
           `Team members can share Google Drive files, Sheets, and Docs with that address so you can read and edit them.`,
         ]
       : []),
-    `\nPlease introduce yourself by sending an email to ${managerEmail}.`,
-    `In your introduction:`,
-    `- Greet them warmly and introduce yourself by name`,
-    `- Briefly describe what you can help with (email management, research, scheduling${config.googleServiceAccountEmail ? ", Google Docs/Sheets collaboration" : ""})`,
-    `- Let them know they can email you at ${agentEmail}`,
-    ...(config.googleServiceAccountEmail
-      ? [`- Mention that to share Google files with you, they can share with ${config.googleServiceAccountEmail}`]
-      : []),
-    `- Ask what they'd like you to focus on first`,
-    `- Keep it professional but friendly`,
-    `\nIMPORTANT: Use the email_send tool directly to send this introduction email.`,
-    `Do NOT use queue_approval for this — introduction emails are pre-approved.`,
+    `\nYou have already sent an introduction email. Wait for the manager to reply, then assist them with whatever they need.`,
   ].join("\n");
 
   await withRetry(
@@ -259,7 +373,6 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
-      // OpenClaw requires Bearer auth; custom adapter is internal (no auth needed)
       if (runtime !== "CUSTOM") {
         headers["Authorization"] = `Bearer ${config.openclawHooksToken}`;
       }

@@ -7,11 +7,15 @@ COPY platform-requirements.txt .
 RUN pip install --no-cache-dir -r platform-requirements.txt
 
 # Creator deps (from their package)
-COPY requirements.txt ./creator-requirements.txt
-RUN pip install --no-cache-dir -r creator-requirements.txt
+COPY creator/requirements.txt ./creator-requirements.txt
+RUN pip install --no-cache-dir -r creator-requirements.txt || true
 
-# Copy all code (adapter + creator files)
-COPY . .
+# Copy platform adapter to WORKDIR root (NOT inside creator/)
+COPY adapter.py .
+COPY platform-requirements.txt .
+
+# Copy creator code into subdirectory
+COPY creator/ ./creator/
 
 RUN mkdir -p /data
 

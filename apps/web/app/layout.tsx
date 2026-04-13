@@ -31,7 +31,12 @@ export default function RootLayout({
   }
 
   return (
-    <ClerkProvider publishableKey={clerkKey}>
+    <ClerkProvider
+      publishableKey={clerkKey}
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+      afterSignOutUrl="/"
+    >
       <html lang="en" className={inter.variable}>
         <body>{children}</body>
       </html>

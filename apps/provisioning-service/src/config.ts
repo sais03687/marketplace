@@ -1,4 +1,7 @@
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const config = {
   redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
@@ -13,6 +16,7 @@ export const config = {
   agentPackagePath: process.env.AGENT_PACKAGE_PATH || "../../agents/v5-agent-package",
   customStarterPath: process.env.CUSTOM_STARTER_PATH || "../../agents/langchain-starter",
   customAdapterPath: process.env.CUSTOM_ADAPTER_PATH || "",
+  webAppRoot: process.env.WEB_APP_ROOT || resolve(__dirname, "../../web"),
 
   // OpenClaw integration
   openclawDir: resolve(process.env.OPENCLAW_DIR || "../../openclaw"),

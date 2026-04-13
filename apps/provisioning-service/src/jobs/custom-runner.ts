@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, cpSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -105,6 +105,16 @@ function injectApprovalBlock(dir: string): void {
 /**
  * Assemble a Docker build context by merging the creator's package with
  * platform adapter files. Returns the path to the temp build directory.
+ *
+ * Layout:
+ *   tempDir/
+ *     adapter.py              ← platform (owns API keys)
+ *     Dockerfile              ← platform
+ *     platform-requirements.txt ← platform
+ *     creator/                ← creator's code (isolated subdirectory)
+ *       agent.py
+ *       requirements.txt
+ *       AGENTS.md, SOUL.md, etc.
  */
 function assembleBuildContext(
   creatorPackageDir: string,
@@ -112,15 +122,23 @@ function assembleBuildContext(
 ): string {
   const tempDir = mkdtempSync(join(tmpdir(), `custom-build-${deploymentId.slice(0, 8)}-`));
 
-  // 1. Copy creator's package (agent.py, requirements.txt, SOUL.md, AGENTS.md, etc.)
-  cpSync(creatorPackageDir, tempDir, { recursive: true });
+  // 1. Create creator subdirectory and copy creator files INTO it
+  const creatorDir = join(tempDir, "creator");
+  mkdirSync(creatorDir, { recursive: true });
+  cpSync(creatorPackageDir, creatorDir, { recursive: true });
 
-  // 2. Copy platform adapter files on top (adapter.py, Dockerfile, platform-requirements.txt)
+  // 2. Copy platform adapter files to ROOT (NOT inside creator/)
   const adapterDir = resolveAdapterPath();
   cpSync(adapterDir, tempDir, { recursive: true });
 
-  // 3. Inject approval block into AGENTS.md
-  injectApprovalBlock(tempDir);
+  // 3. Inject approval block into creator's AGENTS.md
+  injectApprovalBlock(creatorDir);
+
+  // 4. Remove any reserved files from creator/ that could conflict
+  for (const reserved of ["adapter.py", "Dockerfile", "platform-requirements.txt"]) {
+    const p = join(creatorDir, reserved);
+    if (existsSync(p)) rmSync(p);
+  }
 
   return tempDir;
 }
@@ -204,6 +222,12 @@ export async function spawnCustomAgent(
           // Mount a data volume for resolutions
           `custom-data-${deploymentId.slice(0, 8)}:/data`,
         ],
+        // Security: resource limits
+        Memory: 512 * 1024 * 1024,        // 512 MB hard limit
+        MemorySwap: 512 * 1024 * 1024,    // no swap (same as memory = swap disabled)
+        NanoCpus: 1_000_000_000,           // 1 CPU core
+        PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
+        SecurityOpt: ["no-new-privileges"],
       },
     });
 
@@ -233,6 +257,10 @@ export async function spawnCustomAgent(
           OPENCLAW_HOOKS_TOKEN: "",
           POLLER_INBOX: env.AGENT_EMAIL,
           POLLER_GATEWAY_URL: `http://127.0.0.1:${hostPort}`,
+          // AgentMind + approval context for the poller
+          MARKETPLACE_URL: env.MARKETPLACE_URL || "",
+          DEPLOYMENT_ID: env.DEPLOYMENT_ID,
+          AGENT_ID: env.AGENT_ID,
         },
         stdio: "pipe",
         detached: false,

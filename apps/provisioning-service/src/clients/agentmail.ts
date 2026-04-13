@@ -34,10 +34,11 @@ export async function createInbox(
     body.webhook_url = webhookUrl;
   }
   try {
-    return await agentMailFetch<CreateInboxResult>("/inboxes", {
+    const raw = await agentMailFetch<{ inbox_id: string; email: string }>("/inboxes", {
       method: "POST",
       body,
     });
+    return { id: raw.inbox_id, email_address: raw.email };
   } catch (err: any) {
     // If inbox already exists or we've hit the limit, try to find an existing matching inbox
     if (err.message?.includes("AlreadyExistsError") || err.message?.includes("LimitExceededError")) {
@@ -50,8 +51,34 @@ export async function createInbox(
   }
 }
 
+export async function setInboxWebhook(
+  inboxId: string,
+  webhookUrl: string,
+): Promise<void> {
+  await agentMailFetch(`/inboxes/${encodeURIComponent(inboxId)}`, {
+    method: "PATCH",
+    body: { webhook_url: webhookUrl },
+  });
+}
+
 export async function deleteInbox(inboxId: string): Promise<void> {
   await agentMailFetch(`/inboxes/${encodeURIComponent(inboxId)}`, {
     method: "DELETE",
   });
+}
+
+export async function sendEmail(
+  inboxId: string,
+  to: string,
+  subject: string,
+  text: string,
+): Promise<{ messageId: string; threadId: string }> {
+  const raw = await agentMailFetch<{ message_id: string; thread_id: string }>(
+    `/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
+    {
+      method: "POST",
+      body: { to, subject, text },
+    },
+  );
+  return { messageId: raw.message_id, threadId: raw.thread_id };
 }

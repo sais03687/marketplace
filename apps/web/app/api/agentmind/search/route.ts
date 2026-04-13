@@ -26,6 +26,12 @@ export async function GET(request: NextRequest) {
     return jsonError("Deployment not found", 404);
   }
 
+  // Reciprocity: only contributing deployments can search
+  const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;
+  if (ac.agentMindEnabled === false) {
+    return jsonSuccess({ contributions: [] });
+  }
+
   const limit = Math.min(50, Math.max(1, parseInt(params.limit ?? "10", 10)));
 
   const where: Record<string, unknown> = {
@@ -62,13 +68,9 @@ export async function GET(request: NextRequest) {
     take: limit,
   });
 
-  // Increment usage count on returned results
-  if (contributions.length > 0) {
-    await prisma.knowledgeContribution.updateMany({
-      where: { id: { in: contributions.map((c) => c.id) } },
-      data: { usageCount: { increment: 1 } },
-    });
-  }
+  // NOTE: usageCount is NOT incremented here — search is just browsing.
+  // Agents call POST /api/agentmind/use with the IDs they actually
+  // incorporated into a response, which increments usageCount + auto-upvotes.
 
   return jsonSuccess({ contributions });
 }

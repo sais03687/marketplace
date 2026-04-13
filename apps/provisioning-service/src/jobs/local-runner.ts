@@ -39,8 +39,11 @@ let nextPort = 18800; // Start above 18789 (default OpenClaw port) to avoid conf
 function prepareWorkspace(
   workspaceDir: string,
   vars: Record<string, string>,
+  packageOverride?: string,
 ): void {
-  const agentPkgDir = resolve(config.agentPackagePath);
+  const agentPkgDir = packageOverride
+    ? resolve(packageOverride)
+    : resolve(config.agentPackagePath);
   if (!existsSync(agentPkgDir)) {
     console.warn(`[local-runner] Agent package not found at ${agentPkgDir}, skipping workspace prep`);
     return;
@@ -98,6 +101,7 @@ function prepareWorkspace(
 export async function spawnLocalAgent(
   deploymentId: string,
   env: ContainerEnv,
+  packageOverride?: string,
 ): Promise<{ processLabel: string; port: number }> {
   const port = nextPort++;
   const processLabel = `openclaw-agent-${deploymentId.slice(0, 8)}`;
@@ -115,7 +119,7 @@ export async function spawnLocalAgent(
     COMPANY_NAME: env.COMPANY_NAME,
     COMPANY_DOMAIN: env.COMPANY_DOMAIN,
     GOOGLE_SERVICE_ACCOUNT_EMAIL: config.googleServiceAccountEmail || "",
-  });
+  }, packageOverride);
 
   // Generate deployment-specific OpenClaw config
   const { stateDir } = generateDeploymentConfig(dataDir, {
@@ -137,6 +141,7 @@ export async function spawnLocalAgent(
     llmApiKey: config.llmApiKey,
     llmBaseUrl: config.llmBaseUrl,
     llmModel: config.llmModel,
+    weeklyDigestEmail: env.WEEKLY_DIGEST_EMAIL,
   });
 
   const openclawDir = resolve(config.openclawDir);

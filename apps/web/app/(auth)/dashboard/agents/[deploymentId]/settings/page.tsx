@@ -7,12 +7,46 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Check, Loader2 } from "lucide-react";
 
+type ApprovalPolicy = "always" | "external-only" | "risk-based" | "never";
+
+interface AutonomyConfig {
+  approvalPolicy?: ApprovalPolicy;
+  approvalRiskThreshold?: number;
+  autoApproveList?: string[];
+  requireApprovalList?: string[];
+  [key: string]: unknown;
+}
+
 interface DeploymentSettings {
   agentName: string;
   weeklyDigestEmail: string | null;
   autoUpdate: boolean;
-  autonomyConfig: Record<string, string>;
+  autonomyConfig: AutonomyConfig;
+  runtime: string;
 }
+
+const POLICY_OPTIONS: { value: ApprovalPolicy; label: string; help: string }[] = [
+  {
+    value: "always",
+    label: "Always ask",
+    help: "I want to review every outbound email before it is sent.",
+  },
+  {
+    value: "external-only",
+    label: "External only (default)",
+    help: "Only ask for recipients not on my team or in my contacts list.",
+  },
+  {
+    value: "risk-based",
+    label: "Risk-based",
+    help: "Only ask for high-stakes, ambiguous, or irreversible messages.",
+  },
+  {
+    value: "never",
+    label: "Never ask",
+    help: "Fully autonomous. Use with caution.",
+  },
+];
 
 export default function SettingsPage() {
   const params = useParams();
@@ -30,6 +64,7 @@ export default function SettingsPage() {
           weeklyDigestEmail: data.weeklyDigestEmail,
           autoUpdate: data.autoUpdate,
           autonomyConfig: data.autonomyConfig || {},
+          runtime: data.agent?.runtime || "CUSTOM",
         });
       });
   }, [deploymentId]);
@@ -46,6 +81,7 @@ export default function SettingsPage() {
         agentName: settings.agentName,
         weeklyDigestEmail: settings.weeklyDigestEmail || undefined,
         autoUpdate: settings.autoUpdate,
+        autonomyConfig: settings.autonomyConfig,
       }),
     });
 
@@ -53,6 +89,20 @@ export default function SettingsPage() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
+
+  const updatePolicy = (patch: Partial<AutonomyConfig>) => {
+    if (!settings) return;
+    setSettings({
+      ...settings,
+      autonomyConfig: { ...settings.autonomyConfig, ...patch },
+    });
+  };
+
+  const linesToList = (s: string): string[] =>
+    s
+      .split(/[\n,;]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
 
   if (!settings) {
     return <div className="text-muted-foreground">Loading settings...</div>;
@@ -105,6 +155,117 @@ export default function SettingsPage() {
               placeholder="team@company.com"
             />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Approval Policy</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <p className="text-sm text-muted-foreground mb-3">
+              Control when this agent must ask you before sending an email.
+            </p>
+            <div className="space-y-2">
+              {POLICY_OPTIONS.map((opt) => (
+                <label
+                  key={opt.value}
+                  className="flex items-start gap-2 cursor-pointer rounded border p-3 hover:bg-accent/40"
+                >
+                  <input
+                    type="radio"
+                    name="approvalPolicy"
+                    value={opt.value}
+                    checked={
+                      (settings.autonomyConfig.approvalPolicy ??
+                        "external-only") === opt.value
+                    }
+                    onChange={() => updatePolicy({ approvalPolicy: opt.value })}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <p className="text-sm font-medium">{opt.label}</p>
+                    <p className="text-xs text-muted-foreground">{opt.help}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {settings.autonomyConfig.approvalPolicy === "risk-based" && (
+            <div>
+              <label className="text-sm font-medium">
+                Risk threshold (1-10)
+              </label>
+              <Input
+                className="mt-1"
+                type="number"
+                min={1}
+                max={10}
+                step={0.5}
+                value={settings.autonomyConfig.approvalRiskThreshold ?? 6.0}
+                onChange={(e) =>
+                  updatePolicy({
+                    approvalRiskThreshold: Number(e.target.value) || 6.0,
+                  })
+                }
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Combined risk score at or above this triggers approval. Default
+                is 6.0.
+              </p>
+            </div>
+          )}
+
+          <div>
+            <label className="text-sm font-medium">
+              Always auto-approve
+            </label>
+            <textarea
+              className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              rows={3}
+              placeholder="vendor@trusted.com&#10;@partner.io"
+              value={(settings.autonomyConfig.autoApproveList ?? []).join("\n")}
+              onChange={(e) =>
+                updatePolicy({ autoApproveList: linesToList(e.target.value) })
+              }
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Emails or @domains (one per line) that always send without
+              asking.
+            </p>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium">
+              Always require approval
+            </label>
+            <textarea
+              className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              rows={3}
+              placeholder="ceo@company.com&#10;@sensitive-client.com"
+              value={(settings.autonomyConfig.requireApprovalList ?? []).join(
+                "\n",
+              )}
+              onChange={(e) =>
+                updatePolicy({
+                  requireApprovalList: linesToList(e.target.value),
+                })
+              }
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Overrides auto-approve. Use for high-sensitivity recipients.
+            </p>
+          </div>
+
+          {settings.runtime === "OPENCLAW" && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+              This agent runs on the OpenClaw runtime. Your policy is injected
+              into its instructions at startup, so changes take effect after
+              the next container restart (not on save).
+            </div>
+          )}
         </CardContent>
       </Card>
 

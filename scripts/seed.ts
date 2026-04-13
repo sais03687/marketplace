@@ -1,8 +1,27 @@
 import { PrismaClient } from "@prisma/client";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 
 const prisma = new PrismaClient();
+
+function readOptionalFile(path: string): string | null {
+  if (existsSync(path)) {
+    return readFileSync(path, "utf-8");
+  }
+  return null;
+}
+
+function readOptionalJson(path: string): unknown | null {
+  const content = readOptionalFile(path);
+  if (content) {
+    try {
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 async function main() {
   console.log("Seeding database...");
@@ -16,6 +35,11 @@ async function main() {
     "marketplace.json",
   );
   const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+
+  // Read onboarding files
+  const onboardingDir = join(__dirname, "..", "agents", "v5-agent-package", "onboarding");
+  const onboardingQuestions = readOptionalJson(join(onboardingDir, "questions.json"));
+  const memoryTemplate = readOptionalFile(join(onboardingDir, "MEMORY_TEMPLATE.md"));
 
   // Create or find a seed creator
   const creator = await prisma.creator.upsert({
@@ -42,6 +66,8 @@ async function main() {
       modelTier: manifest.modelTier.toUpperCase(),
       currentVersion: manifest.version,
       status: "LIVE",
+      onboardingQuestions: onboardingQuestions ?? undefined,
+      memoryTemplate: memoryTemplate ?? undefined,
     },
     create: {
       slug: manifest.slug,
@@ -54,6 +80,8 @@ async function main() {
       creatorId: creator.id,
       currentVersion: manifest.version,
       status: "LIVE",
+      onboardingQuestions: onboardingQuestions ?? undefined,
+      memoryTemplate: memoryTemplate ?? undefined,
     },
   });
 
@@ -104,8 +132,13 @@ async function main() {
     "marketplace.json",
   );
 
-  if (require("fs").existsSync(lcManifestPath)) {
+  if (existsSync(lcManifestPath)) {
     const lcManifest = JSON.parse(readFileSync(lcManifestPath, "utf-8"));
+
+    // Read onboarding files for langchain-starter
+    const lcOnboardingDir = join(__dirname, "..", "agents", "langchain-starter", "onboarding");
+    const lcOnboardingQuestions = readOptionalJson(join(lcOnboardingDir, "questions.json"));
+    const lcMemoryTemplate = readOptionalFile(join(lcOnboardingDir, "MEMORY_TEMPLATE.md"));
 
     const lcAgent = await prisma.agent.upsert({
       where: { slug: lcManifest.slug },
@@ -119,6 +152,8 @@ async function main() {
         currentVersion: lcManifest.version,
         runtime: "CUSTOM",
         status: "LIVE",
+        onboardingQuestions: lcOnboardingQuestions ?? undefined,
+        memoryTemplate: lcMemoryTemplate ?? undefined,
       },
       create: {
         slug: lcManifest.slug,
@@ -132,6 +167,8 @@ async function main() {
         currentVersion: lcManifest.version,
         runtime: "CUSTOM",
         status: "LIVE",
+        onboardingQuestions: lcOnboardingQuestions ?? undefined,
+        memoryTemplate: lcMemoryTemplate ?? undefined,
       },
     });
 

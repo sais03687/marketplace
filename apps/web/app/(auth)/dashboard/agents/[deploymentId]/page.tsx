@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { OnboardingPanel } from "@/components/dashboard/onboarding-panel";
 
 import { Pause, Play, UserX } from "lucide-react";
 
@@ -68,39 +69,47 @@ export default async function AgentOverviewPage({
           className={
             deployment.status === "ACTIVE"
               ? "bg-emerald-100 text-emerald-800"
-              : deployment.status === "PAUSED"
-                ? "bg-gray-100 text-gray-800"
-                : "bg-amber-100 text-amber-800"
+              : deployment.status === "ONBOARDING"
+                ? "bg-blue-100 text-blue-800"
+                : deployment.status === "PAUSED"
+                  ? "bg-gray-100 text-gray-800"
+                  : "bg-amber-100 text-amber-800"
           }
         >
           {deployment.status}
         </Badge>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-sm text-muted-foreground">Tasks This Week</p>
-            <p className="text-2xl font-bold">{thisWeekApprovals}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-sm text-muted-foreground">Approval Rate</p>
-            <p className="text-2xl font-bold">
-              {Math.round(approvalRate * 100)}%
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-sm text-muted-foreground">Total Actions</p>
-            <p className="text-2xl font-bold">{deployment._count.approvals}</p>
-          </CardContent>
-        </Card>
-      </div>
+      {deployment.status === "ONBOARDING" && (
+        <OnboardingPanel deploymentId={deploymentId} />
+      )}
 
-      {deployment.status !== "FIRED" && (
+      {deployment.status !== "ONBOARDING" && (
+        <div className="grid gap-4 sm:grid-cols-3">
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-sm text-muted-foreground">Tasks This Week</p>
+              <p className="text-2xl font-bold">{thisWeekApprovals}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-sm text-muted-foreground">Approval Rate</p>
+              <p className="text-2xl font-bold">
+                {Math.round(approvalRate * 100)}%
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-sm text-muted-foreground">Total Actions</p>
+              <p className="text-2xl font-bold">{deployment._count.approvals}</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {deployment.status !== "FIRED" && deployment.status !== "ONBOARDING" && (
         <div className="flex gap-2">
           <form action={`/api/deployments/${deploymentId}/pause`} method="POST">
             <Button variant="outline" type="submit">

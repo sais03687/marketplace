@@ -12,6 +12,7 @@ after corrections, patterns, or successful task completions.
 
 import os
 import json
+import asyncio
 from typing import Any
 from pathlib import Path
 
@@ -21,10 +22,24 @@ from pydantic import BaseModel, Field
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
+# Platform sets these env vars at provision time — no hardcoded defaults
+_llm_api_key = os.environ.get("LLM_API_KEY", "")
+if not _llm_api_key:
+    raise RuntimeError(
+        "LLM_API_KEY environment variable is required. "
+        "Set it in your deployment configuration."
+    )
+
+_llm_model = os.environ.get("LLM_MODEL")
+if not _llm_model:
+    raise RuntimeError("LLM_MODEL environment variable is required.")
+
+_llm_base_url = os.environ.get("LLM_BASE_URL")
+
 llm = ChatOpenAI(
-    model=os.environ.get("LLM_MODEL", "openai/gpt-oss-120b"),
-    api_key=os.environ.get("LLM_API_KEY", ""),
-    base_url=os.environ.get("LLM_BASE_URL", "https://api.featherless.ai/v1"),
+    model=_llm_model,
+    api_key=_llm_api_key,
+    base_url=_llm_base_url,
     max_tokens=2048,
 )
 
@@ -53,6 +68,7 @@ class AgentState(BaseModel):
     resolve_fn: Any = None
     contribute_fn: Any = None
     search_fn: Any = None
+    use_fn: Any = None
     # AgentMind state
     knowledge_hits: list = Field(default_factory=list)
     original_draft: str = ""
@@ -140,16 +156,25 @@ async def analyze_task(state: AgentState) -> AgentState:
     knowledge_context = ""
     if state.knowledge_hits:
         knowledge_lines = []
+        used_ids = []
         for hit in state.knowledge_hits[:3]:
             knowledge_lines.append(
                 f"- [{hit.get('type', '')}] {hit.get('title', '')}: "
                 f"{hit.get('content', '')[:300]}"
             )
+            if hit.get("id"):
+                used_ids.append(hit["id"])
         knowledge_context = (
             "## Relevant insights from other deployments:\n"
             + "\n".join(knowledge_lines)
             + "\n\nUse these insights to inform your response if relevant."
         )
+        # Report usage — auto-upvotes contributions we actually incorporated
+        if used_ids and state.use_fn:
+            try:
+                await state.use_fn(used_ids)
+            except Exception as e:
+                print(f"[agentmind] Report usage failed (non-fatal): {e}")
 
     prompt = ANALYSIS_PROMPT.format(
         agent_name=ctx.get("agent_name", "Agent"),
@@ -164,7 +189,25 @@ async def analyze_task(state: AgentState) -> AgentState:
         knowledge_context=knowledge_context,
     )
 
-    response = await llm.ainvoke(prompt)
+    try:
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=45)
+    except asyncio.TimeoutError:
+        # Conservative fallback — treat as high-risk
+        state.analysis = {
+            "intent": "unknown",
+            "complexity": "high",
+            "risk_assessment": {"stakes": 8, "ambiguity": 8, "reversibility": 8, "combined": 8.0},
+            "needs_approval": True,
+            "draft_response": "I need a moment to process this request. Let me get back to you shortly.",
+            "action": "none",
+            "draft": {"to": None, "subject": None, "text": "I need a moment to process this request. Let me get back to you shortly.", "thread_id": None},
+            "reasoning": "LLM request timed out after 45s; defaulting to safe behavior.",
+            "insight_worthy": False,
+            "insight": None,
+        }
+        state.task_type = "unknown"
+        return state
+
     text = response.content if hasattr(response, "content") else str(response)
 
     # Parse JSON from LLM response
@@ -186,6 +229,21 @@ async def analyze_task(state: AgentState) -> AgentState:
             "insight_worthy": False,
             "insight": None,
         }
+
+    # Clamp risk scores to valid range [1, 10]
+    def _clamp(v, lo=1.0, hi=10.0):
+        try:
+            return max(lo, min(hi, float(v)))
+        except (TypeError, ValueError):
+            return hi  # default to high risk if unparseable
+
+    risk = analysis.get("risk_assessment", {})
+    analysis["risk_assessment"] = {
+        "stakes": _clamp(risk.get("stakes", 8)),
+        "ambiguity": _clamp(risk.get("ambiguity", 8)),
+        "reversibility": _clamp(risk.get("reversibility", 8)),
+        "combined": _clamp(risk.get("combined", 8.0)),
+    }
 
     state.analysis = analysis
     state.task_type = analysis.get("task_type", "unknown")
@@ -337,6 +395,7 @@ async def run_agent(
     resolve_fn=None,
     contribute_fn=None,
     search_fn=None,
+    use_fn=None,
 ) -> dict:
     """Run the agent graph and return the result dict.
 
@@ -347,6 +406,7 @@ async def run_agent(
         resolve_fn: Async function to wait for an approval resolution.
         contribute_fn: Async function to submit a learning to AgentMind.
         search_fn: Async function to search AgentMind for relevant knowledge.
+        use_fn: Async function to report which contributions were used (auto-upvotes).
 
     Returns:
         Dict with keys: action, to, subject, text, thread_id, task_type,
@@ -359,6 +419,7 @@ async def run_agent(
         resolve_fn=resolve_fn,
         contribute_fn=contribute_fn,
         search_fn=search_fn,
+        use_fn=use_fn,
     )
 
     final_state = await _compiled_graph.ainvoke(initial_state)

@@ -13,6 +13,20 @@ import {
   FileText,
   Loader2,
 } from "lucide-react";
+import JSZip from "jszip";
+
+interface ManifestData {
+  name: string;
+  slug: string;
+  tagline: string;
+  description: string;
+  category: string;
+  version: string;
+  pricePerMonth: number;
+  modelTier: string;
+  runtime?: string;
+  capabilities: Array<{ name: string; description: string }>;
+}
 
 interface ValidationResult {
   file: string;
@@ -31,14 +45,13 @@ export default function PublishPage() {
   const [step, setStep] = useState(1);
   const [files, setFiles] = useState<File | null>(null);
   const [validations, setValidations] = useState<ValidationResult[]>([]);
-  const [runtime, setRuntime] = useState<"OPENCLAW" | "CUSTOM">("OPENCLAW");
-  const [manifest, setManifest] = useState<Record<string, string>>({
-    tagline: "",
-    description: "",
-  });
-  const [price, setPrice] = useState("");
+  const [manifest, setManifest] = useState<ManifestData | null>(null);
+  const [taglineOverride, setTaglineOverride] = useState("");
+  const [descriptionOverride, setDescriptionOverride] = useState("");
+  const [priceOverride, setPriceOverride] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   const handleDrop = useCallback(
     async (e: React.DragEvent<HTMLDivElement>) => {
@@ -46,7 +59,7 @@ export default function PublishPage() {
       const file = e.dataTransfer.files[0];
       if (!file || !file.name.endsWith(".zip")) return;
       setFiles(file);
-      validatePackage(file);
+      await validateAndParsePackage(file);
     },
     [],
   );
@@ -56,36 +69,70 @@ export default function PublishPage() {
       const file = e.target.files?.[0];
       if (!file) return;
       setFiles(file);
-      validatePackage(file);
+      await validateAndParsePackage(file);
     },
     [],
   );
 
-  const validatePackage = async (file: File) => {
-    // Client-side validation: check zip contents
+  const validateAndParsePackage = async (file: File) => {
     const results: ValidationResult[] = [];
+    setParseError(null);
+    setManifest(null);
 
-    // For now, do basic checks
     if (file.size > 50 * 1024 * 1024) {
       results.push({
         file: file.name,
         valid: false,
         message: "Package exceeds 50MB limit",
       });
-    } else {
-      results.push({
-        file: file.name,
-        valid: true,
-        message: `${(file.size / 1024).toFixed(0)}KB zip file`,
-      });
+      setValidations(results);
+      return;
     }
 
-    for (const f of REQUIRED_FILES) {
-      results.push({
-        file: f,
-        valid: true, // Would need JSZip for actual check
-        message: "Will be verified on upload",
-      });
+    results.push({
+      file: file.name,
+      valid: true,
+      message: `${(file.size / 1024).toFixed(0)}KB zip file`,
+    });
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const zip = await JSZip.loadAsync(buffer);
+
+      // Check required files
+      for (const f of REQUIRED_FILES) {
+        const exists = zip.file(f) !== null;
+        results.push({
+          file: f,
+          valid: exists,
+          message: exists ? "Found" : "Missing",
+        });
+      }
+
+      // Parse manifest
+      const manifestFile = zip.file("marketplace.json");
+      if (manifestFile) {
+        const text = await manifestFile.async("string");
+        const parsed = JSON.parse(text) as ManifestData;
+        setManifest(parsed);
+        setTaglineOverride(parsed.tagline);
+        setDescriptionOverride(parsed.description);
+        setPriceOverride(String(parsed.pricePerMonth / 100));
+      } else {
+        setParseError("marketplace.json not found in package");
+      }
+
+      // Check optional files
+      const hasQuestions = zip.file("onboarding/questions.json") !== null;
+      const hasMemory = zip.file("onboarding/MEMORY_TEMPLATE.md") !== null;
+      if (hasQuestions) {
+        results.push({ file: "onboarding/questions.json", valid: true, message: "Found" });
+      }
+      if (hasMemory) {
+        results.push({ file: "onboarding/MEMORY_TEMPLATE.md", valid: true, message: "Found" });
+      }
+    } catch {
+      setParseError("Failed to read zip file");
     }
 
     setValidations(results);
@@ -97,10 +144,9 @@ export default function PublishPage() {
 
     const formData = new FormData();
     formData.append("package", files);
-    formData.append("tagline", manifest.tagline);
-    formData.append("description", manifest.description);
-    formData.append("pricePerMonth", price);
-    formData.append("runtime", runtime);
+    if (taglineOverride) formData.append("tagline", taglineOverride);
+    if (descriptionOverride) formData.append("description", descriptionOverride);
+    if (priceOverride) formData.append("pricePerMonth", priceOverride);
 
     try {
       const res = await fetch("/api/packages/upload", {
@@ -110,9 +156,12 @@ export default function PublishPage() {
 
       if (res.ok) {
         setSubmitted(true);
+      } else {
+        const data = await res.json().catch(() => null);
+        setParseError(data?.error || "Upload failed");
       }
     } catch {
-      // Handle error
+      setParseError("Network error");
     }
 
     setSubmitting(false);
@@ -143,7 +192,7 @@ export default function PublishPage() {
 
       {/* Progress */}
       <div className="mt-6 flex items-center gap-1">
-        {["Upload", "Details", "Pricing", "Submit"].map((label, i) => (
+        {["Upload", "Review", "Submit"].map((label, i) => (
           <div key={label} className="flex-1">
             <div
               className={cn(
@@ -199,76 +248,80 @@ export default function PublishPage() {
               </div>
             )}
 
+            {parseError && (
+              <p className="text-sm text-red-500">{parseError}</p>
+            )}
+
             <Button
               className="w-full"
               onClick={() => setStep(2)}
-              disabled={!files}
+              disabled={!files || !manifest}
             >
               Continue
             </Button>
           </div>
         )}
 
-        {step === 2 && (
+        {step === 2 && manifest && (
           <div className="space-y-6">
+            <Card>
+              <CardContent className="p-5 space-y-3 text-sm">
+                <h3 className="font-semibold">Parsed from marketplace.json</h3>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <span className="text-muted-foreground">Name</span>
+                  <span>{manifest.name}</span>
+                  <span className="text-muted-foreground">Slug</span>
+                  <span className="font-mono">{manifest.slug}</span>
+                  <span className="text-muted-foreground">Version</span>
+                  <span>{manifest.version}</span>
+                  <span className="text-muted-foreground">Category</span>
+                  <span>{manifest.category}</span>
+                  <span className="text-muted-foreground">Model Tier</span>
+                  <span>{manifest.modelTier}</span>
+                  <span className="text-muted-foreground">Runtime</span>
+                  <span>{manifest.runtime || "openclaw"}</span>
+                  <span className="text-muted-foreground">Capabilities</span>
+                  <span>{manifest.capabilities.length} defined</span>
+                </div>
+              </CardContent>
+            </Card>
+
             <div>
-              <label className="text-sm font-medium">Tagline</label>
+              <label className="text-sm font-medium">
+                Tagline <span className="text-muted-foreground">(override)</span>
+              </label>
               <Input
                 className="mt-1"
-                value={manifest.tagline}
-                onChange={(e) =>
-                  setManifest({ ...manifest, tagline: e.target.value })
-                }
-                placeholder="One-line description of your agent"
+                value={taglineOverride}
+                onChange={(e) => setTaglineOverride(e.target.value)}
               />
             </div>
             <div>
-              <label className="text-sm font-medium">Description</label>
+              <label className="text-sm font-medium">
+                Description <span className="text-muted-foreground">(override)</span>
+              </label>
               <Textarea
                 className="mt-1"
-                value={manifest.description}
-                onChange={(e) =>
-                  setManifest({ ...manifest, description: e.target.value })
-                }
-                placeholder="Detailed description of what your agent does..."
-                rows={6}
+                value={descriptionOverride}
+                onChange={(e) => setDescriptionOverride(e.target.value)}
+                rows={4}
               />
             </div>
             <div>
-              <label className="text-sm font-medium">Runtime</label>
-              <div className="mt-2 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setRuntime("OPENCLAW")}
-                  className={cn(
-                    "rounded-lg border p-3 text-left transition-colors",
-                    runtime === "OPENCLAW"
-                      ? "border-primary bg-primary/5 ring-1 ring-primary"
-                      : "hover:border-muted-foreground/30",
-                  )}
-                >
-                  <p className="text-sm font-medium">OpenClaw</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Managed runtime. No Docker needed.
-                  </p>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRuntime("CUSTOM")}
-                  className={cn(
-                    "rounded-lg border p-3 text-left transition-colors",
-                    runtime === "CUSTOM"
-                      ? "border-primary bg-primary/5 ring-1 ring-primary"
-                      : "hover:border-muted-foreground/30",
-                  )}
-                >
-                  <p className="text-sm font-medium">Custom</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    Your own Docker container with adapter.
-                  </p>
-                </button>
-              </div>
+              <label className="text-sm font-medium">
+                Price per month (USD) <span className="text-muted-foreground">(override)</span>
+              </label>
+              <Input
+                className="mt-1"
+                type="number"
+                value={priceOverride}
+                onChange={(e) => setPriceOverride(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                From manifest: ${manifest.pricePerMonth / 100}/mo
+              </p>
             </div>
+
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setStep(1)}>
                 Back
@@ -280,61 +333,7 @@ export default function PublishPage() {
           </div>
         )}
 
-        {step === 3 && (
-          <div className="space-y-6">
-            <div>
-              <label className="text-sm font-medium">
-                Price per month (USD)
-              </label>
-              <Input
-                className="mt-1"
-                type="number"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                placeholder="499"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Enter price in dollars. Customers will be charged monthly.
-              </p>
-            </div>
-
-            {price && (
-              <Card>
-                <CardContent className="p-4 text-sm">
-                  <div className="flex justify-between">
-                    <span>Customer pays</span>
-                    <span className="font-medium">
-                      ${parseInt(price || "0")}/mo
-                    </span>
-                  </div>
-                  <div className="flex justify-between mt-1">
-                    <span>Platform fee (30%)</span>
-                    <span className="text-muted-foreground">
-                      -${Math.round(parseInt(price || "0") * 0.3)}/mo
-                    </span>
-                  </div>
-                  <div className="flex justify-between mt-1 pt-1 border-t font-medium">
-                    <span>You earn</span>
-                    <span className="text-emerald-600">
-                      ${Math.round(parseInt(price || "0") * 0.7)}/mo
-                    </span>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setStep(2)}>
-                Back
-              </Button>
-              <Button className="flex-1" onClick={() => setStep(4)}>
-                Continue
-              </Button>
-            </div>
-          </div>
-        )}
-
-        {step === 4 && (
+        {step === 3 && manifest && (
           <div className="space-y-6">
             <Card>
               <CardContent className="p-5 space-y-3 text-sm">
@@ -344,24 +343,40 @@ export default function PublishPage() {
                   <span>{files?.name}</span>
                 </div>
                 <div className="flex justify-between">
+                  <span className="text-muted-foreground">Agent</span>
+                  <span>{manifest.name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Slug</span>
+                  <span className="font-mono">{manifest.slug}</span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-muted-foreground">Tagline</span>
                   <span className="text-right max-w-[60%] truncate">
-                    {manifest.tagline}
+                    {taglineOverride}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Runtime</span>
-                  <span>{runtime === "CUSTOM" ? "Custom (Docker)" : "OpenClaw (Managed)"}</span>
+                  <span>
+                    {(manifest.runtime || "openclaw") === "custom"
+                      ? "Custom (Docker)"
+                      : "OpenClaw (Managed)"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Price</span>
-                  <span>${price}/mo</span>
+                  <span>${priceOverride}/mo</span>
                 </div>
               </CardContent>
             </Card>
 
+            {parseError && (
+              <p className="text-sm text-red-500">{parseError}</p>
+            )}
+
             <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setStep(3)}>
+              <Button variant="outline" onClick={() => setStep(2)}>
                 Back
               </Button>
               <Button

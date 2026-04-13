@@ -36,6 +36,12 @@ export async function POST(request: Request) {
     return jsonError("Deployment not found", 404);
   }
 
+  // AgentMind opt-out check
+  const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;
+  if (ac.agentMindEnabled === false) {
+    return jsonError("AgentMind is disabled for this deployment", 403);
+  }
+
   // Memory tier gate: only ACTIVE deployments with at least one resolved approval
   if (deployment.status !== "ACTIVE") {
     return jsonError("Only active deployments can contribute knowledge", 403);
@@ -75,6 +81,10 @@ export async function POST(request: Request) {
     );
   }
 
+  // Resolve initial status based on deployment's agentMind preference
+  const autoApprove = ac.agentMindAutoApprove !== false; // default true
+  const initialStatus = autoApprove ? "APPROVED" : "PENDING";
+
   const contribution = await prisma.knowledgeContribution.create({
     data: {
       agentId: deployment.agentId,
@@ -86,6 +96,7 @@ export async function POST(request: Request) {
       context: context || null,
       tags,
       sanitizationLog: guardrailResult.log,
+      status: initialStatus,
     },
   });
 

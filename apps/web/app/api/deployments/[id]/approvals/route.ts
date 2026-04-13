@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { jsonSuccess, jsonError, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
+import { sendNotificationEmail, buildApprovalNotificationEmail } from "@/lib/email";
 
 export async function GET(
   request: Request,
@@ -67,6 +68,14 @@ export async function POST(
   // Verify deployment exists
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
+    select: {
+      id: true,
+      status: true,
+      agentName: true,
+      agentEmailInboxId: true,
+      weeklyDigestEmail: true,
+      portalToken: true,
+    },
   });
   if (!deployment) {
     return jsonError("Deployment not found", 404);
@@ -77,7 +86,30 @@ export async function POST(
     return jsonError("Invalid JSON body", 400);
   }
 
-  const { taskType, draft, reasoning, riskScore, threadId, fromEmail, subject } = body as Record<string, unknown>;
+  const {
+    taskType,
+    draft,
+    reasoning,
+    threadId,
+    fromEmail,
+    subject,
+    originalRequest,
+    // Preferred: adapter sends all four scores explicitly
+    stakesScore,
+    ambiguityScore,
+    reversibilityScore,
+    combinedScore,
+    // Legacy fallback: older callers only sent a single riskScore
+    riskScore,
+  } = body as Record<string, unknown>;
+
+  const stakes = Number(stakesScore ?? riskScore ?? 0) || 0;
+  const ambiguity = Number(ambiguityScore ?? 0) || 0;
+  const reversibility = Number(reversibilityScore ?? 0) || 0;
+  const combined =
+    Number(combinedScore ?? 0) ||
+    (stakes + ambiguity + reversibility) / 3 ||
+    0;
 
   const approval = await prisma.approval.create({
     data: {
@@ -86,15 +118,38 @@ export async function POST(
       channel: "email",
       draft: String(draft || ""),
       reasoning: String(reasoning || ""),
-      originalRequest: subject ? `From: ${fromEmail || "agent"} — ${subject}` : String(fromEmail || ""),
-      stakesScore: Number(riskScore) || 0,
-      ambiguityScore: 0,
-      reversibilityScore: 0,
-      combinedScore: Number(riskScore) || 0,
+      originalRequest: originalRequest
+        ? String(originalRequest)
+        : subject
+          ? `From: ${fromEmail || "agent"} — ${subject}`
+          : String(fromEmail || ""),
+      stakesScore: stakes,
+      ambiguityScore: ambiguity,
+      reversibilityScore: reversibility,
+      combinedScore: combined,
       threadId: threadId ? String(threadId) : null,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     },
   });
+
+  // Send email notification (fire-and-forget)
+  if (deployment.weeklyDigestEmail) {
+    const portalUrl = deployment.portalToken
+      ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
+      : null;
+    const { subject, html } = buildApprovalNotificationEmail({
+      agentName: deployment.agentName,
+      taskType: String(taskType || "unknown"),
+      draftPreview: String(draft || ""),
+      portalUrl,
+    });
+    sendNotificationEmail({
+      inboxId: deployment.agentEmailInboxId,
+      to: deployment.weeklyDigestEmail,
+      subject,
+      html,
+    });
+  }
 
   return jsonSuccess({ approval: { id: approval.id, status: approval.status } }, 201);
 }

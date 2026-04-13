@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
+import { sendNotificationEmail, buildApprovalNotificationEmail } from "@/lib/email";
 import { z } from "zod";
 
 const approvalWebhookSchema = z.object({
@@ -29,7 +30,14 @@ export async function POST(
 
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
-    select: { approvalWebhookToken: true, status: true },
+    select: {
+      approvalWebhookToken: true,
+      status: true,
+      agentName: true,
+      agentEmailInboxId: true,
+      weeklyDigestEmail: true,
+      portalToken: true,
+    },
   });
 
   if (!deployment) {
@@ -81,6 +89,25 @@ export async function POST(
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
     },
   });
+
+  // Send email notification (fire-and-forget)
+  if (deployment.weeklyDigestEmail) {
+    const portalUrl = deployment.portalToken
+      ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
+      : null;
+    const { subject, html } = buildApprovalNotificationEmail({
+      agentName: deployment.agentName,
+      taskType: data.taskType,
+      draftPreview: data.draft,
+      portalUrl,
+    });
+    sendNotificationEmail({
+      inboxId: deployment.agentEmailInboxId,
+      to: deployment.weeklyDigestEmail,
+      subject,
+      html,
+    });
+  }
 
   return jsonSuccess(approval, 201);
 }

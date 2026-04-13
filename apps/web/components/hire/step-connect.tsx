@@ -3,16 +3,16 @@
 import { Button } from "@/components/ui/button";
 import { useHire } from "@/lib/hire-context";
 import { Badge } from "@/components/ui/badge";
-import { MessageSquare, Calendar, Check, AlertTriangle, HardDrive } from "lucide-react";
+import { MessageSquare, Calendar, HardDrive, Info } from "lucide-react";
 
 export function StepConnect() {
-  const { state, updateState, setStep } = useHire();
+  const { state, setStep } = useHire();
 
   return (
     <div className="space-y-6">
       <p className="text-sm text-muted-foreground">
-        Connect the tools your AI employee needs to work. You can skip and
-        connect later.
+        Your agent will use these integrations when available. All are
+        pre-configured server-side during provisioning.
       </p>
 
       <div className="space-y-3">
@@ -26,20 +26,7 @@ export function StepConnect() {
               </p>
             </div>
           </div>
-          {state.slackConnected ? (
-            <Badge variant="success">
-              <Check className="mr-1 h-3 w-3" />
-              Connected
-            </Badge>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => updateState({ slackConnected: true })}
-            >
-              Connect
-            </Button>
-          )}
+          <Badge variant="secondary">Coming soon</Badge>
         </div>
 
         <div className="flex items-center justify-between rounded-lg border p-4">
@@ -52,20 +39,7 @@ export function StepConnect() {
               </p>
             </div>
           </div>
-          {state.googleCalendarConnected ? (
-            <Badge variant="success">
-              <Check className="mr-1 h-3 w-3" />
-              Connected
-            </Badge>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => updateState({ googleCalendarConnected: true })}
-            >
-              Connect
-            </Button>
-          )}
+          <Badge variant="success">Auto-configured</Badge>
         </div>
 
         <div className="flex items-center justify-between rounded-lg border border-dashed p-4">
@@ -74,33 +48,28 @@ export function StepConnect() {
             <div>
               <p className="font-medium text-sm">Google Drive / Sheets / Docs</p>
               <p className="text-xs text-muted-foreground">
-                Pre-connected. Share files with your agent&apos;s Google identity after hiring.
+                Share files with your agent&apos;s Google identity after hiring.
               </p>
             </div>
           </div>
-          <Badge variant="secondary">Auto</Badge>
+          <Badge variant="success">Auto-configured</Badge>
         </div>
       </div>
 
       <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800">
-        <p className="font-medium mb-1">How file sharing works</p>
-        <p>
-          Your agent has two addresses: an <strong>email address</strong> for communication,
-          and a <strong>Google service account</strong> for file access. After hiring, share
-          any Google Drive file with the agent&apos;s service account email — just like sharing
-          with a colleague. The agent will tell you the address in its intro email.
-        </p>
-      </div>
-
-      {(!state.slackConnected || !state.googleCalendarConnected) && (
-        <div className="flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
-          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-          <p>
-            Some features may be limited without these integrations. You can
-            connect them later from your dashboard.
-          </p>
+        <div className="flex items-start gap-2">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          <div>
+            <p className="font-medium mb-1">How integrations work</p>
+            <p>
+              Google Calendar and Drive are connected automatically during setup.
+              Your agent will share its Google service account email in its
+              introduction — share files with that address like you would with a
+              colleague. Slack integration is coming soon.
+            </p>
+          </div>
         </div>
-      )}
+      </div>
 
       <div className="flex gap-2">
         <Button variant="outline" onClick={() => setStep(2)}>

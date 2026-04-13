@@ -44,11 +44,63 @@ export async function POST(
     },
   });
 
-  // If approved, set agent to LIVE
+  // If approved, set agent to LIVE and update currentVersion + onboarding data
   if (decision === "MANUALLY_APPROVED") {
+    const updateData: Record<string, unknown> = {
+      status: "LIVE",
+      currentVersion: version.version,
+    };
+
+    // If the version has manifest data, extract onboarding fields
+    if (version.manifestData) {
+      const manifest = version.manifestData as Record<string, unknown>;
+
+      // Update capabilities from manifest
+      const capabilities = manifest.capabilities as
+        | Array<{ name: string; description: string }>
+        | undefined;
+      if (capabilities && capabilities.length > 0) {
+        await prisma.capability.deleteMany({
+          where: { agentId: version.agentId },
+        });
+        await prisma.capability.createMany({
+          data: capabilities.map((cap) => ({
+            agentId: version.agentId,
+            name: cap.name,
+            description: cap.description,
+          })),
+        });
+      }
+    }
+
+    // If the version has stored package files, try to extract onboarding data
+    if (version.storagePath) {
+      try {
+        const { readPackageFile } = await import("@/lib/package-storage");
+        const questionsBuffer = readPackageFile(
+          version.storagePath,
+          "onboarding/questions.json",
+        );
+        if (questionsBuffer) {
+          updateData.onboardingQuestions = JSON.parse(
+            questionsBuffer.toString("utf-8"),
+          );
+        }
+        const memoryBuffer = readPackageFile(
+          version.storagePath,
+          "onboarding/MEMORY_TEMPLATE.md",
+        );
+        if (memoryBuffer) {
+          updateData.memoryTemplate = memoryBuffer.toString("utf-8");
+        }
+      } catch {
+        // Non-fatal: onboarding data extraction is best-effort
+      }
+    }
+
     await prisma.agent.update({
       where: { id: version.agentId },
-      data: { status: "LIVE" },
+      data: updateData,
     });
   }
 
