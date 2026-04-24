@@ -104,7 +104,7 @@ export default async function AgentMindQueuePage() {
 
                     {c.tags.length > 0 && (
                       <div className="mt-2 flex gap-1">
-                        {c.tags.map((tag) => (
+                        {c.tags.map((tag: string) => (
                           <Badge key={tag} variant="outline" className="text-[10px]">
                             {tag}
                           </Badge>
