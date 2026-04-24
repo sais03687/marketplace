@@ -1,24 +1,10 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
 
-const isProtectedRoute = createRouteMatcher([
-  "/dashboard(.*)",
-  "/creator(.*)",
-  "/admin(.*)",
-]);
-
-// These routes authenticate with their own mechanism (CRON_SECRET, etc.)
-// and must NOT be protected by Clerk — their Bearer tokens are not Clerk JWTs.
-const isInternalRoute = createRouteMatcher([
-  "/api/cron/(.*)",
-  "/api/webhooks/(.*)",
-]);
-
-export default clerkMiddleware(async (auth, req) => {
-  if (isInternalRoute(req)) return; // bypass Clerk for internal routes
-  if (isProtectedRoute(req)) {
-    await auth.protect();
-  }
-});
+// Clerk auth temporarily disabled — dev instance only works on localhost.
+// Re-enable once a custom domain is configured in Clerk production instance.
+export default function middleware() {
+  return NextResponse.next();
+}
 
 export const config = {
   matcher: [
