@@ -5,7 +5,7 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "build": "echo 'db package uses prisma generate'",
+    "build": "prisma generate",
     "prisma": "prisma"
   },
   "dependencies": {
