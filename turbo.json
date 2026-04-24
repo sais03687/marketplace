@@ -3,7 +3,32 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+      "passThroughEnv": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "CLERK_SECRET_KEY",
+        "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+        "NEXT_PUBLIC_CLERK_SIGN_IN_URL",
+        "NEXT_PUBLIC_CLERK_SIGN_UP_URL",
+        "NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL",
+        "NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "BLOB_READ_WRITE_TOKEN",
+        "BLOB_BASE_URL",
+        "CRON_SECRET",
+        "NEXT_PUBLIC_APP_URL",
+        "MARKETPLACE_APPROVAL_WEBHOOK",
+        "APPROVAL_WEBHOOK_TOKEN",
+        "AGENTMAIL_API_KEY",
+        "AGENTMIND_REFLECTION_BASE_URL",
+        "AGENTMIND_REFLECTION_API_KEY",
+        "AGENTMIND_REFLECTION_MODEL",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+        "PLATFORM_REVENUE_SHARE"
+      ]
     },
     "@marketplace/db#build": {
       "cache": false
