@@ -5,6 +5,9 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
+    "@marketplace/db#build": {
+      "cache": false
+    },
     "dev": {
       "cache": false,
       "persistent": true
