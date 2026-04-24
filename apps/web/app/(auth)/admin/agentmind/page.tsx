@@ -46,7 +46,7 @@ export default async function AgentMindQueuePage() {
         </div>
       ) : (
         <div className="mt-6 space-y-4">
-          {contributions.map((c) => (
+          {contributions.map((c: typeof contributions[number]) => (
             <Card key={c.id}>
               <CardContent className="p-5">
                 <div className="flex items-start justify-between">
