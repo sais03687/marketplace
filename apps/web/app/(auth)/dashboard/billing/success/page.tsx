@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 
-export default function BillingSuccessPage() {
+function BillingSuccessContent() {
   const searchParams = useSearchParams();
   const [deploymentStatus, setDeploymentStatus] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -73,5 +73,19 @@ export default function BillingSuccessPage() {
         </Button>
       </div>
     </div>
+  );
+}
+
+export default function BillingSuccessPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex flex-col items-center justify-center py-24 text-center">
+        <CheckCircle2 className="h-14 w-14 text-emerald-500" />
+        <h1 className="mt-6 text-2xl font-bold">Payment confirmed!</h1>
+        <Loader2 className="mt-6 h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    }>
+      <BillingSuccessContent />
+    </Suspense>
   );
 }
