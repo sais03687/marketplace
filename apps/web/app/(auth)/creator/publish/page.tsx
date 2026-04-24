@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,6 +12,8 @@ import {
   X,
   FileText,
   Loader2,
+  ExternalLink,
+  AlertCircle,
 } from "lucide-react";
 import JSZip from "jszip";
 
@@ -52,6 +54,30 @@ export default function PublishPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [stripeOnboarded, setStripeOnboarded] = useState<boolean | null>(null);
+  const [connectingStripe, setConnectingStripe] = useState(false);
+
+  // Check Stripe Connect status when reaching step 3
+  useEffect(() => {
+    if (step === 3) {
+      fetch("/api/creator/stripe/connect")
+        .then((r) => r.json())
+        .then((d) => setStripeOnboarded(d.stripeOnboarded ?? false))
+        .catch(() => setStripeOnboarded(false));
+    }
+  }, [step]);
+
+  const handleConnectStripe = async () => {
+    setConnectingStripe(true);
+    try {
+      const res = await fetch("/api/creator/stripe/connect", { method: "POST" });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+    } catch {
+      // ignore
+    }
+    setConnectingStripe(false);
+  };
 
   const handleDrop = useCallback(
     async (e: React.DragEvent<HTMLDivElement>) => {
@@ -171,10 +197,9 @@ export default function PublishPage() {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Check className="h-12 w-12 text-emerald-500" />
-        <h2 className="mt-4 text-xl font-semibold">Package Submitted</h2>
+        <h2 className="mt-4 text-xl font-semibold">Agent Live!</h2>
         <p className="mt-2 text-muted-foreground">
-          Your agent package is being vetted. You&apos;ll be notified when it&apos;s
-          approved.
+          Your agent is now listed on the marketplace and available for hire.
         </p>
         <Button className="mt-6" onClick={() => window.location.href = "/creator"}>
           Back to Dashboard
@@ -375,6 +400,29 @@ export default function PublishPage() {
               <p className="text-sm text-red-500">{parseError}</p>
             )}
 
+            {/* Stripe Connect gate */}
+            {stripeOnboarded === null ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Checking payout account...
+              </div>
+            ) : !stripeOnboarded ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">
+                <div className="flex items-center gap-2 font-medium text-amber-800 mb-2">
+                  <AlertCircle className="h-4 w-4" />
+                  Payout account required
+                </div>
+                <p className="text-amber-700 mb-3">
+                  Connect a Stripe account to receive earnings before your agent goes live.
+                </p>
+                <Button size="sm" onClick={handleConnectStripe} disabled={connectingStripe}>
+                  {connectingStripe && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}
+                  <ExternalLink className="mr-2 h-3 w-3" />
+                  Connect Stripe Account
+                </Button>
+              </div>
+            ) : null}
+
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setStep(2)}>
                 Back
@@ -382,10 +430,10 @@ export default function PublishPage() {
               <Button
                 className="flex-1"
                 onClick={handleSubmit}
-                disabled={submitting}
+                disabled={submitting || stripeOnboarded === false}
               >
                 {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Submit for Review
+                Publish Agent
               </Button>
             </div>
           </div>

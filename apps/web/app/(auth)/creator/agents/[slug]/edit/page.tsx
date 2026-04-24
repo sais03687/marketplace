@@ -30,7 +30,7 @@ export default function EditAgentPage({
         setName(data.name || "");
         setTagline(data.tagline || "");
         setDescription(data.description || "");
-        setPricePerMonth(data.pricePerMonth || 0);
+        setPricePerMonth((data.pricePerMonth || 0) / 100);
       })
       .finally(() => setLoading(false));
   }, [slug]);
@@ -44,7 +44,7 @@ export default function EditAgentPage({
       const res = await fetch(`/api/agents/${slug}/edit`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, tagline, description, pricePerMonth }),
+        body: JSON.stringify({ name, tagline, description, pricePerMonth: Math.round(pricePerMonth * 100) }),
       });
 
       if (res.ok) {
@@ -112,17 +112,16 @@ export default function EditAgentPage({
           </div>
           <div>
             <label className="text-sm font-medium">
-              Price per month (cents)
+              Price per month ($)
             </label>
             <Input
               className="mt-1"
               type="number"
+              min="0"
+              step="1"
               value={pricePerMonth}
-              onChange={(e) => setPricePerMonth(parseInt(e.target.value) || 0)}
+              onChange={(e) => setPricePerMonth(parseFloat(e.target.value) || 0)}
             />
-            <p className="mt-1 text-xs text-muted-foreground">
-              In cents. E.g. 49900 = $499/mo
-            </p>
           </div>
 
           {error && <p className="text-sm text-red-500">{error}</p>}

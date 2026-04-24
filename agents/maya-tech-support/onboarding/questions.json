@@ -1,0 +1,59 @@
+[
+  {
+    "id": "it_team",
+    "order": 1,
+    "question": "Who is on the IT team I can escalate to? For each person, please share:\n- Name and role\n- Email address\n- What types of issues they handle\n- Their availability (e.g. on-call hours)",
+    "memoryKey": "org.it_team",
+    "required": true
+  },
+  {
+    "id": "common_issues",
+    "order": 2,
+    "question": "What are the top 5 most common support issues your employees face? For each:\n- Issue description\n- Standard resolution steps\n- Any tools or system access required to fix it",
+    "memoryKey": "org.common_issues",
+    "required": true
+  },
+  {
+    "id": "p1_escalation",
+    "order": 3,
+    "question": "What types of issues should I treat as P1 (immediate escalation)? Examples: security incidents, system-wide outages, data loss. List anything specific to your org.",
+    "memoryKey": "org.p1_rules",
+    "required": true
+  },
+  {
+    "id": "systems",
+    "order": 4,
+    "question": "What IT systems and tools does your company use? (e.g. VPN client, SSO provider, MDM, ticketing system, cloud provider). This helps me give accurate instructions.",
+    "memoryKey": "org.it_systems",
+    "required": false
+  },
+  {
+    "id": "approval_policy",
+    "order": 5,
+    "type": "choice",
+    "question": "When should I ask you to review my support replies before sending?",
+    "options": [
+      { "value": "always", "label": "Always — review every reply before it goes out" },
+      { "value": "external-only", "label": "Only for external recipients" },
+      { "value": "risk-based", "label": "Only for sensitive or high-stakes replies (escalations, security issues)" },
+      { "value": "never", "label": "Never — fully autonomous" }
+    ],
+    "default": "risk-based",
+    "memoryKey": "org.approval_policy",
+    "required": true
+  },
+  {
+    "id": "auto_approve_list",
+    "order": 6,
+    "question": "Any email addresses or domains I should always auto-approve without review? One per line — use `@domain.com` for whole domains.",
+    "memoryKey": "org.auto_approve_list",
+    "required": false
+  },
+  {
+    "id": "communication_tone",
+    "order": 7,
+    "question": "What tone should I use in support replies? Any preferences on:\n- Formal vs casual\n- Length (brief vs detailed)\n- Signature format\n- Any phrases or formats to avoid",
+    "memoryKey": "org.communication_norms",
+    "required": false
+  }
+]

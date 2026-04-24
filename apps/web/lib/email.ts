@@ -40,7 +40,7 @@ export async function sendNotificationEmail({
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          to: [{ email: to }],
+          to: [to],
           subject,
           html,
         }),
@@ -66,6 +66,7 @@ interface BuildIntroductionEmailParams {
   agentEmail: string;
   capabilities: Array<{ name: string; description: string }>;
   buyerName?: string;
+  googleServiceAccountEmail?: string;
 }
 
 /**
@@ -78,6 +79,7 @@ export function buildIntroductionEmail({
   agentEmail,
   capabilities,
   buyerName,
+  googleServiceAccountEmail,
 }: BuildIntroductionEmailParams): { subject: string; html: string } {
   const subject = `Meet your new AI employee: ${agentName}`;
 
@@ -122,6 +124,11 @@ export function buildIntroductionEmail({
               <p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">
                 For anything that seems risky or ambiguous, I'll ask for your approval before proceeding. Over time, as we build trust, I'll handle more on my own.
               </p>
+              ${googleServiceAccountEmail ? `<p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">
+                <strong style="color:#18181b;">Google Workspace:</strong> My service account address is
+                <code style="background:#f4f4f5;padding:2px 5px;border-radius:4px;font-size:13px;">${googleServiceAccountEmail}</code>.
+                Share any Google Drive files, Sheets, or Docs with that address and I'll be able to read and edit them directly.
+              </p>` : ""}
               <p style="margin:0 0 0;font-size:14px;color:#3f3f46;line-height:1.6;">
                 What would you like me to focus on first?
               </p>

@@ -4,6 +4,7 @@ import type { ProvisionJobData } from "./queue.js";
 import { provisionJob } from "./jobs/provision.js";
 import { deprovisionJob } from "./jobs/deprovision.js";
 import { updateJob } from "./jobs/update.js";
+import { pauseJob, resumeJob } from "./jobs/pause.js";
 
 async function processJob(job: Job<ProvisionJobData>): Promise<void> {
   const { type, deploymentId } = job.data;
@@ -18,6 +19,12 @@ async function processJob(job: Job<ProvisionJobData>): Promise<void> {
       break;
     case "update":
       await updateJob(deploymentId);
+      break;
+    case "pause":
+      await pauseJob(deploymentId);
+      break;
+    case "resume":
+      await resumeJob(deploymentId);
       break;
     default:
       throw new Error(`Unknown job type: ${type}`);

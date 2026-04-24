@@ -6,7 +6,7 @@ export const provisioningQueue = new Queue("provisioning", {
 });
 
 export type ProvisionJobData = {
-  type: "provision" | "deprovision" | "update";
+  type: "provision" | "deprovision" | "update" | "pause" | "resume";
   deploymentId: string;
 };
 
@@ -29,6 +29,22 @@ export async function enqueueDeprovision(deploymentId: string): Promise<string> 
 export async function enqueueUpdate(deploymentId: string): Promise<string> {
   const job = await provisioningQueue.add("update", {
     type: "update",
+    deploymentId,
+  } satisfies ProvisionJobData);
+  return job.id!;
+}
+
+export async function enqueuePause(deploymentId: string): Promise<string> {
+  const job = await provisioningQueue.add("pause", {
+    type: "pause",
+    deploymentId,
+  } satisfies ProvisionJobData);
+  return job.id!;
+}
+
+export async function enqueueResume(deploymentId: string): Promise<string> {
+  const job = await provisioningQueue.add("resume", {
+    type: "resume",
     deploymentId,
   } satisfies ProvisionJobData);
   return job.id!;

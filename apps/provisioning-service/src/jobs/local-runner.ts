@@ -1,27 +1,16 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
 import { generateDeploymentConfig } from "./openclaw-config.js";
+import { startPoller, stopPoller } from "./poller-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-/** Resolve the agentmail-poller.mjs path — works in both tsx (src/) and compiled (dist/) */
-function resolvePollerScript(): string {
-  // When running via tsx, __dirname is src/jobs/ and the file is right there
-  const localPath = join(__dirname, "agentmail-poller.mjs");
-  if (existsSync(localPath)) return localPath;
-  // When running compiled dist/, fall back to src/ (the .mjs isn't compiled)
-  const srcPath = join(__dirname, "..", "..", "src", "jobs", "agentmail-poller.mjs");
-  if (existsSync(srcPath)) return srcPath;
-  throw new Error(`Cannot find agentmail-poller.mjs (checked ${localPath} and ${srcPath})`);
-}
-
 interface LocalAgentEntry {
   gateway: ChildProcess;
-  poller: ChildProcess;
   port: number;
   stateDir: string;
 }
@@ -62,6 +51,7 @@ function prepareWorkspace(
     writeFileSync(filePath, content);
   };
 
+  expandFile(join(workspaceDir, "AGENTS.md"));
   expandFile(join(workspaceDir, "SOUL.md"));
   expandFile(join(workspaceDir, "onboarding", "MEMORY_TEMPLATE.md"));
 
@@ -102,6 +92,7 @@ export async function spawnLocalAgent(
   deploymentId: string,
   env: ContainerEnv,
   packageOverride?: string,
+  inboxId?: string,
 ): Promise<{ processLabel: string; port: number }> {
   const port = nextPort++;
   const processLabel = `openclaw-agent-${deploymentId.slice(0, 8)}`;
@@ -118,7 +109,9 @@ export async function spawnLocalAgent(
     AGENT_EMAIL: env.AGENT_EMAIL,
     COMPANY_NAME: env.COMPANY_NAME,
     COMPANY_DOMAIN: env.COMPANY_DOMAIN,
-    GOOGLE_SERVICE_ACCOUNT_EMAIL: config.googleServiceAccountEmail || "",
+    // Use per-deployment SA if available, fall back to platform SA
+    GOOGLE_SERVICE_ACCOUNT_EMAIL: env.GOOGLE_SERVICE_ACCOUNT_EMAIL || config.googleServiceAccountEmail || "",
+    WEEKLY_DIGEST_EMAIL: env.WEEKLY_DIGEST_EMAIL || "",
   }, packageOverride);
 
   // Generate deployment-specific OpenClaw config
@@ -142,6 +135,12 @@ export async function spawnLocalAgent(
     llmBaseUrl: config.llmBaseUrl,
     llmModel: config.llmModel,
     weeklyDigestEmail: env.WEEKLY_DIGEST_EMAIL,
+    heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES
+      ? parseInt(env.HEARTBEAT_INTERVAL_MINUTES, 10)
+      : undefined,
+    heartbeatIntervalHours: !env.HEARTBEAT_INTERVAL_MINUTES && env.HEARTBEAT_INTERVAL_HOURS
+      ? parseInt(env.HEARTBEAT_INTERVAL_HOURS, 10)
+      : undefined,
   });
 
   const openclawDir = resolve(config.openclawDir);
@@ -195,41 +194,19 @@ export async function spawnLocalAgent(
   // Wait for gateway to start
   await waitForGatewayReady(port, 90_000);
 
-  // 2. Spawn AgentMail poller (uses our marketplace poller that reads env vars)
-  const pollerScript = resolvePollerScript();
-  const pollerChild = spawn(
-    process.execPath,
-    [pollerScript],
-    {
-      env: {
-        ...process.env,
-        AGENTMAIL_API_KEY: config.agentMailApiKey,
-        OPENCLAW_HOOKS_TOKEN: config.openclawHooksToken,
-        POLLER_INBOX: env.AGENT_EMAIL,
-        POLLER_GATEWAY_URL: `http://127.0.0.1:${port}`,
-        MARKETPLACE_URL: config.approvalWebhookUrl || "http://localhost:3002",
-        DEPLOYMENT_ID: deploymentId,
-        AGENT_ID: env.AGENT_ID,
-      },
-      stdio: "pipe",
-      detached: false,
-    },
-  );
-
-  pollerChild.stdout?.on("data", (d) =>
-    process.stdout.write(`[${processLabel}:poller] ${d}`),
-  );
-  pollerChild.stderr?.on("data", (d) =>
-    process.stderr.write(`[${processLabel}:poller] ${d}`),
-  );
-
-  pollerChild.on("exit", (code) => {
-    console.log(`[${processLabel}:poller] Poller exited with code ${code}`);
+  // 2. Spawn AgentMail poller via centralized manager
+  startPoller({
+    deploymentId,
+    agentEmail: env.AGENT_EMAIL,
+    inboxId,
+    agentId: env.AGENT_ID,
+    gatewayUrl: `http://127.0.0.1:${port}`,
+    hooksToken: config.openclawHooksToken,
+    marketplaceUrl: config.approvalWebhookUrl || "http://localhost:3002",
   });
 
   localProcesses.set(deploymentId, {
     gateway: gatewayChild,
-    poller: pollerChild,
     port,
     stateDir,
   });
@@ -262,8 +239,7 @@ export async function stopLocalAgent(deploymentId: string): Promise<void> {
   const entry = localProcesses.get(deploymentId);
   if (!entry) return;
 
-  // Stop poller first, then gateway
-  entry.poller.kill("SIGTERM");
+  stopPoller(deploymentId);
   entry.gateway.kill("SIGTERM");
   localProcesses.delete(deploymentId);
 
@@ -273,4 +249,128 @@ export async function stopLocalAgent(deploymentId: string): Promise<void> {
 
 export function getLocalAgentPort(deploymentId: string): number | undefined {
   return localProcesses.get(deploymentId)?.port;
+}
+
+/**
+ * Re-spawn an OpenClaw gateway for an existing deployment after a service restart.
+ * Skips workspace prep and config generation — those already exist on disk.
+ * Also skips if the port is already listening (idempotent).
+ */
+export async function restartLocalAgent(opts: {
+  deploymentId: string;
+  port: number;
+  agentEmail: string;
+  agentId: string;
+  inboxId?: string;
+  approvalWebhookToken?: string;
+}): Promise<void> {
+  const { deploymentId, port } = opts;
+
+  // Idempotent: skip if already registered or port already open
+  if (localProcesses.has(deploymentId)) {
+    console.log(`[local-runner] ${deploymentId.slice(0, 8)} already registered, skipping restart`);
+    return;
+  }
+
+  const isAlive = await new Promise<boolean>((resolve) => {
+    import("node:net").then(({ createConnection }) => {
+      const sock = createConnection({ host: "127.0.0.1", port }, () => {
+        sock.destroy();
+        resolve(true);
+      });
+      sock.on("error", () => resolve(false));
+      sock.setTimeout(2000, () => { sock.destroy(); resolve(false); });
+    });
+  });
+
+  if (isAlive) {
+    // Gateway is already running (survived the restart). We still need to start
+    // the poller — it died when the provisioning service restarted.
+    console.log(`[local-runner] Port ${port} already alive for ${deploymentId.slice(0, 8)}, attaching poller`);
+    if (port >= nextPort) nextPort = port + 1;
+    startPoller({
+      deploymentId,
+      agentEmail: opts.agentEmail,
+      inboxId: opts.inboxId,
+      agentId: opts.agentId,
+      gatewayUrl: `http://127.0.0.1:${port}`,
+      hooksToken: config.openclawHooksToken,
+      marketplaceUrl: config.approvalWebhookUrl || "http://localhost:3002",
+    });
+    // Register a sentinel entry so deprovision knows the port is in use,
+    // but without a gateway child handle (we didn't spawn it).
+    if (!localProcesses.has(deploymentId)) {
+      localProcesses.set(deploymentId, { gateway: null as any, port, stateDir: join(process.cwd(), "data", deploymentId, "openclaw-state") });
+    }
+    return;
+  }
+
+  // Ensure nextPort stays above any recovered port to avoid conflicts with new provisions
+  if (port >= nextPort) nextPort = port + 1;
+
+  const processLabel = `openclaw-agent-${deploymentId.slice(0, 8)}`;
+  const dataDir = join(process.cwd(), "data", deploymentId);
+  const stateDir = join(dataDir, "openclaw-state");
+  const workspaceDir = join(dataDir, "workspace");
+  const openclawDir = resolve(config.openclawDir);
+
+  const gatewayChild = spawn(
+    process.execPath,
+    [
+      join(openclawDir, "openclaw.mjs"),
+      "gateway",
+      "--port", String(port),
+      "--allow-unconfigured",
+    ],
+    {
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: stateDir,
+        OPENCLAW_CONFIG_PATH: join(stateDir, "openclaw.json"),
+        OPENCLAW_WORKSPACE_DIR: workspaceDir,
+        OPENCLAW_NO_RESPAWN: "1",
+        GEMINI_API_KEY: config.geminiApiKey,
+        OPENROUTER_API_KEY: config.openrouterApiKey,
+        AGENTMAIL_API_KEY: config.agentMailApiKey,
+        OPENCLAW_HOOKS_TOKEN: config.openclawHooksToken,
+        OPENCLAW_GATEWAY_TOKEN: opts.approvalWebhookToken || config.approvalWebhookToken,
+        ...(config.llmApiKey ? { FEATHERLESS_API_KEY: config.llmApiKey } : {}),
+        ...(config.googleServiceAccountEmail
+          ? { GOOGLE_SERVICE_ACCOUNT_EMAIL: config.googleServiceAccountEmail }
+          : {}),
+        ...(config.googleServiceAccountKey
+          ? { GOOGLE_SERVICE_ACCOUNT_KEY: config.googleServiceAccountKey }
+          : {}),
+      },
+      cwd: openclawDir,
+      stdio: "pipe",
+      detached: false,
+    },
+  );
+
+  gatewayChild.stdout?.on("data", (d) =>
+    process.stdout.write(`[${processLabel}:gw] ${d}`),
+  );
+  gatewayChild.stderr?.on("data", (d) =>
+    process.stderr.write(`[${processLabel}:gw] ${d}`),
+  );
+  gatewayChild.on("exit", (code) => {
+    console.log(`[${processLabel}:gw] Gateway exited with code ${code}`);
+    localProcesses.delete(deploymentId);
+  });
+
+  await waitForGatewayReady(port, 90_000);
+
+  startPoller({
+    deploymentId,
+    agentEmail: opts.agentEmail,
+    inboxId: opts.inboxId,
+    agentId: opts.agentId,
+    gatewayUrl: `http://127.0.0.1:${port}`,
+    hooksToken: config.openclawHooksToken,
+    marketplaceUrl: config.approvalWebhookUrl || "http://localhost:3002",
+  });
+
+  localProcesses.set(deploymentId, { gateway: gatewayChild, port, stateDir });
+  console.log(`[${processLabel}] Recovered on port ${port}`);
 }

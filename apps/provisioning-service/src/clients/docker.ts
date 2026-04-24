@@ -35,6 +35,17 @@ export interface ContainerEnv {
   // LLM reads the hired-manager's configured policy at every session.
   // CUSTOM runtime ignores this — adapter.py enforces policy deterministically.
   APPROVAL_POLICY_SECTION?: string;
+  // Portal token — lets the agent resolve approvals via email reply and sync
+  // the resolution back to the marketplace portal so the platform stays in sync.
+  PORTAL_TOKEN?: string;
+  // Heartbeat: interval in hours. Omit to disable.
+  HEARTBEAT_INTERVAL_HOURS?: string;
+  // Heartbeat: interval in minutes — overrides HOURS, used for dev/testing.
+  HEARTBEAT_INTERVAL_MINUTES?: string;
+  // Google Workspace service account (Drive/Sheets/Docs). Both agents share the
+  // same SA; files must be shared with this email address for the agent to access them.
+  GOOGLE_SERVICE_ACCOUNT_EMAIL?: string;
+  GOOGLE_SERVICE_ACCOUNT_KEY?: string;
 }
 
 function envToArray(env: ContainerEnv): string[] {
@@ -93,6 +104,15 @@ export async function stopContainer(containerName: string): Promise<void> {
     if (err.statusCode !== 304) throw err; // 304 = already stopped
   }
   await container.remove({ force: true });
+}
+
+export async function startContainer(containerName: string): Promise<void> {
+  const container = docker.getContainer(containerName);
+  try {
+    await container.start();
+  } catch (err: any) {
+    if (err.statusCode !== 304) throw err; // 304 = already running
+  }
 }
 
 export async function inspectContainer(

@@ -1,0 +1,19 @@
+{
+  "type": "webhook",
+  "event_type": "message.received",
+  "event_id": "risk-test-1",
+  "message": {
+    "message_id": "risk-test-1",
+    "inbox_id": "test-langchain-agent-my-company@agentmail.to",
+    "thread_id": "risk-test-thread-1",
+    "from": {"email": "sai.suram07@gmail.com", "name": "Sai"},
+    "to": [{"email": "test-langchain-agent-my-company@agentmail.to"}],
+    "subject": "Send a cold email to a prospect",
+    "text": "Please send a cold outreach email to john.prospect@acmecorp.com introducing our services. Make it sound professional. Subject should be: Quick intro.",
+    "html": ""
+  },
+  "thread": {
+    "thread_id": "risk-test-thread-1",
+    "subject": "Send a cold email to a prospect"
+  }
+}

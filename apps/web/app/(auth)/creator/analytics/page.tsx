@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { BarChart3, Users, DollarSign, TrendingUp, Loader2 } from "lucide-react";
+import { BarChart3, Users, DollarSign, TrendingUp, Loader2, Wallet } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
+import Link from "next/link";
 
 interface AnalyticsData {
   totalDeployments: number;
@@ -21,14 +22,31 @@ interface AnalyticsData {
   }>;
 }
 
+interface PayoutSummary {
+  totalPaidCents: number;
+  totalPaidDollars: string;
+  payouts: Array<{
+    id: string;
+    periodStart: string;
+    creatorShareCents: number;
+    status: string;
+  }>;
+}
+
 export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsData | null>(null);
+  const [payoutData, setPayoutData] = useState<PayoutSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/creator/analytics")
-      .then((res) => res.json())
-      .then(setData)
+    Promise.all([
+      fetch("/api/creator/analytics").then((r) => r.json()),
+      fetch("/api/creator/payouts").then((r) => r.json()).catch(() => null),
+    ])
+      .then(([analytics, payouts]) => {
+        setData(analytics);
+        setPayoutData(payouts);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
@@ -112,7 +130,43 @@ export default function AnalyticsPage() {
             <p className="text-xs text-muted-foreground">Published</p>
           </CardContent>
         </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2">
+              <Wallet className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">Total Earned</span>
+            </div>
+            <p className="mt-2 text-2xl font-bold">
+              {payoutData ? `$${payoutData.totalPaidDollars}` : "—"}
+            </p>
+            <p className="text-xs text-muted-foreground">All-time payouts</p>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* Recent payouts summary */}
+      {payoutData?.payouts && payoutData.payouts.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-base">Recent Payouts</CardTitle>
+            <Link href="/creator/payouts" className="text-xs text-muted-foreground underline">
+              View all
+            </Link>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {payoutData.payouts.slice(0, 3).map((p) => (
+                <div key={p.id} className="flex justify-between text-sm">
+                  <span className="text-muted-foreground">
+                    {new Date(p.periodStart).toLocaleString("default", { month: "long", year: "numeric" })}
+                  </span>
+                  <span className="font-medium">{formatPrice(p.creatorShareCents)}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {data.perAgent.length > 0 && (
         <Card className="mt-8">

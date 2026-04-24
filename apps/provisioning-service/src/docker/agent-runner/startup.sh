@@ -87,6 +87,52 @@ if [ -n "${APPROVAL_POLICY_SECTION}" ] && [ -f ${WORKSPACE_DIR}/AGENTS.md ]; the
   echo "[startup] Injected approval policy section into AGENTS.md"
 fi
 
+# 3b. Add heartbeat cron job if the creator opted in via marketplace.json.
+# HEARTBEAT_INTERVAL_HOURS is set by the provisioning service when the manifest
+# includes a "heartbeat" block. Absent = heartbeat disabled for this deployment.
+if [ -n "${HEARTBEAT_INTERVAL_HOURS}" ]; then
+  mkdir -p ~/.openclaw/cron
+  HEARTBEAT_MSG="HEARTBEAT: You have been woken for periodic maintenance. Check HEARTBEAT.md in your workspace for any queued operator instructions. Then perform proactive maintenance as described in your Heartbeats section: memory distillation, trust-tracker review, workflow promotion, etc. Reply HEARTBEAT_OK when done."
+
+  # Merge heartbeat job into existing jobs.json if present, else create fresh
+  if [ -f ~/.openclaw/cron/jobs.json ]; then
+    # Read existing jobs array and append heartbeat job using node
+    node -e "
+      const fs = require('fs');
+      const path = '${HOME}/.openclaw/cron/jobs.json';
+      const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+      data.jobs = data.jobs.filter(j => j.name !== 'Heartbeat');
+      data.jobs.push({
+        name: 'Heartbeat',
+        schedule: { kind: 'cron', expr: '0 */${HEARTBEAT_INTERVAL_HOURS} * * *' },
+        sessionTarget: 'isolated',
+        wakeMode: 'now',
+        payload: { kind: 'agentTurn', message: $(node -e 'process.stdout.write(JSON.stringify(process.env.HEARTBEAT_MSG))') },
+        delivery: { mode: 'none' }
+      });
+      fs.writeFileSync(path, JSON.stringify(data, null, 2));
+    " HEARTBEAT_MSG="$HEARTBEAT_MSG" 2>/dev/null || true
+  else
+    node -e "
+      const fs = require('fs');
+      const msg = process.env.HEARTBEAT_MSG;
+      const interval = parseInt(process.env.HEARTBEAT_INTERVAL_HOURS, 10) || 6;
+      fs.writeFileSync('${HOME}/.openclaw/cron/jobs.json', JSON.stringify({
+        version: 1,
+        jobs: [{
+          name: 'Heartbeat',
+          schedule: { kind: 'cron', expr: '0 */' + interval + ' * * *' },
+          sessionTarget: 'isolated',
+          wakeMode: 'now',
+          payload: { kind: 'agentTurn', message: msg },
+          delivery: { mode: 'none' }
+        }]
+      }, null, 2));
+    " HEARTBEAT_MSG="$HEARTBEAT_MSG" HEARTBEAT_INTERVAL_HOURS="$HEARTBEAT_INTERVAL_HOURS" 2>/dev/null || true
+  fi
+  echo "[startup] Heartbeat cron configured: every ${HEARTBEAT_INTERVAL_HOURS}h"
+fi
+
 # Copy MEMORY_TEMPLATE as MEMORY.md if it doesn't exist yet
 if [ ! -f ${WORKSPACE_DIR}/MEMORY.md ] && [ -f ${WORKSPACE_DIR}/onboarding/MEMORY_TEMPLATE.md ]; then
   cp ${WORKSPACE_DIR}/onboarding/MEMORY_TEMPLATE.md ${WORKSPACE_DIR}/MEMORY.md

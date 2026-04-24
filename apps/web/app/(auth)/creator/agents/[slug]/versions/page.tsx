@@ -32,15 +32,25 @@ export default function VersionsPage({
   const [file, setFile] = useState<File | null>(null);
   const [changelog, setChangelog] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const fetchVersions = useCallback(async () => {
     try {
-      const res = await fetch(`/api/agents/${slug}/versions`);
+      const res = await fetch(`/api/agents/${slug}/versions`, { cache: "no-store" });
       if (res.ok) {
-        setVersions(await res.json());
+        const data = await res.json();
+        setVersions(Array.isArray(data) ? data : []);
+      } else if (res.status === 401) {
+        setError("Session expired — please sign in again.");
+        setVersions([]);
+      } else if (res.status === 403) {
+        setError("You don't have access to this agent's versions.");
+        setVersions([]);
+      } else {
+        setVersions([]);
       }
     } catch {
-      // retry silently
+      setVersions([]);
     }
     setLoading(false);
   }, [slug]);
@@ -68,6 +78,8 @@ export default function VersionsPage({
         setShowUpload(false);
         setFile(null);
         setChangelog("");
+        setSuccessMsg("Version submitted for review. It will appear in the admin vetting queue.");
+        setTimeout(() => setSuccessMsg(null), 6000);
         await fetchVersions();
       } else {
         const data = await res.json().catch(() => null);
@@ -140,6 +152,12 @@ export default function VersionsPage({
             </Button>
           </CardContent>
         </Card>
+      )}
+
+      {successMsg && (
+        <div className="mb-4 rounded-md bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-800">
+          {successMsg}
+        </div>
       )}
 
       <div className="space-y-3">

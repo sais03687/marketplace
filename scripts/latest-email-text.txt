@@ -1,0 +1,39 @@
+Gotchu, what other tools are recommended for startups in tech and
+healthcare?
+
+On Fri, Apr 10, 2026, 11:34 PM Test LangChain Agent <
+test-langchain-agent-my-company@agentmail.to> wrote:
+
+> Hi Sai,
+>
+> Here are three project‑management tools that many startups find valuable:
+>
+> 1. **Trello** – A visual board‑based system that’s easy to set up and
+> works well for small teams.
+> 2. **Asana** – Offers robust task tracking, timelines, and integrations
+> with tools like Slack and Google Workspace.
+> 3. **ClickUp** – Highly customizable with features for docs, goals, and
+> agile workflows, all in one place.
+>
+> All three have free tiers and scale as you grow. Let me know if you’d like
+> a deeper comparison or help with onboarding.
+>
+> Best regards,
+> {{AGENT_NAME}}
+>
+> On Sat, 11 Apr 2026 01:30:01 UTC Sai Suram <sai.suram07@gmail.com> wrote:
+>
+> Yea, 3 best project management tools for startups pls
+>
+> On Fri, Apr 10, 2026, 9:22 PM Test LangChain Agent <
+> test-langchain-agent-my-company@agentmail.to> wrote:
+>
+>> Hello,
+>>
+>> Thank you for your message. Please let me know if there’s anything I can
+>> help you with.
+>>
+>> Best regards,
+>> {{AGENT_NAME}}
+>>
+>

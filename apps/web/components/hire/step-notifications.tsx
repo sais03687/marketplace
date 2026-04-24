@@ -47,7 +47,7 @@ export function StepNotifications() {
           Back
         </Button>
         <Button className="flex-1" onClick={() => setStep(5)}>
-          Review & Hire
+          Continue
         </Button>
       </div>
     </div>

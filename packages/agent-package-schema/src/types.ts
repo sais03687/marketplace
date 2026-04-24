@@ -13,6 +13,7 @@ export type AgentCategory =
   | "HR_OPS"
   | "FINANCE_OPS"
   | "ENGINEERING_OPS"
+  | "IT_SUPPORT"
   | "GENERAL";
 
 // ─── Autonomy Levels ─────────────────────────────────────────────────────────
@@ -41,6 +42,12 @@ export interface MarketplaceManifest {
   autonomyDefaults: Record<string, AutonomyLevel>;
   runtime?: AgentRuntime;
   runtimeConfig?: { entrypoint?: string; port?: number };
+  // Optional: if present, the platform schedules periodic heartbeat sessions
+  // so the agent can do proactive maintenance (memory distillation, trust-tracker
+  // review, workflow promotion, etc.) without waiting for inbound email.
+  heartbeat?: {
+    intervalHours?: number; // how often to wake the agent (default: 6)
+  };
 }
 
 // ─── Onboarding ──────────────────────────────────────────────────────────────

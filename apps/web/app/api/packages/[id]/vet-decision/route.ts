@@ -77,7 +77,7 @@ export async function POST(
     if (version.storagePath) {
       try {
         const { readPackageFile } = await import("@/lib/package-storage");
-        const questionsBuffer = readPackageFile(
+        const questionsBuffer = await readPackageFile(
           version.storagePath,
           "onboarding/questions.json",
         );
@@ -86,7 +86,7 @@ export async function POST(
             questionsBuffer.toString("utf-8"),
           );
         }
-        const memoryBuffer = readPackageFile(
+        const memoryBuffer = await readPackageFile(
           version.storagePath,
           "onboarding/MEMORY_TEMPLATE.md",
         );

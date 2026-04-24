@@ -1,4 +1,3 @@
-import { resolve, normalize } from "path";
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { listPackageFiles, readPackageFile } from "@/lib/package-storage";
@@ -25,7 +24,7 @@ export async function GET(
   const action = searchParams.get("action");
 
   if (action === "list") {
-    const files = listPackageFiles(version.storagePath);
+    const files = await listPackageFiles(version.storagePath);
     return jsonSuccess({ files });
   }
 
@@ -35,14 +34,12 @@ export async function GET(
       return jsonError("Missing 'path' query parameter", 400);
     }
 
-    // Path traversal protection
-    const root = resolve(process.cwd(), version.storagePath);
-    const target = resolve(root, normalize(filePath));
-    if (!target.startsWith(root)) {
+    // Sanitise: reject any path that tries to escape the prefix
+    if (filePath.includes("..") || filePath.startsWith("/")) {
       return jsonError("Invalid path", 400);
     }
 
-    const content = readPackageFile(version.storagePath, filePath);
+    const content = await readPackageFile(version.storagePath, filePath);
     if (!content) {
       return jsonError("File not found", 404);
     }

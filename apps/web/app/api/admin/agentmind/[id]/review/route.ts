@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
 import { z } from "zod";
 
 const bodySchema = z.object({
@@ -14,11 +14,9 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  const authResult = await requireAuth();
+  const authResult = await requireAdmin();
   if ("error" in authResult) return authResult.error;
   const { userId } = authResult;
-
-  // TODO: check admin role via Clerk metadata
 
   // Handle both JSON and form-encoded bodies
   const contentType = request.headers.get("content-type") || "";

@@ -29,6 +29,11 @@ import { createSign } from "node:crypto";
 const AGENTMAIL_API_KEY = process.env.AGENTMAIL_API_KEY;
 const HOOKS_TOKEN = process.env.OPENCLAW_HOOKS_TOKEN;
 const INBOX = process.env.POLLER_INBOX;
+// POLLER_INBOX_ID is the inbox email address used as path parameter in AgentMail API calls.
+// The @ must NOT be percent-encoded — AgentMail's API accepts the raw email as a path segment.
+const INBOX_ID = process.env.POLLER_INBOX_ID || INBOX;
+// Encode INBOX_ID for use in URL paths: encode everything except alphanumerics, @, ., -, _
+const INBOX_ID_ENC = (INBOX_ID || "").replace(/[^A-Za-z0-9._@\-]/g, c => encodeURIComponent(c));
 const GATEWAY_URL = process.env.POLLER_GATEWAY_URL || "http://127.0.0.1:18789";
 const MARKETPLACE_URL = process.env.MARKETPLACE_URL || "http://localhost:3002";
 const DEPLOYMENT_ID = process.env.DEPLOYMENT_ID || "";
@@ -106,30 +111,51 @@ async function getSAToken() {
 
 /**
  * Search AgentMind for relevant knowledge based on message content.
- * Returns formatted context string or empty string.
+ * Returns { text, ids } — text is the formatted context string (or ""),
+ * ids is the list of contribution IDs that were found (for use tracking).
  */
 async function searchAgentMind(query) {
-  if (!AGENT_ID || !DEPLOYMENT_ID || !query) return "";
+  if (!AGENT_ID || !DEPLOYMENT_ID || !query) return { text: "", ids: [] };
   try {
     const q = encodeURIComponent(query.slice(0, 200));
     const url = `${MARKETPLACE_URL}/api/agentmind/search?agentId=${AGENT_ID}&deploymentId=${DEPLOYMENT_ID}&q=${q}&limit=5`;
     const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return "";
+    if (!res.ok) return { text: "", ids: [] };
     const data = await res.json();
-    const entries = data.data || data || [];
-    if (!Array.isArray(entries) || entries.length === 0) return "";
+    const entries = data.contributions || data.data || (Array.isArray(data) ? data : []);
+    if (!Array.isArray(entries) || entries.length === 0) return { text: "", ids: [] };
 
+    const ids = entries.map((e) => e.id).filter(Boolean);
     const lines = entries.map(
       (e) => `- [${e.type}] ${e.content}`,
     );
-    return [
+    const text = [
       "",
       "---",
       "[AgentMind — insights from other deployments]",
       ...lines,
     ].join("\n");
+    return { text, ids };
   } catch {
-    return "";
+    return { text: "", ids: [] };
+  }
+}
+
+/**
+ * Notify AgentMind that specific contributions were used in a response.
+ * This auto-upvotes each contribution (idempotent per deployment).
+ */
+async function markAgentMindUsed(contributionIds) {
+  if (!DEPLOYMENT_ID || !contributionIds.length) return;
+  try {
+    await fetch(`${MARKETPLACE_URL}/api/agentmind/use`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deploymentId: DEPLOYMENT_ID, contributionIds }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    // Non-fatal — usage tracking is best-effort
   }
 }
 
@@ -175,7 +201,7 @@ const processedIds = new Set();
 
 async function listMessages() {
   const res = await fetch(
-    `https://api.agentmail.to/v0/inboxes/${INBOX}/messages`,
+    `https://api.agentmail.to/v0/inboxes/${INBOX_ID_ENC}/messages`,
     { headers: { Authorization: `Bearer ${AGENTMAIL_API_KEY}` } },
   );
   if (!res.ok) {
@@ -188,7 +214,7 @@ async function listMessages() {
 
 async function getMessage(messageId) {
   const res = await fetch(
-    `https://api.agentmail.to/v0/inboxes/${INBOX}/messages/${encodeURIComponent(messageId)}`,
+    `https://api.agentmail.to/v0/inboxes/${INBOX_ID_ENC}/messages/${encodeURIComponent(messageId)}`,
     { headers: { Authorization: `Bearer ${AGENTMAIL_API_KEY}` } },
   );
   if (!res.ok) return null;
@@ -199,7 +225,7 @@ async function forwardToGateway(msg) {
   let messageText = msg.text || msg.preview || "";
 
   // Enrich message with AgentMind knowledge and pending approval context (parallel, non-fatal)
-  const [agentMindContext, approvalContext] = await Promise.all([
+  const [agentMindResult, approvalContext] = await Promise.all([
     searchAgentMind(msg.subject || messageText),
     getPendingApprovals(msg.thread_id),
   ]);
@@ -207,8 +233,8 @@ async function forwardToGateway(msg) {
   if (approvalContext) {
     messageText = approvalContext + messageText;
   }
-  if (agentMindContext) {
-    messageText = messageText + agentMindContext;
+  if (agentMindResult.text) {
+    messageText = messageText + agentMindResult.text;
   }
 
   const payload = {
@@ -242,56 +268,54 @@ async function forwardToGateway(msg) {
     body: JSON.stringify(payload),
   });
 
-  return { status: res.status, body: await res.text() };
+  const status = res.status;
+  const body = await res.text();
+
+  // If the gateway accepted the message and we had AgentMind hits, mark them as used.
+  // This auto-upvotes the contributions the agent was exposed to (best-effort, non-blocking).
+  if (status >= 200 && status < 300 && agentMindResult.ids.length > 0) {
+    markAgentMindUsed(agentMindResult.ids).catch(() => {});
+    console.log(`  [agentmind] Marked ${agentMindResult.ids.length} contribution(s) as used`);
+  }
+
+  return { status, body };
 }
 
+let _pollRunning = false;
+
 async function poll() {
-  const messages = await listMessages();
-  for (const msg of messages) {
-    if (processedIds.has(msg.message_id)) continue;
+  // Prevent overlapping poll cycles: if a previous poll() is still awaiting
+  // async I/O (getMessage, forwardToGateway), skip this interval tick.
+  if (_pollRunning) return;
+  _pollRunning = true;
+  try {
+    const messages = await listMessages();
+    for (const msg of messages) {
+      if (processedIds.has(msg.message_id)) continue;
 
-    // Skip agent's own sent messages
-    if (msg.labels?.includes("sent") && msg.from?.includes(INBOX)) {
+      // Mark processed immediately (before any async work) so that a
+      // concurrent or subsequent poll() call cannot pick up the same message.
       processedIds.add(msg.message_id);
-      continue;
+
+      // Skip agent's own sent messages
+      if (msg.labels?.includes("sent") && msg.from?.includes(INBOX)) {
+        continue;
+      }
+
+      // Skip already-read messages
+      if (!msg.labels?.includes("unread")) {
+        continue;
+      }
+
+      const fullMsg = await getMessage(msg.message_id);
+      if (!fullMsg) continue;
+
+      console.log(`  [new] From: ${msg.from} | Subject: ${msg.subject}`);
+      const result = await forwardToGateway(fullMsg);
+      console.log(`  [fwd] Gateway: ${result.status}`);
     }
-
-    // Skip already-read messages
-    if (!msg.labels?.includes("unread")) {
-      processedIds.add(msg.message_id);
-      continue;
-    }
-
-    const fullMsg = await getMessage(msg.message_id);
-    if (!fullMsg) {
-      processedIds.add(msg.message_id);
-      continue;
-    }
-
-    console.log(`  [new] From: ${msg.from} | Subject: ${msg.subject}`);
-    const result = await forwardToGateway(fullMsg);
-    console.log(`  [fwd] Gateway: ${result.status}`);
-
-    // Mark as read (best-effort)
-    try {
-      await fetch(
-        `https://api.agentmail.to/v0/inboxes/${INBOX}/messages/${encodeURIComponent(msg.message_id)}`,
-        {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${AGENTMAIL_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            labels: (msg.labels || []).filter((l) => l !== "unread"),
-          }),
-        },
-      );
-    } catch {
-      /* ignore */
-    }
-
-    processedIds.add(msg.message_id);
+  } finally {
+    _pollRunning = false;
   }
 }
 

@@ -6,7 +6,15 @@ const isProtectedRoute = createRouteMatcher([
   "/admin(.*)",
 ]);
 
+// These routes authenticate with their own mechanism (CRON_SECRET, etc.)
+// and must NOT be protected by Clerk — their Bearer tokens are not Clerk JWTs.
+const isInternalRoute = createRouteMatcher([
+  "/api/cron/(.*)",
+  "/api/webhooks/(.*)",
+]);
+
 export default clerkMiddleware(async (auth, req) => {
+  if (isInternalRoute(req)) return; // bypass Clerk for internal routes
   if (isProtectedRoute(req)) {
     await auth.protect();
   }

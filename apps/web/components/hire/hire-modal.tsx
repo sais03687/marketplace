@@ -12,6 +12,7 @@ import { StepAccount } from "./step-account";
 import { StepName } from "./step-name";
 import { StepConnect } from "./step-connect";
 import { StepNotifications } from "./step-notifications";
+import { StepInterview } from "./step-interview";
 import { StepConfirmation } from "./step-confirmation";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,7 @@ const STEPS = [
   { label: "Name", component: StepName },
   { label: "Connect", component: StepConnect },
   { label: "Notifications", component: StepNotifications },
+  { label: "Setup", component: StepInterview },
   { label: "Confirm", component: StepConfirmation },
 ];
 
@@ -81,7 +83,7 @@ export function HireModal({
 }: HireModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-lg">
         <HireProvider
           agentId={agentId}
           agentName={agentName}

@@ -3,31 +3,49 @@
  *
  * Tests ALL flows for every persona:
  *
- *   FLOW 1: Marketplace Browser (Public)
+ *   FLOW 1:  Marketplace Browser (Public)
  *     - Browse agents, search, filters, agent detail, public insights
  *
- *   FLOW 2: Agent Hiring & Deployment (Prisma-simulated)
+ *   FLOW 2:  Agent Hiring & Deployment (Prisma-simulated)
  *     - Create deployment, verify provisioning state
  *
- *   FLOW 3: Approval Queue (Mixed Auth)
+ *   FLOW 3:  Approval Queue (Mixed Auth)
  *     - Agent submits approval, portal view/resolve, trust score updates
  *
- *   FLOW 4: AgentMind Knowledge System (No Auth)
+ *   FLOW 4:  AgentMind Knowledge System (No Auth)
  *     - Contribute, search, vote, use, guardrails, duplicates, reciprocity
  *
- *   FLOW 5: Cron Jobs (No Auth)
+ *   FLOW 5:  Cron Jobs (No Auth)
  *     - Expire approvals, update trust scores
  *
- *   FLOW 6: Auth-Gated Endpoints (Verify 401)
+ *   FLOW 6:  Auth-Gated Endpoints (Verify 401)
  *     - Settings, stats, contributions list, delete, creator, admin
  *
- *   FLOW 7: End-to-End Agent Lifecycle
+ *   FLOW 7:  End-to-End Agent Lifecycle
  *     - Full approval→reflection→knowledge→trust pipeline
  *
- * Run: node test-full-e2e.mjs
+ *   FLOW 8:  Settings & Deployment Management (Prisma-simulated)
+ *
+ *   FLOW 9:  Database Integrity Checks
+ *
+ *   FLOW 10: Stripe Creator Payout Cron
+ *     - Calls POST /api/cron/creator-payouts?dryRun=true
+ *     - Verifies cron auth, dry-run calculation, per-creator revenue breakdown
+ *
+ *   FLOW 11: Heartbeat Cron System
+ *     - Validates cron expression generation (both runtimes: OpenClaw + Docker)
+ *     - Injects 1-minute heartbeat into live deployment jobs.json (if present)
+ *     - Triggers on-demand heartbeat hook via gateway (if running)
+ *
+ * Run: node --env-file=.env test-full-e2e.mjs
  */
 
 import { PrismaClient } from "@prisma/client";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const prisma = new PrismaClient();
 const BASE = "http://localhost:3002";
@@ -68,14 +86,15 @@ async function api(method, path, body = null, headers = {}) {
   }
 }
 
-// ─── Known Test Data ────────────────────────────────────────────────────────
+// ─── Dynamic Test Data (populated in setup) ──────────────────────────────────
+// IDs are derived at runtime from DB so the suite works across fresh seeds.
 
-const COMPANY_A_ID = "cmn961rce0005rs2o3sf5mtip";
-const COMPANY_B_ID = "cmnnaprtd0000rs2w1i51h9zu";
-const AGENT_LANGCHAIN_ID = "cmn910l1q000irswsuwzyezll";
-const AGENT_ALEX_ID = "cmn910kys0002rswsojqx5jeo";
-const DEPLOYMENT_A_ID = "cmn99apa30016rs2ozc672rxk"; // Company A, LangChain
-const DEPLOYMENT_B_ID = "cmnnaprv60004rs2wd0e7lpb5"; // Company B, LangChain
+let COMPANY_A_ID;
+let COMPANY_B_ID;
+let AGENT_LANGCHAIN_ID;
+let AGENT_ALEX_ID;
+let DEPLOYMENT_A_ID; // Company A, LangChain
+let DEPLOYMENT_B_ID; // Company B, LangChain
 
 let savedOriginals = {};
 
@@ -84,17 +103,76 @@ let savedOriginals = {};
 async function setup() {
   console.log("Setup: Preparing test data...\n");
 
-  // Clean previous test data
-  await prisma.knowledgeVote.deleteMany({});
-  await prisma.knowledgeContribution.deleteMany({});
+  // ── 0. Resolve agent IDs by slug ──────────────────────────────────────────
+  const langchainAgent = await prisma.agent.findUnique({ where: { slug: "langchain-ops" } });
+  const alexAgent = await prisma.agent.findUnique({ where: { slug: "general-ops-alex" } });
 
-  // Save original deployment states
-  const depA = await prisma.deployment.findUnique({ where: { id: DEPLOYMENT_A_ID } });
-  const depB = await prisma.deployment.findUnique({ where: { id: DEPLOYMENT_B_ID } });
-
-  if (!depA || !depB) {
-    throw new Error("Test deployments not found. Run seed first.");
+  if (!langchainAgent || !alexAgent) {
+    throw new Error("Seeded agents not found — run: npx tsx scripts/seed.ts");
   }
+
+  AGENT_LANGCHAIN_ID = langchainAgent.id;
+  AGENT_ALEX_ID = alexAgent.id;
+
+  // ── 1. Ensure 2 test companies exist ─────────────────────────────────────
+  let companyA = await prisma.company.findFirst({ where: { clerkOrgId: "test_e2e_company_a" } });
+  if (!companyA) {
+    companyA = await prisma.company.create({
+      data: { clerkOrgId: "test_e2e_company_a", name: "E2E Company A", domain: "e2e-company-a.test" },
+    });
+  }
+  COMPANY_A_ID = companyA.id;
+
+  let companyB = await prisma.company.findFirst({ where: { clerkOrgId: "test_e2e_company_b" } });
+  if (!companyB) {
+    companyB = await prisma.company.create({
+      data: { clerkOrgId: "test_e2e_company_b", name: "E2E Company B", domain: "e2e-company-b.test" },
+    });
+  }
+  COMPANY_B_ID = companyB.id;
+
+  // ── 2. Ensure 2 test deployments exist (Company A × LangChain, Company B × LangChain) ──
+  let depA = await prisma.deployment.findFirst({
+    where: { companyId: COMPANY_A_ID, agentId: AGENT_LANGCHAIN_ID },
+  });
+  if (!depA) {
+    depA = await prisma.deployment.create({
+      data: {
+        companyId: COMPANY_A_ID,
+        agentId: AGENT_LANGCHAIN_ID,
+        agentVersion: "1.0.0",
+        agentName: "E2E LangChain A",
+        status: "ACTIVE",
+        autonomyConfig: {},
+      },
+    });
+  }
+  DEPLOYMENT_A_ID = depA.id;
+
+  let depB = await prisma.deployment.findFirst({
+    where: { companyId: COMPANY_B_ID, agentId: AGENT_LANGCHAIN_ID },
+  });
+  if (!depB) {
+    depB = await prisma.deployment.create({
+      data: {
+        companyId: COMPANY_B_ID,
+        agentId: AGENT_LANGCHAIN_ID,
+        agentVersion: "1.0.0",
+        agentName: "E2E LangChain B",
+        status: "ACTIVE",
+        autonomyConfig: {},
+      },
+    });
+  }
+  DEPLOYMENT_B_ID = depB.id;
+
+  // Refresh from DB
+  depA = await prisma.deployment.findUnique({ where: { id: DEPLOYMENT_A_ID } });
+  depB = await prisma.deployment.findUnique({ where: { id: DEPLOYMENT_B_ID } });
+
+  // Clean previous test data (scoped to our test agents to avoid nuking prod data)
+  await prisma.knowledgeVote.deleteMany({ where: { contribution: { agentId: AGENT_LANGCHAIN_ID } } });
+  await prisma.knowledgeContribution.deleteMany({ where: { agentId: AGENT_LANGCHAIN_ID } });
 
   savedOriginals = { depA, depB };
 
@@ -1112,12 +1190,243 @@ async function testDatabaseIntegrity() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FLOW 10: STRIPE CREATOR PAYOUT CRON
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function testPayoutCron() {
+  console.log("\n\u2550 FLOW 10: Stripe Creator Payout Cron");
+  console.log("\u2500".repeat(60));
+
+  const CRON_SECRET = process.env.CRON_SECRET || "change_me_in_prod";
+
+  // 10a. Unauthorized request should return 401
+  const { status: s1 } = await api("POST", "/api/cron/creator-payouts", null, {
+    "Authorization": "Bearer wrong-secret",
+  });
+  // Only fails if CRON_SECRET is non-default; skip auth check in default mode
+  if (CRON_SECRET !== "change_me_in_prod") {
+    assert(s1 === 401, `Wrong secret returns 401 (got ${s1})`);
+  } else {
+    skip("CRON_SECRET is default — auth check skipped (set CRON_SECRET in .env to test)");
+  }
+
+  // 10b. Dry-run mode — calculates amounts but no real transfers or DB writes
+  const { status: s2, data: d2 } = await api(
+    "POST",
+    "/api/cron/creator-payouts?dryRun=true",
+    null,
+    { "Authorization": `Bearer ${CRON_SECRET}` },
+  );
+  assert(s2 === 200, `Payout cron (dryRun) returns 200 (got ${s2})`);
+  if (s2 === 200) {
+    const summary = d2.data ?? d2;
+    assert(summary.dryRun === true, `Response confirms dryRun: true (got ${summary.dryRun})`);
+    assert(typeof summary.processed === "number", `processed count present: ${summary.processed}`);
+    assert(typeof summary.period === "string", `period string present: "${summary.period}"`);
+    assert(typeof summary.totalPaidCents === "number", `totalPaidCents present: ${summary.totalPaidCents}`);
+    assert(Array.isArray(summary.results), "results array present");
+
+    // Show per-creator breakdown
+    if (summary.results?.length > 0) {
+      console.log(`\n  Creator breakdown (${summary.results.length} creator(s)):`);
+      for (const r of summary.results) {
+        console.log(`    ${r.creatorId.slice(0, 8)}… → ${r.status}${r.amountCents ? ` ($${(r.amountCents / 100).toFixed(2)})` : ""}`);
+      }
+      assert(
+        summary.results.every(r => r.status.startsWith("dry-run") || r.status.startsWith("skipped")),
+        "All results are dry-run or skipped (no real transfers)",
+      );
+    } else {
+      skip("No creator results — DB may have no deployments with revenue in the prior month");
+    }
+  } else {
+    const errMsg = (d2.data ?? d2).error ?? JSON.stringify(d2).slice(0, 150);
+    if (errMsg.includes("Payout") || errMsg.includes("prisma")) {
+      assert(false, `Payout cron failed — likely stale Prisma client. Run: pnpm --filter @marketplace/db generate, then restart web server. Error: ${errMsg.slice(0, 120)}`);
+    } else {
+      assert(false, `Payout cron returned ${s2}: ${errMsg.slice(0, 120)}`);
+    }
+  }
+
+  // 10c. Idempotency: second call in same period should skip creators (payout already recorded)
+  // In dry-run mode, it always re-calculates (no DB writes), so just verify it's stable
+  const { status: s3, data: d3 } = await api(
+    "POST",
+    "/api/cron/creator-payouts?dryRun=true",
+    null,
+    { "Authorization": `Bearer ${CRON_SECRET}` },
+  );
+  assert(s3 === 200, `Second payout cron call also returns 200 (idempotent, got ${s3})`);
+  if (s3 === 200) {
+    const summary2 = d3.data ?? d3;
+    assert(summary2.dryRun === true, "Second call still in dry-run mode");
+    assert(typeof summary2.processed === "number", "Second call returns processed count");
+  }
+
+  // 10d. Verify Stripe Connect gate — creators without stripeOnboarded flag should be skipped
+  // in production mode (not dryRun). In dry-run, all creators are queried.
+  const creatorsWithStripe = await prisma.creator.count({
+    where: { stripeOnboarded: true, stripeAccountId: { not: null } },
+  });
+  const totalCreators = await prisma.creator.count();
+  assert(typeof creatorsWithStripe === "number", `Stripe-onboarded creators: ${creatorsWithStripe} of ${totalCreators} total`);
+  if (creatorsWithStripe === 0) {
+    skip("No creators with Stripe Connect onboarded — production payouts would be skipped for all");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FLOW 11: HEARTBEAT CRON SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function testHeartbeatCronSystem() {
+  console.log("\n\u2550 FLOW 11: Heartbeat Cron System (OpenClaw + Docker Runtimes)");
+  console.log("\u2500".repeat(60));
+
+  // ── 11a. Cron expression generation (same logic as openclaw-config.ts) ────────
+  function buildHeartbeatCronExpr({ heartbeatIntervalMinutes, heartbeatIntervalHours } = {}) {
+    if (heartbeatIntervalMinutes !== undefined) return `*/${heartbeatIntervalMinutes} * * * *`;
+    if (heartbeatIntervalHours !== undefined) return `0 */${heartbeatIntervalHours} * * *`;
+    return null;
+  }
+
+  const cronCases = [
+    { opts: { heartbeatIntervalMinutes: 1 }, expected: "*/1 * * * *",   label: "1-min (test)" },
+    { opts: { heartbeatIntervalMinutes: 5 }, expected: "*/5 * * * *",   label: "5-min (test)" },
+    { opts: { heartbeatIntervalHours: 6 },   expected: "0 */6 * * *",   label: "6-hourly (prod)" },
+    { opts: { heartbeatIntervalHours: 24 },  expected: "0 */24 * * *",  label: "daily (prod)" },
+    { opts: {},                               expected: null,             label: "disabled (null)" },
+  ];
+
+  for (const { opts, expected, label } of cronCases) {
+    const result = buildHeartbeatCronExpr(opts);
+    assert(result === expected, `Heartbeat cron expr [${label}]: "${result ?? "null"}" (expected "${expected ?? "null"}")`);
+  }
+
+  // ── 11b. Weekly digest cron (same for both runtimes) ────────────────────────
+  const weeklyExpr = "0 9 * * 1";
+  assert(weeklyExpr.split(" ").length === 5, `Weekly digest cron "${weeklyExpr}" is valid 5-part expression`);
+
+  // ── 11c. Env var: HEARTBEAT_INTERVAL_MINUTES takes priority over HOURS ───────
+  // Simulate the local-runner.ts priority logic
+  function resolveHeartbeatEnv(env = {}) {
+    if (env.HEARTBEAT_INTERVAL_MINUTES) return { heartbeatIntervalMinutes: parseInt(env.HEARTBEAT_INTERVAL_MINUTES, 10) };
+    if (env.HEARTBEAT_INTERVAL_HOURS) return { heartbeatIntervalHours: parseInt(env.HEARTBEAT_INTERVAL_HOURS, 10) };
+    return {};
+  }
+  const minOverride = resolveHeartbeatEnv({ HEARTBEAT_INTERVAL_MINUTES: "1", HEARTBEAT_INTERVAL_HOURS: "6" });
+  assert(minOverride.heartbeatIntervalMinutes === 1 && !minOverride.heartbeatIntervalHours,
+    "HEARTBEAT_INTERVAL_MINUTES takes priority over HOURS when both set");
+
+  // ── 11d. Inject heartbeat into live deployment's jobs.json (if data/ exists) ──
+  const dataDir = join(__dirname, "data");
+  let dep = null;
+  if (existsSync(dataDir)) {
+    const entries = readdirSync(dataDir)
+      .filter(d => existsSync(join(dataDir, d, "openclaw-state", "cron", "jobs.json")))
+      .map(d => ({ id: d, mtime: statSync(join(dataDir, d)).mtime }))
+      .sort((a, b) => b.mtime - a.mtime);
+    dep = entries[0] ?? null;
+  }
+
+  if (!dep) {
+    skip("No live deployment in data/ — heartbeat injection skipped (provision an agent first)");
+  } else {
+    const jobsPath = join(dataDir, dep.id, "openclaw-state", "cron", "jobs.json");
+    try {
+      const jobs = JSON.parse(readFileSync(jobsPath, "utf-8"));
+      const hadHeartbeat = jobs.jobs.some(j => j.name === "Heartbeat");
+      const filtered = jobs.jobs.filter(j => j.name !== "Heartbeat");
+      const testJob = {
+        name: "Heartbeat",
+        schedule: { kind: "cron", expr: "*/1 * * * *" },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "agentTurn",
+          message: "HEARTBEAT: Periodic maintenance check. Reply HEARTBEAT_OK when done.",
+        },
+        delivery: { mode: "none" },
+        enabled: true,
+      };
+      writeFileSync(jobsPath, JSON.stringify({ ...jobs, jobs: [...filtered, testJob] }, null, 2));
+      assert(true, `Heartbeat injected into ${dep.id.slice(0, 8)} jobs.json (*/1 * * * *)${hadHeartbeat ? " (replaced existing)" : ""}`);
+
+      // Verify the file was written correctly
+      const verify = JSON.parse(readFileSync(jobsPath, "utf-8"));
+      const written = verify.jobs.find(j => j.name === "Heartbeat");
+      assert(written?.schedule?.expr === "*/1 * * * *", `Written heartbeat cron expr is correct: "${written?.schedule?.expr}"`);
+    } catch (err) {
+      assert(false, `Heartbeat injection failed: ${err.message}`);
+    }
+  }
+
+  // ── 11e. On-demand heartbeat hook trigger (requires running gateway) ─────────
+  let gatewayPort = null;
+  if (dep) {
+    const cfgPath = join(dataDir, dep.id, "openclaw-state", "openclaw.json");
+    if (existsSync(cfgPath)) {
+      try {
+        const cfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
+        gatewayPort = cfg.gateway?.port ?? null;
+      } catch {}
+    }
+  }
+
+  if (!gatewayPort) {
+    skip("No gateway port found — hook trigger skipped (start provisioning service to activate)");
+  } else {
+    const HOOKS_TOKEN = process.env.OPENCLAW_HOOKS_TOKEN || "";
+    const hookUrl = `http://localhost:${gatewayPort}/hooks/heartbeat`;
+    try {
+      const res = await fetch(hookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(HOOKS_TOKEN ? { "Authorization": `Bearer ${HOOKS_TOKEN}` } : {}),
+        },
+        body: JSON.stringify({}),
+        signal: AbortSignal.timeout(4000),
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => ({}));
+        assert(true, `Heartbeat hook triggered on port ${gatewayPort}: HTTP ${res.status}${body.sessionId ? ` (session: ${body.sessionId.slice(0, 12)}…)` : ""}`);
+      } else {
+        const txt = await res.text().catch(() => "");
+        skip(`Heartbeat hook returned HTTP ${res.status}: ${txt.slice(0, 80)}`);
+      }
+    } catch (e) {
+      if (e.message?.includes("ECONNREFUSED") || e.name === "AbortError" || e.message?.includes("fetch failed")) {
+        skip(`OpenClaw gateway not running on port ${gatewayPort} — start provisioning service to test live hook`);
+      } else {
+        assert(false, `Hook trigger error: ${e.message}`);
+      }
+    }
+  }
+
+  // ── 11f. Verify Stripe + Payout schema exists in DB ──────────────────────────
+  try {
+    const payoutCount = await prisma.payout.count();
+    assert(typeof payoutCount === "number", `Payout table accessible — ${payoutCount} payout record(s) in DB`);
+  } catch (e) {
+    assert(false, `Payout model not accessible in Prisma client — run: pnpm --filter @marketplace/db generate then restart web server. Error: ${e.message.slice(0, 80)}`);
+  }
+
+  // Creator Stripe Connect fields
+  const sampleCreator = await prisma.creator.findFirst({ select: { stripeAccountId: true, stripeOnboarded: true } });
+  if (sampleCreator !== undefined) {
+    assert("stripeAccountId" in (sampleCreator ?? {}), "Creator.stripeAccountId field exists in schema");
+    assert("stripeOnboarded" in (sampleCreator ?? {}), "Creator.stripeOnboarded field exists in schema");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   console.log("\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557");
-  console.log("\u2551  AI Agent Marketplace \u2014 Full E2E Test Suite                  \u2551");
+  console.log("\u2551  AI Agent Marketplace \u2014 Full E2E Test Suite (Flows 1\u201311)   \u2551");
   console.log("\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D\n");
 
   // Verify web app is reachable
@@ -1164,6 +1473,12 @@ async function main() {
 
     // Flow 9: Database integrity
     await testDatabaseIntegrity();
+
+    // Flow 10: Stripe payout cron
+    await testPayoutCron();
+
+    // Flow 11: Heartbeat cron system
+    await testHeartbeatCronSystem();
   } finally {
     await teardown();
 

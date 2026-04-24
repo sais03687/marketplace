@@ -38,6 +38,24 @@ export const config = {
   googleServiceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "",
   googleServiceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY || "",
 
+  // GCP project for per-deployment service account creation.
+  gcpProjectId: process.env.GCP_PROJECT_ID || "",
+
+  // Dedicated IAM provisioner key (base64-encoded JSON).
+  // This SA only needs: serviceAccountCreator + serviceAccountDeleter + serviceAccountKeyAdmin.
+  // Keep separate from the agent identity key (GOOGLE_SERVICE_ACCOUNT_KEY) so each SA
+  // has the minimum permissions needed for its specific job.
+  // Falls back to GOOGLE_SERVICE_ACCOUNT_KEY if not set (legacy / single-SA setups).
+  gcpIamKey: process.env.GCP_IAM_KEY || "",
+
+  // Vercel Blob — needed to list and download creator packages
+  blobReadWriteToken: process.env.BLOB_READ_WRITE_TOKEN || "",
+  blobBaseUrl: process.env.BLOB_BASE_URL || "",
+
+  // Platform revenue split: fraction kept by the platform (0.30 = 30%).
+  // Creators receive (1 - platformRevenueShare) of each month's subscription.
+  platformRevenueShare: parseFloat(process.env.PLATFORM_REVENUE_SHARE || "0.30"),
+
   healthCheckIntervalMs: 5000,
   healthCheckTimeoutMs: 120_000,
   maxRetries: 3,

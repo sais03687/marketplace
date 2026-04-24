@@ -9,6 +9,7 @@ Implements the 3-endpoint adapter contract:
 
 import json
 import os
+import re
 import time
 import asyncio
 from pathlib import Path
@@ -56,6 +57,13 @@ MODEL = os.environ.get("MODEL", "sonnet")
 APPROVAL_WEBHOOK = _secrets["MARKETPLACE_APPROVAL_WEBHOOK"] or "http://localhost:3002"
 APPROVAL_TOKEN = _secrets["APPROVAL_WEBHOOK_TOKEN"]
 MARKETPLACE_URL = os.environ.get("MARKETPLACE_URL", "http://localhost:3002")
+# PORTAL_TOKEN: env var is preferred; falls back to /agent/portal_token.txt for containers
+# that were created before this field was added to the provisioning env set.
+_portal_token_file = Path("/agent/portal_token.txt")
+PORTAL_TOKEN = (
+    os.environ.get("PORTAL_TOKEN", "")
+    or (_portal_token_file.read_text().strip() if _portal_token_file.exists() else "")
+)
 AGENT_ID = os.environ.get("AGENT_ID", "")
 PORT = int(os.environ.get("PORT", "4000"))
 
@@ -91,6 +99,219 @@ def _get_client() -> httpx.AsyncClient:
             timeout=30.0,
         )
     return _http_client
+
+
+# ─── Google Workspace ────────────────────────────────────────────────────────
+
+GOOGLE_SA_EMAIL = os.environ.get("GOOGLE_SERVICE_ACCOUNT_EMAIL", "")
+GOOGLE_SA_KEY_RAW = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY", "")
+
+# Parse SA key — accepts full JSON key file content or a bare private key PEM.
+# Also checks /agent/sa_config.json as a fallback (used when env vars can't be
+# set on an already-running container, e.g. during a hot-update).
+_GOOGLE_SA_INFO: dict = {}
+_SA_CONFIG_PATH = Path("/agent/sa_config.json")
+
+def _load_sa_info() -> dict:
+    raw = GOOGLE_SA_KEY_RAW
+    email = GOOGLE_SA_EMAIL
+    # File-based override: wins if present
+    if _SA_CONFIG_PATH.exists():
+        try:
+            cfg = json.loads(_SA_CONFIG_PATH.read_text())
+            if isinstance(cfg, dict) and cfg.get("private_key"):
+                return cfg
+            if isinstance(cfg, dict) and cfg.get("key"):
+                raw = cfg["key"]
+                email = cfg.get("email", email)
+        except Exception:
+            pass
+    if raw:
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # Could be base64-encoded JSON
+        try:
+            import base64
+            decoded = base64.b64decode(raw + "==").decode("utf-8")
+            return json.loads(decoded)
+        except Exception:
+            pass
+        # Bare private key PEM
+        return {
+            "type": "service_account",
+            "client_email": email,
+            "private_key": raw,
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    return {}
+
+_GOOGLE_SA_INFO = _load_sa_info()
+
+_GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents",
+]
+
+_google_token_cache: dict = {"token": None, "expires_at": 0.0}
+
+
+async def _get_google_access_token() -> str | None:
+    """Return a valid Google OAuth access token for the service account."""
+    if not _GOOGLE_SA_INFO:
+        return None
+    now = time.time()
+    if _google_token_cache["token"] and now < _google_token_cache["expires_at"] - 60:
+        return _google_token_cache["token"]
+
+    def _refresh_sync() -> tuple[str, float]:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request as GRequest
+        creds = service_account.Credentials.from_service_account_info(
+            _GOOGLE_SA_INFO, scopes=_GOOGLE_SCOPES
+        )
+        creds.refresh(GRequest())
+        exp = creds.expiry.timestamp() if creds.expiry else time.time() + 3600
+        return creds.token, exp
+
+    try:
+        token, expires_at = await asyncio.to_thread(_refresh_sync)
+        _google_token_cache["token"] = token
+        _google_token_cache["expires_at"] = expires_at
+        return token
+    except Exception as exc:
+        print(f"[adapter] Google auth failed: {exc}", flush=True)
+        return None
+
+
+async def google_sheets_read(spreadsheet_id: str, range_: str = "A1:Z1000") -> str:
+    """Read a Google Sheet and return tab-separated content."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured — no service account credentials]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range_}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not resp.is_success:
+            return f"[Error reading sheet {spreadsheet_id}: {resp.status_code}]"
+        values = resp.json().get("values", [])
+        if not values:
+            return "[Sheet is empty]"
+        return "\n".join("\t".join(str(c) for c in row) for row in values)
+
+
+async def google_sheets_write(spreadsheet_id: str, range_: str, values: list) -> str:
+    """Write values to a Google Sheet range."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.put(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range_}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"valueInputOption": "USER_ENTERED"},
+            json={"values": values},
+        )
+        if not resp.is_success:
+            return f"[Error writing sheet {spreadsheet_id}: {resp.status_code} {resp.text[:200]}]"
+        updated = resp.json().get("updatedCells", "?")
+        return f"Updated {updated} cell(s) in {spreadsheet_id} range {range_}."
+
+
+async def google_sheets_append(spreadsheet_id: str, range_: str, values: list) -> str:
+    """Append rows to a Google Sheet."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{range_}:append",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+            json={"values": values},
+        )
+        if not resp.is_success:
+            return f"[Error appending to sheet: {resp.status_code} {resp.text[:200]}]"
+        return f"Appended {len(values)} row(s) to {spreadsheet_id}."
+
+
+async def google_docs_read(doc_id: str) -> str:
+    """Read a Google Doc and return its plain text content."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://docs.googleapis.com/v1/documents/{doc_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not resp.is_success:
+            return f"[Error reading doc {doc_id}: {resp.status_code}]"
+        content = resp.json().get("body", {}).get("content", [])
+        parts = []
+        for block in content:
+            for el in block.get("paragraph", {}).get("elements", []):
+                parts.append(el.get("textRun", {}).get("content", ""))
+        return "".join(parts)[:8000]
+
+
+# Google URL patterns for context enrichment
+_GOOGLE_SHEETS_RE = re.compile(r"docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)")
+_GOOGLE_DOCS_RE = re.compile(r"docs\.google\.com/document/d/([a-zA-Z0-9_-]+)")
+
+
+async def _enrich_with_google_content(message: str) -> str:
+    """Detect Google file URLs in the message and pre-fetch their content."""
+    if not _GOOGLE_SA_INFO:
+        return message
+
+    additions = []
+    seen_ids: set[str] = set()
+
+    for match in _GOOGLE_SHEETS_RE.finditer(message):
+        fid = match.group(1)
+        if fid not in seen_ids:
+            seen_ids.add(fid)
+            try:
+                content = await google_sheets_read(fid)
+                additions.append(f"\n\n[Google Sheet {fid} — content pre-fetched for your reference]:\n{content[:4000]}")
+            except Exception as exc:
+                print(f"[adapter] Sheet pre-fetch {fid} failed: {exc}", flush=True)
+
+    for match in _GOOGLE_DOCS_RE.finditer(message):
+        fid = match.group(1)
+        if fid not in seen_ids:
+            seen_ids.add(fid)
+            try:
+                content = await google_docs_read(fid)
+                additions.append(f"\n\n[Google Doc {fid} — content pre-fetched for your reference]:\n{content[:4000]}")
+            except Exception as exc:
+                print(f"[adapter] Doc pre-fetch {fid} failed: {exc}", flush=True)
+
+    if additions:
+        return message + "".join(additions)
+    return message
+
+
+async def _execute_google_writes(google_writes: list[dict]) -> list[str]:
+    """Execute a list of Google write operations returned by the agent."""
+    results = []
+    for op in google_writes:
+        op_type = op.get("type", "")
+        try:
+            if op_type == "sheets_write":
+                r = await google_sheets_write(op["file_id"], op["range"], op["values"])
+                results.append(r)
+            elif op_type == "sheets_append":
+                r = await google_sheets_append(op["file_id"], op["range"], op["values"])
+                results.append(r)
+        except Exception as exc:
+            results.append(f"[Google write failed: {exc}]")
+    return results
 
 
 # ─── Markdown → HTML rendering ───────────────────────────────────────────────
@@ -343,6 +564,11 @@ async def wait_for_resolution(approval_id: str, timeout_s: int = int(os.environ.
         if resolution_path.exists():
             data = json.loads(resolution_path.read_text())
             resolution_path.unlink(missing_ok=True)
+            # Normalize status to uppercase so callers can compare
+            # against "APPROVED"/"EDITED"/"REJECTED" regardless of how
+            # the resolution endpoint received the value.
+            if isinstance(data.get("status"), str):
+                data["status"] = data["status"].upper()
             return data
         await asyncio.sleep(2)
     return {"status": "EXPIRED"}
@@ -416,6 +642,37 @@ async def report_usage(contribution_ids: list[str]) -> dict:
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def _sync_approval_to_portal(
+    approval_id: str,
+    action: str,
+    edited_text: str | None,
+    rejection_reason: str | None,
+) -> None:
+    """Call the marketplace portal API to sync an email-resolved approval to the DB.
+
+    This keeps the platform's approval dashboard in sync when a manager approves/
+    rejects/edits via email reply rather than clicking the portal link.
+    """
+    if not PORTAL_TOKEN:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{MARKETPLACE_URL}/api/portal/{PORTAL_TOKEN}/approvals/{approval_id}/resolve",
+                json={
+                    "action": action,           # "APPROVED" | "EDITED" | "REJECTED"
+                    "editedText": edited_text,  # only for EDITED
+                    "rejectionReason": rejection_reason,
+                },
+            )
+            if resp.status_code in (200, 201):
+                print(f"[adapter] Portal sync: approval {approval_id} → {action} (synced)", flush=True)
+            else:
+                print(f"[adapter] Portal sync: approval {approval_id} got {resp.status_code}", flush=True)
+    except Exception as exc:
+        print(f"[adapter] Portal sync failed (non-fatal): {exc}", flush=True)
 
 
 # ─── AgentMind System Prompt ──────────────────────────────────────────────────
@@ -932,19 +1189,74 @@ async def _handle_message(message: str, context: dict):
         async def _bypass_resolve(approval_id, **kwargs) -> dict:
             return {"status": "APPROVED"}
 
+        # Enrich message with Google file content if any Drive/Sheets/Docs URLs detected
+        enriched_message = await _enrich_with_google_content(message)
+        if enriched_message != message:
+            print("[adapter] Enriched message with Google file content", flush=True)
+
+        # Pass Google capabilities info to the context so the agent knows what's available
+        google_tools_available = bool(_GOOGLE_SA_INFO)
+        context = {
+            **context,
+            "google_tools_available": google_tools_available,
+            "google_sa_email": GOOGLE_SA_EMAIL if google_tools_available else "",
+        }
+
         print(f"[adapter] Running agent graph...", flush=True)
         result = await run_agent(
-            content=message,
+            content=enriched_message,
             context=context,
             approve_fn=_bypass_approve,
             resolve_fn=_bypass_resolve,
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
-            use_fn=report_usage,
         )
+
+        if not isinstance(result, dict):
+            print(f"[adapter] run_agent returned non-dict ({type(result).__name__}) — skipping", flush=True)
+            return
 
         action = result.get("action", "none")
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)
+
+        # ── Email-reply approval resolution ─────────────────────────────────
+        # The agent detected the manager approved/rejected/edited via email reply
+        # and returned action="resolve_approval". We:
+        #   1. Write the resolution file so any waiting _tracked_resolve() unblocks.
+        #   2. Sync the resolution to the marketplace DB via the portal API.
+        #   3. Reply to the manager confirming (optional, if agent provided a reply).
+        if action == "resolve_approval":
+            approval_id = result.get("approval_id", "")
+            resolution_action = (result.get("resolution") or "APPROVED").upper()
+            edited_text = result.get("edited_text")  # if manager sent edited draft
+            rejection_reason = result.get("rejection_reason")
+
+            if approval_id:
+                # 1. Write local resolution file (unblocks waiting _tracked_resolve)
+                resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
+                resolution_path.write_text(json.dumps({
+                    "status": resolution_action,
+                    "resolutionAction": edited_text,
+                    "rejectionReason": rejection_reason,
+                }))
+                print(f"[adapter] Email-resolve: wrote resolution file for {approval_id} → {resolution_action}", flush=True)
+
+                # 2. Sync to marketplace DB via portal token (best-effort, non-blocking)
+                if PORTAL_TOKEN and MARKETPLACE_URL:
+                    asyncio.create_task(_sync_approval_to_portal(approval_id, resolution_action, edited_text, rejection_reason))
+
+            # 3. Reply to manager confirming (if agent drafted a confirmation)
+            reply_text = result.get("text")
+            if reply_text:
+                if _check_and_increment("emails"):
+                    await reply_email(
+                        message_id=context.get("message_id", ""),
+                        text=reply_text,
+                        fallback_to=_extract_email(context.get("sender", "")),
+                        fallback_subject=context.get("subject", ""),
+                        fallback_thread_id=context.get("thread_id"),
+                    )
+            return
 
         if action in ("send_email", "reply_email"):
             approval_id = result.get("approval_id")
@@ -992,10 +1304,10 @@ async def _handle_message(message: str, context: dict):
                             thread_id=thread_id,
                             original_request=context.get("subject", ""),
                         )
-                        print(f"[adapter] Queued approval {queued_id}; waiting for resolution")
+                        print(f"[adapter] Queued approval {queued_id}; waiting for resolution", flush=True)
                         resolution = await _tracked_resolve(queued_id)
                         if resolution.get("status") not in ("APPROVED", "EDITED"):
-                            print(f"[adapter] Approval {queued_id} {resolution.get('status')} — not sending")
+                            print(f"[adapter] Approval {queued_id} {resolution.get('status')} — not sending", flush=True)
                             return
                         if resolution.get("status") == "EDITED" and resolution.get("resolutionAction"):
                             result["text"] = resolution["resolutionAction"]
@@ -1013,8 +1325,12 @@ async def _handle_message(message: str, context: dict):
                 return
 
             if action == "send_email":
+                send_to = result.get("to") or context.get("sender", "")
+                if not send_to:
+                    print("[adapter] send_email skipped: no recipient (to=None)", flush=True)
+                    return
                 await send_email(
-                    to=result["to"],
+                    to=send_to,
                     subject=result.get("subject", ""),
                     text=result["text"],
                     thread_id=result.get("thread_id"),
@@ -1027,6 +1343,12 @@ async def _handle_message(message: str, context: dict):
                     fallback_subject=context.get("subject", ""),
                     fallback_thread_id=result.get("thread_id") or context.get("thread_id"),
                 )
+
+            # Execute any Google write operations the agent requested
+            google_writes = result.get("google_writes") or []
+            if google_writes:
+                write_results = await _execute_google_writes(google_writes)
+                print(f"[adapter] Google writes: {write_results}", flush=True)
 
             # Clean up tracked approval
             if approval_id:
@@ -1042,7 +1364,7 @@ async def _handle_message(message: str, context: dict):
             print(f"[adapter] Agent returned action=none on AgentMail hook — retrying with explicit reminder", flush=True)
             try:
                 retry_content = (
-                    message
+                    enriched_message
                     + "\n\n[SYSTEM REMINDER] The above is an inbound email "
                     "from a human who is waiting for a response. You MUST "
                     "reply. Set action to reply_email and populate draft.text "
@@ -1056,7 +1378,6 @@ async def _handle_message(message: str, context: dict):
                     resolve_fn=_bypass_resolve,
                     contribute_fn=contribute_knowledge,
                     search_fn=search_knowledge,
-                    use_fn=report_usage,
                 )
                 retry_action = retry_result.get("action", "none")
                 print(f"[adapter] Retry returned action={retry_action}", flush=True)
@@ -1096,7 +1417,7 @@ async def _handle_message(message: str, context: dict):
         # action == "none" → agent chose not to act (e.g., clarification stored)
 
     except Exception as e:
-        print(f"[adapter] Error handling message: {e}")
+        print(f"[adapter] Error handling message: {e}", flush=True)
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────

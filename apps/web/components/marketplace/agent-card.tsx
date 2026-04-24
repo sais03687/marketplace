@@ -34,6 +34,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   HR_OPS: "HR Ops",
   FINANCE_OPS: "Finance Ops",
   ENGINEERING_OPS: "Engineering Ops",
+  IT_SUPPORT: "IT Support",
   GENERAL: "General",
 };
 

@@ -125,9 +125,9 @@ export async function POST(request: Request) {
     : (manifest.pricePerMonth as number);
 
   const MIN_PRICE_CENTS: Record<string, number> = {
-    HAIKU: 2900,
-    SONNET: 9900,
-    OPUS: 29900,
+    HAIKU: 2900,   // $29/mo — growth-phase minimum, revisit after product-market fit
+    SONNET: 5900,  // $59/mo
+    OPUS: 14900,   // $149/mo
   };
   const minPrice = MIN_PRICE_CENTS[modelTierRaw] || 2900;
   if (priceCheck < minPrice) {
@@ -193,7 +193,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const storagePath = storeExtractedPackage(slug, version, files);
+  const storagePath = await storeExtractedPackage(slug, version, files);
 
   // 7. Apply overrides
   const agentName = manifest.name as string;
@@ -221,7 +221,7 @@ export async function POST(request: Request) {
             modelTier: modelTier as any,
             runtime,
             currentVersion: version,
-            status: "IN_REVIEW",
+            status: "LIVE",
             onboardingQuestions: onboardingQuestions ?? undefined,
             memoryTemplate: memoryTemplate ?? undefined,
           },
@@ -236,7 +236,7 @@ export async function POST(request: Request) {
             pricePerMonth,
             modelTier: modelTier as any,
             creatorId: creator.id,
-            status: "IN_REVIEW",
+            status: "LIVE",
             runtime,
             currentVersion: version,
             onboardingQuestions: onboardingQuestions ?? undefined,
@@ -251,7 +251,8 @@ export async function POST(request: Request) {
         packageUrl: `storage://${slug}/${version}`,
         manifestData: manifest as any,
         storagePath,
-        vetStatus: "PENDING",
+        vetStatus: "MANUALLY_APPROVED",
+        publishedAt: new Date(),
       },
     });
 

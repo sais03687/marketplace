@@ -1,0 +1,32 @@
+version: "3.9"
+
+# Production compose for the VPS.
+# Run with: docker compose -f docker-compose.prod.yml up -d
+#
+# Prerequisites on the VPS:
+#   - Docker installed
+#   - OpenClaw binary at /opt/openclaw (or set OPENCLAW_DIR)
+#   - .env.prod file with all required variables (see .env.example)
+
+services:
+  provisioning-service:
+    build:
+      context: .
+      dockerfile: apps/provisioning-service/Dockerfile
+    restart: unless-stopped
+    env_file: .env.prod
+    volumes:
+      # Give the service access to the host Docker daemon so it can
+      # launch and manage agent containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # OpenClaw installation on the host
+      - ${OPENCLAW_DIR:-/opt/openclaw}:/opt/openclaw:ro
+    environment:
+      OPENCLAW_DIR: /opt/openclaw
+      RUNNER_MODE: ${RUNNER_MODE:-local}
+    networks:
+      - marketplace
+
+networks:
+  marketplace:
+    driver: bridge

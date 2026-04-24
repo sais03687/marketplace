@@ -20,7 +20,9 @@ export interface HireState {
   // Step 4
   approvalManagerEmail: string;
   weeklyDigestEmail: string;
-  // Step 5
+  // Step 5 — interview answers collected during hire
+  onboardingAnswers: Record<string, string>;
+  // Step 6
   deploymentId: string | null;
   deploymentStatus: string | null;
 }
@@ -56,6 +58,7 @@ export function HireProvider({
     googleCalendarConnected: false,
     approvalManagerEmail: "",
     weeklyDigestEmail: "",
+    onboardingAnswers: {},
     deploymentId: null,
     deploymentStatus: null,
   });

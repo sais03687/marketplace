@@ -166,20 +166,18 @@ export async function POST(
     }
   }
 
-  // Check version is different from current
-  if (version === agent.currentVersion) {
+  // Check version doesn't already exist as an approved/live version
+  const existingVersion = await prisma.agentVersion.findFirst({
+    where: { agentId: agent.id, version },
+  });
+  if (existingVersion && existingVersion.vetStatus !== "PENDING") {
+    return jsonError(`Version ${version} already exists and has been approved. Bump the version number.`, 409);
+  }
+  if (!existingVersion && version === agent.currentVersion) {
     return jsonError(
       `Version ${version} is the same as current version. Bump the version number.`,
       409,
     );
-  }
-
-  // Check version doesn't already exist
-  const existingVersion = await prisma.agentVersion.findFirst({
-    where: { agentId: agent.id, version },
-  });
-  if (existingVersion) {
-    return jsonError(`Version ${version} already exists`, 409);
   }
 
   // Store files
@@ -189,20 +187,34 @@ export async function POST(
       files.set(path, await entry.async("nodebuffer"));
     }
   }
-  const storagePath = storeExtractedPackage(slug, version, files);
+  const storagePath = await storeExtractedPackage(slug, version, files);
 
-  // Create version
-  const agentVersion = await prisma.agentVersion.create({
-    data: {
-      agentId: agent.id,
-      version,
-      packageUrl: `storage://${slug}/${version}`,
-      manifestData: manifest as any,
-      storagePath,
-      changelog: changelog ?? null,
-      vetStatus: "PENDING",
-    },
-  });
+  // If a pending version already exists for this number, replace it
+  let agentVersion;
+  if (existingVersion) {
+    agentVersion = await prisma.agentVersion.update({
+      where: { id: existingVersion.id },
+      data: {
+        packageUrl: `storage://${slug}/${version}`,
+        manifestData: manifest as any,
+        storagePath,
+        changelog: changelog ?? null,
+        vetStatus: "PENDING",
+      },
+    });
+  } else {
+    agentVersion = await prisma.agentVersion.create({
+      data: {
+        agentId: agent.id,
+        version,
+        packageUrl: `storage://${slug}/${version}`,
+        manifestData: manifest as any,
+        storagePath,
+        changelog: changelog ?? null,
+        vetStatus: "PENDING",
+      },
+    });
+  }
 
   return jsonSuccess(agentVersion, 201);
 }

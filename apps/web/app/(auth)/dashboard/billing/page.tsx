@@ -1,46 +1,143 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CreditCard, ExternalLink } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { CreditCard, Loader2, AlertCircle } from "lucide-react";
+import { formatPrice } from "@/lib/utils";
+
+interface Subscription {
+  deploymentId: string;
+  agentName: string;
+  agentSlug: string;
+  pricePerMonth: number | null;
+  status: string;
+  subscriptionId: string | null;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+}
+
+function statusBadge(status: string, cancelAtPeriodEnd: boolean) {
+  if (cancelAtPeriodEnd) return <Badge variant="outline">Cancels at period end</Badge>;
+  if (status === "ACTIVE") return <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">Active</Badge>;
+  if (status === "PAUSED") return <Badge variant="secondary">Paused</Badge>;
+  if (status === "ONBOARDING") return <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">Onboarding</Badge>;
+  return <Badge variant="outline">{status}</Badge>;
+}
 
 export default function BillingPage() {
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+
+  const fetchBilling = () => {
+    fetch("/api/company/billing")
+      .then((r) => r.json())
+      .then((d) => setSubscriptions(d.subscriptions ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchBilling(); }, []);
+
+  const handleCancel = async (subscriptionId: string) => {
+    if (!confirm("Cancel this subscription? Your agent will remain active until the end of the billing period.")) return;
+    setCancelling(subscriptionId);
+    try {
+      await fetch("/api/company/billing/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subscriptionId }),
+      });
+      fetchBilling();
+    } catch {
+      // ignore
+    }
+    setCancelling(null);
+  };
+
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-3xl">
       <h1 className="text-2xl font-bold">Billing</h1>
-      <p className="text-muted-foreground">
-        Manage your subscriptions and payment methods.
-      </p>
+      <p className="text-muted-foreground">Manage your agent subscriptions.</p>
 
       <Card className="mt-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <CreditCard className="h-4 w-4" />
-            Payment Method
+            Active Subscriptions
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Billing is not yet configured. When ready, you&apos;ll manage your
-            payment methods through Stripe.
-          </p>
-          <Button className="mt-4" variant="outline" disabled>
-            <ExternalLink className="mr-2 h-4 w-4" />
-            Manage in Stripe
-          </Button>
+          {loading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading...
+            </div>
+          ) : subscriptions.length === 0 ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+              <AlertCircle className="h-4 w-4" />
+              No active subscriptions. <a href="/browse" className="underline ml-1">Browse agents</a> to get started.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="pb-2 font-medium">Agent</th>
+                    <th className="pb-2 font-medium">Price</th>
+                    <th className="pb-2 font-medium">Status</th>
+                    <th className="pb-2 font-medium">Next Billing</th>
+                    <th className="pb-2 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {subscriptions.map((sub) => (
+                    <tr key={sub.deploymentId} className="border-b last:border-0">
+                      <td className="py-3 font-medium">{sub.agentName}</td>
+                      <td className="py-3">
+                        {sub.pricePerMonth != null
+                          ? `${formatPrice(sub.pricePerMonth)}/mo`
+                          : "—"}
+                      </td>
+                      <td className="py-3">
+                        {statusBadge(sub.status, sub.cancelAtPeriodEnd)}
+                      </td>
+                      <td className="py-3 text-muted-foreground">
+                        {sub.currentPeriodEnd
+                          ? new Date(sub.currentPeriodEnd).toLocaleDateString()
+                          : "—"}
+                      </td>
+                      <td className="py-3 text-right">
+                        {!sub.cancelAtPeriodEnd && sub.subscriptionId && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            disabled={cancelling === sub.subscriptionId}
+                            onClick={() => handleCancel(sub.subscriptionId!)}
+                          >
+                            {cancelling === sub.subscriptionId && (
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            )}
+                            Cancel
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      <Card className="mt-4">
-        <CardHeader>
-          <CardTitle className="text-base">Active Subscriptions</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            No active subscriptions. Hire an AI employee to get started.
-          </p>
-        </CardContent>
-      </Card>
+      <p className="mt-4 text-xs text-muted-foreground">
+        Subscriptions are billed monthly. Cancellations take effect at the end of the current billing period.
+        Paused agents are charged at 50% of the monthly rate.
+      </p>
     </div>
   );
 }

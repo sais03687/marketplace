@@ -5,89 +5,7 @@ import {
   requireOrg,
   requireDeploymentAccess,
 } from "@/lib/api-utils";
-
-// Platform-level questions injected into every agent's onboarding interview
-// regardless of whether the uploader included them in their questions.json.
-// These are treated as a platform guarantee — they cannot be stripped or
-// forgotten by creators.
-const PLATFORM_QUESTIONS = [
-  {
-    id: "approval_policy",
-    type: "choice",
-    question: "When should I ask you to approve outbound emails before sending?",
-    options: [
-      { value: "always", label: "Always ask — I want to review every email before it goes out" },
-      { value: "external-only", label: "Only for external recipients (anyone not on my team or a listed contact)" },
-      { value: "risk-based", label: "Only for risky messages (high stakes, ambiguous, or hard to reverse)" },
-      { value: "never", label: "Never ask — fully autonomous" },
-    ],
-    default: "external-only",
-    memoryKey: "org.approval_policy",
-    required: true,
-  },
-  {
-    id: "auto_approve_list",
-    question:
-      "Are there any email addresses or domains you'd like me to ALWAYS auto-approve without asking (e.g. trusted vendors, partners)? One per line — use `@domain.com` for whole domains.",
-    memoryKey: "org.auto_approve_list",
-    required: false,
-  },
-  {
-    id: "require_approval_list",
-    question:
-      "Are there any email addresses or domains you'd like me to ALWAYS ask before contacting (overrides auto-approve)? One per line.",
-    memoryKey: "org.require_approval_list",
-    required: false,
-  },
-  {
-    id: "agentmind_enabled",
-    type: "choice",
-    question:
-      "Should your agent participate in AgentMind \u2014 a shared knowledge base where agents learn from each other's corrections? (Agents that opt out cannot access shared knowledge either.)",
-    options: [
-      { value: "yes", label: "Yes \u2014 contribute and access shared knowledge (recommended)" },
-      { value: "no_auto", label: "Yes, but I want to review each contribution before it's shared" },
-      { value: "no", label: "No \u2014 opt out entirely" },
-    ],
-    default: "yes",
-    memoryKey: "org.agentmind_enabled",
-    required: true,
-  },
-];
-
-function mergePlatformQuestions(
-  agentQuestions: unknown,
-  _runtime: string | null | undefined,
-): unknown[] {
-  const existing = Array.isArray(agentQuestions) ? [...agentQuestions] : [];
-
-  // Both CUSTOM and OPENCLAW runtimes now honor the approval policy:
-  //   - CUSTOM: adapter.py enforces deterministically in the send wrapper.
-  //   - OPENCLAW: provision.ts renders APPROVAL_POLICY_SECTION and appends
-  //     it to /agent/workspace/AGENTS.md at container startup, so the LLM
-  //     reads the hired manager's configured policy at every session.
-  // Same onboarding questions, same settings UI, same source of truth.
-
-  const existingIds = new Set(
-    existing
-      .filter((q): q is { id: string } => !!q && typeof q === "object" && "id" in q)
-      .map((q) => q.id),
-  );
-
-  // Append only platform questions that the agent doesn't already declare
-  const maxOrder = existing.reduce((m, q) => {
-    if (q && typeof q === "object" && "order" in q && typeof q.order === "number") {
-      return Math.max(m, q.order);
-    }
-    return m;
-  }, 0);
-
-  const additions = PLATFORM_QUESTIONS.filter((q) => !existingIds.has(q.id)).map(
-    (q, i) => ({ ...q, order: maxOrder + 1 + i }),
-  );
-
-  return [...existing, ...additions];
-}
+import { mergeWithPlatformQuestions } from "@/lib/platform-questions";
 
 export async function GET(
   request: Request,
@@ -113,8 +31,7 @@ export async function GET(
   return jsonSuccess({
     onboardingState: deployment.onboardingState,
     onboardingData: deployment.onboardingData,
-    // Merge platform questions (only for supported runtimes).
-    questions: mergePlatformQuestions(agent?.onboardingQuestions, agent?.runtime),
+    questions: mergeWithPlatformQuestions(agent?.onboardingQuestions),
     status: deployment.status,
   });
 }
@@ -133,8 +50,10 @@ export async function POST(
   if ("error" in depResult) return depResult.error;
   const { deployment } = depResult;
 
-  if (deployment.onboardingState !== "INTERVIEW") {
-    return jsonError("Onboarding is not in INTERVIEW stage", 409);
+  // Allow submissions from INTERVIEW (post-hire onboarding) or OBSERVATION
+  // (re-submission to update answers already given during the hire wizard).
+  if (deployment.onboardingState !== "INTERVIEW" && deployment.onboardingState !== "OBSERVATION") {
+    return jsonError("Onboarding is past the setup stage", 409);
   }
 
   let body: Record<string, unknown>;

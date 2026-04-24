@@ -1,6 +1,6 @@
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
-import { createInbox, setInboxWebhook, sendEmail } from "../clients/agentmail.js";
+import { createInbox, setInboxWebhook } from "../clients/agentmail.js";
 import {
   createAndStartContainer,
   getContainerPort,
@@ -9,6 +9,8 @@ import {
 } from "../clients/docker.js";
 import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
 import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
+import { createDeploymentServiceAccount } from "../clients/google-iam.js";
+import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
   deploymentId: string,
@@ -128,6 +130,15 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   const companyName = deployment.company.name;
   const companyDomain = deployment.company.domain;
 
+  // Optional heartbeat: read from the agent's manifest if the creator opted in.
+  const manifest = agentVersion?.manifestData as Record<string, unknown> | null | undefined;
+  const heartbeatIntervalHours: number | undefined = (() => {
+    const hb = manifest?.heartbeat as Record<string, unknown> | undefined;
+    if (!hb) return undefined;
+    const h = typeof hb.intervalHours === "number" ? hb.intervalHours : 6;
+    return Math.min(Math.max(Math.round(h), 1), 24);
+  })();
+
   // Extract approval policy from autonomyConfig. Shape:
   //   { approvalPolicy: "always"|"external-only"|"risk-based"|"never",
   //     approvalRiskThreshold?: number,
@@ -155,6 +166,54 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     ac,
     companyDomain,
   );
+
+  // 2a. Create a per-deployment Google service account (if GCP is configured).
+  // This gives each company's agent its own identity in Google Workspace.
+  // After provisioning, the hiring manager sees a one-time DWD setup link in the portal.
+  let deploymentServiceAccountEmail: string | undefined;
+  let deploymentServiceAccountKey: string | undefined;
+  let deploymentServiceAccountClientId: string | undefined;
+
+  // Use dedicated IAM provisioner key if set; fall back to agent identity key
+  // for legacy single-SA setups. GCP_IAM_KEY is preferred (least privilege).
+  const iamKey = config.gcpIamKey || config.googleServiceAccountKey;
+  if (config.gcpProjectId && iamKey) {
+    try {
+      const sa = await withRetry(
+        () => createDeploymentServiceAccount(
+          deploymentId,
+          deployment.agent.slug,
+          config.gcpProjectId,
+          iamKey,
+        ),
+        { step: "create_service_account", deploymentId },
+      );
+      deploymentServiceAccountEmail = sa.email;
+      deploymentServiceAccountKey = sa.privateKeyJson;
+      deploymentServiceAccountClientId = sa.clientId;
+
+      // Persist credentials on the deployment so the DWD setup link can be shown
+      // in the portal and so the container can be re-provisioned with the same SA.
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: {
+          deploymentServiceAccountEmail: sa.email,
+          deploymentServiceAccountKey: sa.privateKeyJson,
+        },
+      });
+
+      console.log(`[provision] Service account created: ${sa.email} (clientId: ${sa.clientId})`);
+    } catch (err: any) {
+      // Non-fatal: fall back to platform-level service account.
+      // Log clearly so ops can investigate.
+      console.warn(`[provision] Service account creation failed, using platform SA: ${err.message}`);
+    }
+  }
+
+  // Resolve which Google SA credentials to inject into the container.
+  // Per-deployment SA takes precedence over the platform-level shared SA.
+  const effectiveGoogleSAEmail = deploymentServiceAccountEmail || config.googleServiceAccountEmail;
+  const effectiveGoogleSAKey = deploymentServiceAccountKey || config.googleServiceAccountKey;
 
   let agentEmail: string;
   let inboxId: string | undefined;
@@ -207,36 +266,57 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     AUTO_APPROVE_LIST: autoApproveList,
     REQUIRE_APPROVAL_LIST: requireApprovalList,
     APPROVAL_POLICY_SECTION: approvalPolicySection,
+    ...(deployment.portalToken
+      ? { PORTAL_TOKEN: deployment.portalToken }
+      : {}),
+    ...(heartbeatIntervalHours !== undefined
+      ? { HEARTBEAT_INTERVAL_HOURS: String(heartbeatIntervalHours) }
+      : {}),
+    ...(effectiveGoogleSAEmail
+      ? { GOOGLE_SERVICE_ACCOUNT_EMAIL: effectiveGoogleSAEmail }
+      : {}),
+    ...(effectiveGoogleSAKey
+      ? { GOOGLE_SERVICE_ACCOUNT_KEY: effectiveGoogleSAKey }
+      : {}),
   };
 
   const runtime = deployment.agent.runtime || "OPENCLAW";
 
+  // Hoisted so both the catch block and the post-try cleanup can access them.
+  let resolvedPkgPath: string | null = null;
+  let tempPkgDir: string | null = null;
+
   try {
+    // Resolve the agent package path — either from blob storage or local disk.
+    // Blob paths (e.g. "packages/langchain-ops/1.0.0/") are downloaded to a
+    // temp directory; local paths are resolved relative to WEB_APP_ROOT.
+    if (agentVersion?.storagePath) {
+      if (isBlobStoragePath(agentVersion.storagePath)) {
+        tempPkgDir = await downloadBlobPackage(agentVersion.storagePath);
+        resolvedPkgPath = tempPkgDir;
+      } else {
+        const { resolve } = await import("node:path");
+        resolvedPkgPath = resolve(config.webAppRoot, agentVersion.storagePath);
+      }
+    }
+
     if (runtime === "CUSTOM") {
-      // Custom runtime: always Docker, regardless of RUNNER_MODE
       const { spawnCustomAgent } = await import("./custom-runner.js");
       const { resolve } = await import("node:path");
-      // Resolve the creator's actual package — fall back to starter template for seed data
-      const pkgPath = agentVersion?.storagePath
-        ? resolve(config.webAppRoot, agentVersion.storagePath)
-        : resolve(config.customStarterPath);
+      const pkgPath = resolvedPkgPath ?? resolve(config.customStarterPath);
 
       const result = await withRetry(
-        () => spawnCustomAgent(deploymentId, containerEnv, pkgPath),
+        () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId),
         { step: "spawn_custom_agent", deploymentId },
       );
       containerName = `http://localhost:${result.port}`;
       healthPort = result.port;
     } else if (config.runnerMode === "docker") {
       const cName = `agent-${deployment.agent.slug}-${deploymentId.slice(0, 8)}`;
-      const { resolve } = await import("node:path");
 
-      // If creator package exists, bind-mount it as the workspace
-      const creatorPkgPath = agentVersion?.storagePath
-        ? resolve(config.webAppRoot, agentVersion.storagePath)
-        : null;
-      const volumeBinds = creatorPkgPath
-        ? [`${creatorPkgPath}:/agent/workspace:ro`]  // read-only mount
+      // Bind-mount the package as the workspace (read-only)
+      const volumeBinds = resolvedPkgPath
+        ? [`${resolvedPkgPath}:/agent/workspace:ro`]
         : [];
 
       const result = await withRetry(
@@ -247,16 +327,11 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       healthPort = await getContainerPort(containerName);
     } else {
       // Local mode: spawn a child process (OpenClaw only)
-      const { resolve } = await import("node:path");
-      const packageOverride = agentVersion?.storagePath
-        ? resolve(config.webAppRoot, agentVersion.storagePath)
-        : undefined;
-
       const result = await withRetry(
-        () => spawnLocalAgent(deploymentId, containerEnv, packageOverride),
+        () => spawnLocalAgent(deploymentId, containerEnv, resolvedPkgPath ?? undefined, inboxId),
         { step: "spawn_local_agent", deploymentId },
       );
-      containerName = result.processLabel;
+      containerName = `http://localhost:${result.port}`;
       healthPort = result.port;
     }
   } catch (err: any) {
@@ -265,6 +340,15 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       try {
         const { deleteInbox } = await import("../clients/agentmail.js");
         await deleteInbox(inboxId);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    // Clean up temp package dir on failure
+    if (tempPkgDir) {
+      try {
+        const { rmSync } = await import("node:fs");
+        rmSync(tempPkgDir, { recursive: true, force: true });
       } catch {
         // best-effort cleanup
       }
@@ -295,77 +379,75 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       ? containerName
       : `http://${healthHost}:${healthPort}`;
     try {
-      await setInboxWebhook(inboxId, `${containerUrl}/hooks/agentmail`);
+      await setInboxWebhook(inboxId, `${containerUrl}/hooks/agentmail`, agentName);
     } catch (err: any) {
       console.warn(`[provision] Failed to set inbox webhook: ${err.message}`);
       // Non-fatal: agent can still send outbound email, just won't receive inbound
     }
   }
 
-  // 6. Update deployment to ONBOARDING
+  // 5b. Spawn email poller for Docker-OpenClaw mode.
+  // Local mode and Custom mode already start their pollers inside their runners.
+  // Docker-OpenClaw relies on the webhook set above, but that webhook points to
+  // localhost which AgentMail's cloud servers cannot reach in development.
+  // A poller is the reliable fallback for all environments.
+  if (runtime !== "CUSTOM" && config.runnerMode === "docker") {
+    const { startPoller } = await import("./poller-manager.js");
+    startPoller({
+      deploymentId,
+      agentEmail,
+      inboxId,
+      agentId: deployment.agentId,
+      gatewayUrl: `http://127.0.0.1:${healthPort}`,
+      hooksToken: config.openclawHooksToken,
+      marketplaceUrl: config.approvalWebhookUrl,
+    });
+  }
+
+  // 6. Update deployment to ONBOARDING.
+  // Preserve OBSERVATION if answers were collected during the hire wizard —
+  // don't regress back to INTERVIEW.
+  const hasHireAnswers = !!(deployment as any).onboardingData;
   await prisma.deployment.update({
     where: { id: deploymentId },
     data: {
       status: "ONBOARDING",
-      onboardingState: "INTERVIEW",
+      onboardingState: hasHireAnswers ? "OBSERVATION" : "INTERVIEW",
       containerName,
       agentEmail,
       agentEmailInboxId: inboxId,
+      approvalWebhookToken: config.approvalWebhookToken,
     },
   });
 
-  // 7. Send standardized intro email (platform-side, no LLM needed)
+  // 7. Send context to the agent so it knows who it is for subsequent conversations.
+  // The formatted introduction email to the manager is sent explicitly by the hiring
+  // manager clicking "Send Introduction Email" in the onboarding panel — not auto-sent here.
   const managerEmail = deployment.weeklyDigestEmail || `admin@${deployment.company.domain}`;
-
-  const capabilities = deployment.agent.capabilities;
-  const capList = capabilities.length > 0
-    ? capabilities.map((c) => `  - ${c.name}: ${c.description}`).join("\n")
-    : "  - Email management, research, and task execution";
-
-  const googleLine = config.googleServiceAccountEmail
-    ? `\nI also have access to Google Workspace. To share Google Drive files, Sheets, or Docs with me, share them with: ${config.googleServiceAccountEmail}\n`
+  // If the hiring manager answered onboarding questions during the hire wizard,
+  // include those answers so the agent can configure its knowledge base immediately.
+  const hireAnswers = (deployment as any).onboardingData as Record<string, string> | null | undefined;
+  const answersSection = hireAnswers && Object.keys(hireAnswers).length > 0
+    ? [
+        "\nYour hiring manager answered the following onboarding questions during setup:",
+        "",
+        ...Object.entries(hireAnswers).map(([k, v]) => `  ${k}: ${v}`),
+        "\nPlease use these answers to configure your working style, approval preferences, and memory.",
+      ].join("\n")
     : "";
 
-  const introText = [
-    `Hi there,`,
-    ``,
-    `I'm ${agentName}, your new AI employee at ${companyName}. I've just been set up and I'm ready to start working with you.`,
-    ``,
-    `Here's what I can help with:`,
-    capList,
-    ``,
-    `You can reach me anytime by emailing ${agentEmail}.`,
-    googleLine,
-    `What would you like me to focus on first? Just reply to this email and I'll get started.`,
-    ``,
-    `Best,`,
-    agentName,
-  ].join("\n");
-
-  await withRetry(
-    async () => {
-      await sendEmail(
-        inboxId || agentEmail,
-        managerEmail,
-        `Hi from ${agentName} — your new AI employee`,
-        introText,
-      );
-    },
-    { step: "send_intro_email", deploymentId },
-  );
-
-  // 8. Send context to the agent so it knows who it is for subsequent conversations
   const onboardingMessage = [
     `You are ${agentName}, an AI employee at ${companyName}.`,
     `Your email address is ${agentEmail}.`,
     `The hiring manager's email is ${managerEmail}.`,
-    ...(config.googleServiceAccountEmail
+    ...(effectiveGoogleSAEmail
       ? [
-          `\nYou also have a Google Workspace identity for file access: ${config.googleServiceAccountEmail}`,
+          `\nYou also have a Google Workspace identity for file access: ${effectiveGoogleSAEmail}`,
           `Team members can share Google Drive files, Sheets, and Docs with that address so you can read and edit them.`,
         ]
       : []),
-    `\nYou have already sent an introduction email. Wait for the manager to reply, then assist them with whatever they need.`,
+    answersSection,
+    `\nAn introduction email will be sent to the hiring manager shortly. Once they reply, assist them with whatever they need.`,
   ].join("\n");
 
   await withRetry(
@@ -395,6 +477,16 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     },
     { step: "trigger_onboarding", deploymentId },
   );
+
+  // Clean up temp package dir now that the container has it bind-mounted or copied
+  if (tempPkgDir) {
+    try {
+      const { rmSync } = await import("node:fs");
+      rmSync(tempPkgDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
+  }
 
   await log(deploymentId, "provision_complete", "succeeded", 1);
   console.log(

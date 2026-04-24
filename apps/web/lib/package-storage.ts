@@ -1,58 +1,69 @@
-import {
-  mkdirSync,
-  writeFileSync,
-  readFileSync,
-  existsSync,
-  readdirSync,
-  statSync,
-} from "fs";
-import { join, dirname, relative } from "path";
+import { put, list, head } from "@vercel/blob";
 
-const STORAGE_ROOT = join(process.cwd(), "storage", "packages");
+const PREFIX = "packages";
 
-export function storeExtractedPackage(
+/**
+ * Upload all files from an extracted agent package to Vercel Blob.
+ * Returns the blob prefix used as storagePath in the DB, e.g.:
+ *   "packages/langchain-ops/1.0.0/"
+ */
+export async function storeExtractedPackage(
   slug: string,
   version: string,
   files: Map<string, Buffer>,
-): string {
-  const storagePath = join(STORAGE_ROOT, slug, version);
-  mkdirSync(storagePath, { recursive: true });
+): Promise<string> {
+  const prefix = `${PREFIX}/${slug}/${version}`;
 
-  for (const [relativePath, content] of files) {
-    const fullPath = join(storagePath, relativePath);
-    mkdirSync(dirname(fullPath), { recursive: true });
-    writeFileSync(fullPath, content);
-  }
+  await Promise.all(
+    Array.from(files.entries()).map(([relativePath, content]) =>
+      put(`${prefix}/${relativePath}`, content, {
+        access: "public",
+        addRandomSuffix: false,
+      }),
+    ),
+  );
 
-  return `storage/packages/${slug}/${version}/`;
+  return `${prefix}/`;
 }
 
-export function listPackageFiles(storagePath: string): string[] {
-  const root = join(process.cwd(), storagePath);
-  if (!existsSync(root)) return [];
-
-  const results: string[] = [];
-
-  function walk(dir: string) {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) {
-        walk(full);
-      } else {
-        results.push(relative(root, full).replace(/\\/g, "/"));
-      }
-    }
-  }
-
-  walk(root);
-  return results.sort();
+/**
+ * List all files under a blob storagePath prefix.
+ * storagePath is e.g. "packages/langchain-ops/1.0.0/"
+ */
+export async function listPackageFiles(storagePath: string): Promise<string[]> {
+  const blobs = await list({ prefix: storagePath });
+  return blobs.blobs
+    .map((b) => b.pathname.slice(storagePath.length))
+    .filter(Boolean)
+    .sort();
 }
 
-export function readPackageFile(
+/**
+ * Fetch a single file from blob storage.
+ * Returns null if the file does not exist.
+ */
+export async function readPackageFile(
   storagePath: string,
   filename: string,
-): Buffer | null {
-  const fullPath = join(process.cwd(), storagePath, filename);
-  if (!existsSync(fullPath)) return null;
-  return readFileSync(fullPath);
+): Promise<Buffer | null> {
+  try {
+    // Verify the blob exists first
+    const blobInfo = await head(`${storagePath}${filename}`);
+    if (!blobInfo) return null;
+
+    const res = await fetch(blobInfo.url);
+    if (!res.ok) return null;
+
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true when a storagePath value is a blob prefix
+ * (as opposed to a legacy local relative path).
+ */
+export function isBlobStoragePath(storagePath: string): boolean {
+  return storagePath.startsWith(`${PREFIX}/`);
 }

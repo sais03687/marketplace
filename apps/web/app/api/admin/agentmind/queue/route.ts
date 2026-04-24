@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { jsonSuccess, requireAuth, parseSearchParams } from "@/lib/api-utils";
+import { jsonSuccess, requireAdmin, parseSearchParams } from "@/lib/api-utils";
 
 const querySchema = z.object({
   page: z.string().optional(),
@@ -9,10 +9,9 @@ const querySchema = z.object({
 });
 
 export async function GET(request: NextRequest) {
-  const authResult = await requireAuth();
+  const authResult = await requireAdmin();
   if ("error" in authResult) return authResult.error;
 
-  // TODO: check admin role via Clerk metadata
   const parsed = parseSearchParams(request.url, querySchema);
   if ("error" in parsed) return parsed.error;
   const { data: params } = parsed;

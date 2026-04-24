@@ -17,7 +17,6 @@
  * /hooks/agent endpoint.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import Dockerode from "dockerode";
 import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
+import { startPoller, stopPoller } from "./poller-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const docker = new Dockerode();
@@ -67,22 +67,10 @@ const APPROVAL_GUARD = "## Approval queue — platform requirement";
 interface CustomAgentEntry {
   containerId: string;
   containerName: string;
-  poller: ChildProcess;
   port: number;
 }
 
 const customProcesses = new Map<string, CustomAgentEntry>();
-
-// ─── Poller Resolution ──────────────────────────────────────────────────────
-
-/** Resolve the agentmail-poller.mjs path — works in both tsx (src/) and compiled (dist/) */
-function resolvePollerScript(): string {
-  const localPath = join(__dirname, "agentmail-poller.mjs");
-  if (existsSync(localPath)) return localPath;
-  const srcPath = join(__dirname, "..", "..", "src", "jobs", "agentmail-poller.mjs");
-  if (existsSync(srcPath)) return srcPath;
-  throw new Error(`Cannot find agentmail-poller.mjs (checked ${localPath} and ${srcPath})`);
-}
 
 // ─── Inject Approval Block ──────────────────────────────────────────────────
 
@@ -190,6 +178,7 @@ export async function spawnCustomAgent(
   deploymentId: string,
   env: ContainerEnv,
   packageDir: string,
+  inboxId?: string,
 ): Promise<{ containerName: string; port: number }> {
   const resolvedDir = resolve(packageDir);
 
@@ -243,45 +232,21 @@ export async function spawnCustomAgent(
 
     console.log(`[custom-runner] Container ${containerName} started on port ${hostPort}`);
 
-    // Spawn AgentMail poller pointing at the custom container
-    // The poller forwards emails to /hooks/agent on the container
-    const pollerScript = resolvePollerScript();
-    const pollerChild = spawn(
-      process.execPath,
-      [pollerScript],
-      {
-        env: {
-          ...process.env,
-          AGENTMAIL_API_KEY: config.agentMailApiKey,
-          // Custom containers don't use OpenClaw hooks auth — adapter expects no Bearer token
-          OPENCLAW_HOOKS_TOKEN: "",
-          POLLER_INBOX: env.AGENT_EMAIL,
-          POLLER_GATEWAY_URL: `http://127.0.0.1:${hostPort}`,
-          // AgentMind + approval context for the poller
-          MARKETPLACE_URL: env.MARKETPLACE_URL || "",
-          DEPLOYMENT_ID: env.DEPLOYMENT_ID,
-          AGENT_ID: env.AGENT_ID,
-        },
-        stdio: "pipe",
-        detached: false,
-      },
-    );
-
-    const label = `custom-${deploymentId.slice(0, 8)}`;
-    pollerChild.stdout?.on("data", (d: Buffer) =>
-      process.stdout.write(`[${label}:poller] ${d}`),
-    );
-    pollerChild.stderr?.on("data", (d: Buffer) =>
-      process.stderr.write(`[${label}:poller] ${d}`),
-    );
-    pollerChild.on("exit", (code) => {
-      console.log(`[${label}:poller] Poller exited with code ${code}`);
+    // Spawn AgentMail poller via centralized manager
+    // Custom containers don't use OpenClaw hooks auth — adapter expects no Bearer token
+    startPoller({
+      deploymentId,
+      agentEmail: env.AGENT_EMAIL,
+      inboxId,
+      agentId: env.AGENT_ID,
+      gatewayUrl: `http://127.0.0.1:${hostPort}`,
+      hooksToken: "",
+      marketplaceUrl: env.MARKETPLACE_URL || config.approvalWebhookUrl || "http://localhost:3002",
     });
 
     customProcesses.set(deploymentId, {
       containerId: info.Id,
       containerName,
-      poller: pollerChild,
       port: hostPort,
     });
 
@@ -303,8 +268,7 @@ export async function stopCustomAgent(deploymentId: string): Promise<void> {
   const entry = customProcesses.get(deploymentId);
   if (!entry) return;
 
-  // Kill poller
-  entry.poller.kill("SIGTERM");
+  stopPoller(deploymentId);
 
   // Stop and remove container
   try {

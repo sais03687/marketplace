@@ -23,6 +23,8 @@ export interface DeploymentOpenClawConfig {
   llmBaseUrl?: string;
   llmModel?: string;
   weeklyDigestEmail?: string;
+  heartbeatIntervalHours?: number;   // if set, adds a periodic heartbeat cron + hook
+  heartbeatIntervalMinutes?: number; // override for dev/testing — uses */N * * * * format
 }
 
 /**
@@ -167,6 +169,27 @@ export function generateDeploymentConfig(
             " — always include a plain text version too.",
           ].join(""),
         },
+        // Heartbeat hook — only present if the creator opted in via marketplace.json.
+        // Allows the platform (or any authorized caller) to trigger an on-demand
+        // heartbeat in addition to the scheduled cron job below.
+        ...((opts.heartbeatIntervalHours !== undefined || opts.heartbeatIntervalMinutes !== undefined)
+          ? [{
+              id: "heartbeat",
+              match: { path: "heartbeat" },
+              action: "agent",
+              wakeMode: "now",
+              deliver: false,
+              name: "Heartbeat",
+              sessionKey: "hook:heartbeat",
+              messageTemplate: [
+                "HEARTBEAT: You have been woken for periodic maintenance.",
+                " Check HEARTBEAT.md in your workspace for any queued operator instructions.",
+                " Then perform proactive maintenance as described in your Heartbeats section:",
+                " memory distillation, trust-tracker review, workflow promotion, etc.",
+                " Reply HEARTBEAT_OK when done.",
+              ].join(""),
+            }]
+          : []),
       ],
     },
   };
@@ -191,6 +214,33 @@ export function generateDeploymentConfig(
       delivery: { mode: "none" },
     });
   }
+
+  const heartbeatCronExpr = opts.heartbeatIntervalMinutes !== undefined
+    ? `*/${opts.heartbeatIntervalMinutes} * * * *`           // every N minutes (testing)
+    : opts.heartbeatIntervalHours !== undefined
+      ? `0 */${opts.heartbeatIntervalHours} * * *`           // every N hours (production)
+      : null;
+
+  if (heartbeatCronExpr !== null) {
+    cronJobs.jobs.push({
+      name: "Heartbeat",
+      schedule: { kind: "cron", expr: heartbeatCronExpr },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        message: [
+          "HEARTBEAT: You have been woken for periodic maintenance.",
+          " Check HEARTBEAT.md in your workspace for any queued operator instructions.",
+          " Then perform proactive maintenance as described in your Heartbeats section:",
+          " memory distillation, trust-tracker review, workflow promotion, etc.",
+          " Reply HEARTBEAT_OK when done.",
+        ].join(""),
+      },
+      delivery: { mode: "none" },
+    });
+  }
+
   writeFileSync(join(cronDir, "jobs.json"), JSON.stringify(cronJobs, null, 2));
 
   // Generate .env for the deployment

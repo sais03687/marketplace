@@ -18,6 +18,7 @@ const CATEGORIES = [
   { value: "HR_OPS", label: "HR Ops" },
   { value: "FINANCE_OPS", label: "Finance Ops" },
   { value: "ENGINEERING_OPS", label: "Engineering Ops" },
+  { value: "IT_SUPPORT", label: "IT Support" },
 ];
 
 const SORT_OPTIONS = [

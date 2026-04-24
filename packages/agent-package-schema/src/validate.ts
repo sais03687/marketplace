@@ -17,6 +17,7 @@ const VALID_CATEGORIES: Set<string> = new Set([
   "HR_OPS",
   "FINANCE_OPS",
   "ENGINEERING_OPS",
+  "IT_SUPPORT",
   "GENERAL",
 ]);
 
@@ -97,6 +98,19 @@ export function validateManifest(m: unknown): ValidationError[] {
   // Runtime (optional, defaults to "openclaw")
   if (manifest.runtime !== undefined && !VALID_RUNTIMES.has(manifest.runtime as string)) {
     errors.push({ field: "runtime", message: `runtime must be one of: ${[...VALID_RUNTIMES].join(", ")}` });
+  }
+
+  // Heartbeat config (optional)
+  if (manifest.heartbeat !== undefined) {
+    const hb = manifest.heartbeat as Record<string, unknown>;
+    if (typeof hb !== "object" || hb === null) {
+      errors.push({ field: "heartbeat", message: "heartbeat must be an object" });
+    } else if (hb.intervalHours !== undefined) {
+      const h = hb.intervalHours as number;
+      if (typeof h !== "number" || h < 1 || h > 24) {
+        errors.push({ field: "heartbeat.intervalHours", message: "intervalHours must be a number between 1 and 24" });
+      }
+    }
   }
 
   // Runtime config (optional)

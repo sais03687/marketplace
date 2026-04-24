@@ -21,7 +21,13 @@ async function agentMailFetch<T>(
     const text = await res.text().catch(() => "");
     throw new Error(`AgentMail API error ${res.status}: ${text}`);
   }
-  return res.json() as Promise<T>;
+  // Some endpoints (DELETE) return 204 or empty body
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export async function createInbox(
@@ -51,18 +57,27 @@ export async function createInbox(
   }
 }
 
+// AgentMail uses the email address as the inbox path param.
+// encodeURIComponent turns '@' into '%40' which the API doesn't resolve, so
+// we encode only the characters that are not valid in a URL path segment,
+// leaving '@' and '.' unencoded.
+function encodeInboxId(id: string): string {
+  return id.replace(/[^A-Za-z0-9._@\-]/g, (c) => encodeURIComponent(c));
+}
+
 export async function setInboxWebhook(
   inboxId: string,
   webhookUrl: string,
+  displayName?: string,
 ): Promise<void> {
-  await agentMailFetch(`/inboxes/${encodeURIComponent(inboxId)}`, {
+  await agentMailFetch(`/inboxes/${encodeInboxId(inboxId)}`, {
     method: "PATCH",
-    body: { webhook_url: webhookUrl },
+    body: { webhook_url: webhookUrl, display_name: displayName || "Agent" },
   });
 }
 
 export async function deleteInbox(inboxId: string): Promise<void> {
-  await agentMailFetch(`/inboxes/${encodeURIComponent(inboxId)}`, {
+  await agentMailFetch(`/inboxes/${encodeInboxId(inboxId)}`, {
     method: "DELETE",
   });
 }
@@ -74,7 +89,7 @@ export async function sendEmail(
   text: string,
 ): Promise<{ messageId: string; threadId: string }> {
   const raw = await agentMailFetch<{ message_id: string; thread_id: string }>(
-    `/inboxes/${encodeURIComponent(inboxId)}/messages/send`,
+    `/inboxes/${encodeInboxId(inboxId)}/messages/send`,
     {
       method: "POST",
       body: { to, subject, text },

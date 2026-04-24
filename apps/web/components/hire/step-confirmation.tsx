@@ -34,6 +34,9 @@ export function StepConfirmation() {
           roleTitle: state.roleTitle,
           weeklyDigestEmail: state.weeklyDigestEmail || undefined,
           approvalManagerEmail: state.approvalManagerEmail || undefined,
+          onboardingAnswers: Object.keys(state.onboardingAnswers).length > 0
+            ? state.onboardingAnswers
+            : undefined,
         }),
       });
 
@@ -42,23 +45,27 @@ export function StepConfirmation() {
         throw new Error(data.error || "Failed to create deployment");
       }
 
-      const deployment = await res.json();
-      updateState({
-        deploymentId: deployment.id,
-        deploymentStatus: deployment.status,
-      });
+      const data = await res.json();
+      updateState({ deploymentId: data.deploymentId });
 
-      // Poll for status
+      if (data.checkoutUrl) {
+        // Store deploymentId so success page can reference it
+        localStorage.setItem("pendingDeploymentId", data.deploymentId);
+        window.location.href = data.checkoutUrl;
+        return;
+      }
+
+      // Dev/no-Stripe fallback: poll for status directly
+      const dep = data.deployment ?? data;
+      updateState({ deploymentStatus: dep.status });
+
       pollRef.current = setInterval(async () => {
         try {
-          const pollRes = await fetch(`/api/deployments/${deployment.id}`);
+          const pollRes = await fetch(`/api/deployments/${data.deploymentId}`);
           if (pollRes.ok) {
             const pollData = await pollRes.json();
             updateState({ deploymentStatus: pollData.status });
-            if (
-              pollData.status === "ONBOARDING" ||
-              pollData.status === "ACTIVE"
-            ) {
+            if (pollData.status === "ONBOARDING" || pollData.status === "ACTIVE") {
               setStatus("success");
               if (pollRef.current) clearInterval(pollRef.current);
             } else if (pollData.status === "ERROR") {
@@ -81,12 +88,9 @@ export function StepConfirmation() {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="mt-4 font-medium">Setting up {state.hireName}...</p>
+        <p className="mt-4 font-medium">Preparing checkout...</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Creating email inbox, configuring integrations, starting onboarding.
-        </p>
-        <p className="mt-4 text-xs text-muted-foreground">
-          Status: {state.deploymentStatus || "PROVISIONING"}
+          You&apos;ll be redirected to Stripe to complete your subscription.
         </p>
       </div>
     );
@@ -100,8 +104,8 @@ export function StepConfirmation() {
           {state.hireName} is ready!
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Your AI employee is now onboarding and will start learning your
-          organization.
+          Your AI employee is being set up with your preferences and will
+          introduce themselves via email once ready.
         </p>
         <Button className="mt-6" asChild>
           <Link href="/dashboard">Go to Your Portal</Link>
@@ -117,7 +121,7 @@ export function StepConfirmation() {
         <p className="mt-4 text-lg font-semibold">Something went wrong</p>
         <p className="mt-1 text-sm text-muted-foreground">{error}</p>
         <div className="mt-6 flex gap-2">
-          <Button variant="outline" onClick={() => setStep(4)}>
+          <Button variant="outline" onClick={() => setStep(5)}>
             Back
           </Button>
           <Button onClick={handleDeploy}>Try Again</Button>
@@ -163,16 +167,16 @@ export function StepConfirmation() {
       </div>
 
       <div className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">
-        By hiring, your AI employee will begin a 3-day onboarding process.
-        All actions require your approval until trust is established.
+        Your setup answers have been saved. All actions requiring approval
+        will be queued until you review and approve them.
       </div>
 
       <div className="flex gap-2">
-        <Button variant="outline" onClick={() => setStep(4)}>
+        <Button variant="outline" onClick={() => setStep(5)}>
           Back
         </Button>
         <Button className="flex-1" onClick={handleDeploy}>
-          Hire {state.hireName}
+          Hire {state.hireName} — Pay with Stripe
         </Button>
       </div>
     </div>

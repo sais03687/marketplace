@@ -98,6 +98,21 @@ export async function requireOrg(): Promise<
   return { userId, orgId, company };
 }
 
+export async function requireAdmin(): Promise<
+  { userId: string } | ApiError
+> {
+  const result = await requireAuth();
+  if ("error" in result) return result;
+
+  const { userId } = result;
+  const { sessionClaims } = await auth();
+  const role = (sessionClaims?.publicMetadata as Record<string, unknown> | undefined)?.role;
+  if (role !== "admin") {
+    return { error: jsonError("Admin access required", 403) };
+  }
+  return { userId };
+}
+
 export async function requireDeploymentAccess(
   deploymentId: string,
   companyId: string,
