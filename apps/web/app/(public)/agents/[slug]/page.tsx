@@ -4,7 +4,7 @@ import { CapabilityBadge } from "@/components/marketplace/capability-badge";
 import { HireButton } from "@/components/hire/hire-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Star, Users, Shield, Clock, Mail, MessageSquare, Lightbulb, ArrowUpRight } from "lucide-react";
+import { Star, Users, Shield, Clock, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import Link from "next/link";
 
@@ -43,6 +43,7 @@ export default async function AgentListingPage({
           title: true,
           usageCount: true,
           upvotes: true,
+          commentCount: true,
         },
       },
       _count: {
@@ -179,9 +180,15 @@ export default async function AgentListingPage({
                             </span>
                           </div>
                         </div>
-                        <span className="flex items-center gap-0.5 text-xs text-muted-foreground">
-                          ▲ {c.upvotes}
-                        </span>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="flex items-center gap-0.5">▲ {c.upvotes}</span>
+                          {c.commentCount > 0 && (
+                            <span className="flex items-center gap-0.5">
+                              <MessageCircle className="h-3 w-3" />
+                              {c.commentCount}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </CardContent>
                   </Card>

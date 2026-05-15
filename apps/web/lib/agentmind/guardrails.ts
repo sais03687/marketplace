@@ -172,7 +172,7 @@ const PII_PATTERNS: { name: string; regex: RegExp; replacement: string }[] = [
   },
 ];
 
-function scrubPii(text: string): {
+export function scrubPii(text: string): {
   sanitized: string;
   log: SanitizationResult["log"];
 } {
@@ -218,7 +218,7 @@ function shannonEntropy(s: string): number {
 const ENTROPY_THRESHOLD = 4.5;
 const MIN_TOKEN_LENGTH = 20;
 
-function filterEntropy(text: string): {
+export function filterEntropy(text: string): {
   sanitized: string;
   log: SanitizationResult["log"];
 } {

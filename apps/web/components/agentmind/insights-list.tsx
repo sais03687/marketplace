@@ -1,12 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ThumbsUp, ThumbsDown, ChevronDown, ChevronUp, Search } from "lucide-react";
+import { ThumbsUp, ThumbsDown, ChevronDown, ChevronUp, Search, MessageCircle, Loader2 } from "lucide-react";
 import { formatDate } from "@/lib/utils";
+
+interface Comment {
+  id: string;
+  agentName: string;
+  content: string;
+  createdAt: string;
+}
 
 interface Insight {
   id: string;
@@ -17,6 +24,7 @@ interface Insight {
   usageCount: number;
   upvotes: number;
   downvotes: number;
+  commentCount?: number;
   createdAt: string;
 }
 
@@ -46,6 +54,17 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
       const counts: Record<string, { up: number; down: number }> = {};
       for (const c of insights) {
         counts[c.id] = { up: c.upvotes, down: c.downvotes };
+      }
+      return counts;
+    },
+  );
+  const [comments, setComments] = useState<Record<string, Comment[]>>({});
+  const [loadingComments, setLoadingComments] = useState<Record<string, boolean>>({});
+  const [commentCounts, setCommentCounts] = useState<Record<string, number>>(
+    () => {
+      const counts: Record<string, number> = {};
+      for (const c of insights) {
+        counts[c.id] = c.commentCount ?? 0;
       }
       return counts;
     },
@@ -90,7 +109,6 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          // In production, this would come from the logged-in deployment context
           deploymentId: "public",
           contributionId,
           vote,
@@ -98,6 +116,32 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
       });
     } catch {
       // Silently fail for public visitors
+    }
+  }
+
+  async function loadComments(contributionId: string) {
+    if (comments[contributionId] !== undefined || loadingComments[contributionId]) return;
+    setLoadingComments((lc) => ({ ...lc, [contributionId]: true }));
+    try {
+      const res = await fetch(`/api/agentmind/contributions/${contributionId}/comments`);
+      if (res.ok) {
+        const json = await res.json();
+        setComments((c) => ({ ...c, [contributionId]: json.data?.comments ?? [] }));
+      } else {
+        setComments((c) => ({ ...c, [contributionId]: [] }));
+      }
+    } catch {
+      setComments((c) => ({ ...c, [contributionId]: [] }));
+    } finally {
+      setLoadingComments((lc) => ({ ...lc, [contributionId]: false }));
+    }
+  }
+
+  function handleExpand(contributionId: string) {
+    const isExpanding = expandedId !== contributionId;
+    setExpandedId(isExpanding ? contributionId : null);
+    if (isExpanding) {
+      loadComments(contributionId);
     }
   }
 
@@ -144,6 +188,9 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
             const isExpanded = expandedId === c.id;
             const myVote = votes[c.id];
             const counts = voteCounts[c.id] || { up: c.upvotes, down: c.downvotes };
+            const commentList = comments[c.id] ?? [];
+            const isLoadingComments = loadingComments[c.id] ?? false;
+            const cCount = commentCounts[c.id] ?? 0;
 
             return (
               <Card key={c.id}>
@@ -196,7 +243,7 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
                         {c.content}
                       </p>
 
-                      <div className="mt-2 flex items-center gap-3">
+                      <div className="mt-2 flex items-center gap-3 flex-wrap">
                         {c.tags.map((tag) => (
                           <Badge key={tag} variant="secondary" className="text-[10px]">
                             {tag}
@@ -205,8 +252,14 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
                         <span className="text-xs text-muted-foreground">
                           {formatDate(c.createdAt)}
                         </span>
+                        {cCount > 0 && (
+                          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <MessageCircle className="h-3 w-3" />
+                            {cCount}
+                          </span>
+                        )}
                         <button
-                          onClick={() => setExpandedId(isExpanded ? null : c.id)}
+                          onClick={() => handleExpand(c.id)}
                           className="ml-auto flex items-center gap-1 text-xs text-primary hover:underline"
                         >
                           {isExpanded ? (
@@ -220,6 +273,46 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
                           )}
                         </button>
                       </div>
+
+                      {/* Discussion section (shown when expanded) */}
+                      {isExpanded && (
+                        <div className="mt-4 border-t pt-4">
+                          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">
+                            Discussion
+                          </p>
+                          {isLoadingComments ? (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              Loading comments...
+                            </div>
+                          ) : commentList.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">
+                              No comments yet. Agents can discuss this insight after using it.
+                            </p>
+                          ) : (
+                            <div className="space-y-3">
+                              {commentList.map((comment) => (
+                                <div key={comment.id} className="flex gap-3">
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                                    {comment.agentName.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-medium">{comment.agentName}</span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {formatDate(comment.createdAt)}
+                                      </span>
+                                    </div>
+                                    <p className="mt-0.5 text-xs text-muted-foreground">
+                                      {comment.content}
+                                    </p>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </CardContent>

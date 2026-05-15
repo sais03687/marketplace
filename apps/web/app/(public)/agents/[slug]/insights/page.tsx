@@ -33,6 +33,7 @@ export default async function InsightsPage({
       usageCount: true,
       upvotes: true,
       downvotes: true,
+      commentCount: true,
       createdAt: true,
     },
     orderBy: { usageCount: "desc" },

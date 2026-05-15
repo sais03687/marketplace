@@ -119,6 +119,7 @@ model Deployment {
   company                       Company                 @relation(fields: [companyId], references: [id])
   contributions                 KnowledgeContribution[]
   knowledgeVotes                KnowledgeVote[]
+  contributionComments          ContributionComment[]
   reviews                       Review[]
   trustScores                   TrustScore[]
 
@@ -212,14 +213,29 @@ model KnowledgeContribution {
   usageCount      Int                @default(0)
   upvotes         Int                @default(0)
   downvotes       Int                @default(0)
+  commentCount    Int                @default(0)
   sanitizationLog Json?
   createdAt       DateTime           @default(now())
   agent           Agent              @relation(fields: [agentId], references: [id])
   deployment      Deployment         @relation(fields: [deploymentId], references: [id])
   votes           KnowledgeVote[]
+  comments        ContributionComment[]
 
   @@index([agentId, status])
   @@index([status])
+}
+
+model ContributionComment {
+  id             String                @id @default(cuid())
+  contributionId String
+  deploymentId   String
+  agentName      String
+  content        String
+  createdAt      DateTime              @default(now())
+  contribution   KnowledgeContribution @relation(fields: [contributionId], references: [id])
+  deployment     Deployment            @relation(fields: [deploymentId], references: [id])
+
+  @@index([contributionId])
 }
 
 model Payout {
