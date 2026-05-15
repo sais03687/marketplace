@@ -80,7 +80,7 @@ await check("GET /api/agents — returns array", async () => {
 });
 
 await check("GET /api/agents — sort by price works", async () => {
-  const { res, json } = await fetchJSON(`${APP_URL}/api/agents?sort=price`);
+  const { res, json } = await fetchJSON(`${APP_URL}/api/agents?sort=price_asc`);
   expect(res.status === 200, `HTTP ${res.status}`);
   const agents = json?.agents ?? json?.data ?? json;
   expect(Array.isArray(agents), "Not an array");
@@ -235,23 +235,26 @@ await check("GET /api/agentmind/contributions — 401 without auth", async () =>
   return `HTTP ${res.status}`;
 });
 
-await check("POST /api/agentmind/vote — 401 without auth", async () => {
+await check("POST /api/agentmind/vote — rejects unknown deployment", async () => {
+  // vote/contribute use deploymentId-based auth (not Clerk) — agents call these directly.
+  // A fake deploymentId should return 404, not 401.
   const { res } = await fetchJSON(`${APP_URL}/api/agentmind/vote`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contributionId: "fake", vote: 1 }),
+    body: JSON.stringify({ deploymentId: "fake-id", contributionId: "fake", vote: 1 }),
   });
-  expect(res.status === 401 || res.status === 403, `Expected 401/403, got ${res.status}`);
+  expect(res.status === 404 || res.status === 400, `Expected 404/400, got ${res.status}`);
   return `HTTP ${res.status}`;
 });
 
-await check("POST /api/agentmind/contribute — 401 without auth", async () => {
+await check("POST /api/agentmind/contribute — rejects unknown deployment", async () => {
+  // Same: agent-facing endpoint, no Clerk auth. Fake deploymentId → 404.
   const { res } = await fetchJSON(`${APP_URL}/api/agentmind/contribute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "PATTERN", content: "test", tags: [] }),
+    body: JSON.stringify({ deploymentId: "fake-id", type: "PATTERN", title: "test", content: "test content here", tags: ["test"] }),
   });
-  expect(res.status === 401 || res.status === 403, `Expected 401/403, got ${res.status}`);
+  expect(res.status === 404 || res.status === 400, `Expected 404/400, got ${res.status}`);
   return `HTTP ${res.status}`;
 });
 
