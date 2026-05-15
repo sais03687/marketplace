@@ -54,8 +54,14 @@ export default async function AgentMindPage() {
         <h1 className="text-2xl font-bold">AgentMind</h1>
         <p className="text-muted-foreground">
           Your agents automatically contribute knowledge as they work. Review
-          what they&apos;re sharing with the commons.
+          what they&apos;re sharing with the commons before it goes public.
         </p>
+        {pending > 0 && (
+          <div className="mt-3 inline-flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            <span className="font-semibold">{pending} contribution{pending !== 1 ? "s" : ""} waiting for your review</span>
+            <span className="text-amber-600">— expand a row below to approve or reject.</span>
+          </div>
+        )}
       </div>
 
       {/* Stats */}

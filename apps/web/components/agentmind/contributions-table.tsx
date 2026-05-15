@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { formatDate } from "@/lib/utils";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Check, X } from "lucide-react";
 
 interface Contribution {
   id: string;
@@ -42,10 +43,30 @@ export function ContributionsTable({
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>("ALL");
+  const [statuses, setStatuses] = useState<Record<string, string>>(
+    () => Object.fromEntries(contributions.map((c) => [c.id, c.status]))
+  );
+  const [reviewing, setReviewing] = useState<Record<string, boolean>>({});
 
   const filtered = filter === "ALL"
     ? contributions
-    : contributions.filter((c) => c.status === filter);
+    : contributions.filter((c) => (statuses[c.id] ?? c.status) === filter);
+
+  async function handleReview(id: string, decision: "APPROVED" | "REJECTED") {
+    setReviewing((r) => ({ ...r, [id]: true }));
+    try {
+      const res = await fetch(`/api/agentmind/contributions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      if (res.ok) {
+        setStatuses((s) => ({ ...s, [id]: decision }));
+      }
+    } finally {
+      setReviewing((r) => ({ ...r, [id]: false }));
+    }
+  }
 
   return (
     <div className="mt-6">
@@ -83,11 +104,14 @@ export function ContributionsTable({
                 <th className="px-4 py-3 text-right font-medium">Usage</th>
                 <th className="px-4 py-3 text-right font-medium">Votes</th>
                 <th className="px-4 py-3 text-right font-medium">Date</th>
+                <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((c) => {
                 const isExpanded = expandedId === c.id;
+                const currentStatus = statuses[c.id] ?? c.status;
+                const isReviewing = reviewing[c.id] ?? false;
                 return (
                   <>
                     <tr
@@ -116,10 +140,10 @@ export function ContributionsTable({
                       </td>
                       <td className="px-4 py-3">
                         <Badge
-                          variant={STATUS_VARIANT[c.status] || "secondary"}
+                          variant={STATUS_VARIANT[currentStatus] || "secondary"}
                           className="text-[10px]"
                         >
-                          {c.status}
+                          {currentStatus}
                         </Badge>
                       </td>
                       <td className="px-4 py-3 text-right text-muted-foreground">
@@ -131,10 +155,41 @@ export function ContributionsTable({
                       <td className="px-4 py-3 text-right text-muted-foreground">
                         {formatDate(c.createdAt)}
                       </td>
+                      <td
+                        className="px-4 py-3 text-right"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {currentStatus === "PENDING" ? (
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-green-600 hover:bg-green-50 hover:text-green-700"
+                              disabled={isReviewing}
+                              onClick={() => handleReview(c.id, "APPROVED")}
+                              title="Approve — publish to AgentMind"
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-red-600 hover:bg-red-50 hover:text-red-700"
+                              disabled={isReviewing}
+                              onClick={() => handleReview(c.id, "REJECTED")}
+                              title="Reject — keep private"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
                     </tr>
                     {isExpanded && (
                       <tr key={`${c.id}-detail`} className="border-b last:border-0">
-                        <td colSpan={8} className="bg-muted/20 px-6 py-4">
+                        <td colSpan={9} className="bg-muted/20 px-6 py-4">
                           <div className="space-y-3">
                             <div>
                               <p className="text-xs font-medium text-muted-foreground">
@@ -193,6 +248,30 @@ export function ContributionsTable({
                                     </Badge>
                                   ))}
                                 </div>
+                              </div>
+                            )}
+                            {currentStatus === "PENDING" && (
+                              <div className="flex gap-2 pt-1">
+                                <Button
+                                  size="sm"
+                                  variant="default"
+                                  className="gap-1"
+                                  disabled={isReviewing}
+                                  onClick={() => handleReview(c.id, "APPROVED")}
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                  Approve & publish
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1 text-red-600 hover:bg-red-50 hover:text-red-700"
+                                  disabled={isReviewing}
+                                  onClick={() => handleReview(c.id, "REJECTED")}
+                                >
+                                  <X className="h-3.5 w-3.5" />
+                                  Reject & keep private
+                                </Button>
                               </div>
                             )}
                           </div>
