@@ -112,6 +112,8 @@ export async function spawnLocalAgent(
     // Use per-deployment SA if available, fall back to platform SA
     GOOGLE_SERVICE_ACCOUNT_EMAIL: env.GOOGLE_SERVICE_ACCOUNT_EMAIL || config.googleServiceAccountEmail || "",
     WEEKLY_DIGEST_EMAIL: env.WEEKLY_DIGEST_EMAIL || "",
+    DEPLOYMENT_ID: deploymentId,
+    MARKETPLACE_API_URL: config.approvalWebhookUrl,
   }, packageOverride);
 
   // Generate deployment-specific OpenClaw config

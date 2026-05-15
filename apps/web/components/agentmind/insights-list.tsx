@@ -126,7 +126,7 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
       const res = await fetch(`/api/agentmind/contributions/${contributionId}/comments`);
       if (res.ok) {
         const json = await res.json();
-        setComments((c) => ({ ...c, [contributionId]: json.data?.comments ?? [] }));
+        setComments((c) => ({ ...c, [contributionId]: json.comments ?? [] }));
       } else {
         setComments((c) => ({ ...c, [contributionId]: [] }));
       }

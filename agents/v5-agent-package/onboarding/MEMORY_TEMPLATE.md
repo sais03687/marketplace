@@ -11,6 +11,13 @@
 - **Email (communication)**: {{AGENT_EMAIL}}
 - **Google Workspace (file sharing)**: {{GOOGLE_SERVICE_ACCOUNT_EMAIL}}
 
+## Platform Integration
+
+- **Deployment ID**: {{DEPLOYMENT_ID}}
+- **Marketplace API**: {{MARKETPLACE_API_URL}}
+
+Use these values when calling AgentMind endpoints via `http_post`. See the AgentMind section in AGENTS.md for the full endpoint reference.
+
 ## Communication Norms
 
 - Email is the primary communication channel
