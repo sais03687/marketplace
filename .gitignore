@@ -53,3 +53,12 @@ desktop.ini
 # Archives
 *.tar.gz
 *.zip
+
+# Local agent runtime data — never commit
+data/
+apps/web/storage/
+
+# Local env files
+.env.prod
+.env.local
+

@@ -4,6 +4,50 @@ import { validateManifest } from "@marketplace/agent-package-schema";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
 
+// ── Code scanning ─────────────────────────────────────────────────────────────
+
+const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /\bimport\s+subprocess\b/, label: "import subprocess" },
+  { pattern: /\bfrom\s+subprocess\b/, label: "from subprocess" },
+  { pattern: /\bos\.system\s*\(/, label: "os.system()" },
+  { pattern: /\bos\.popen\s*\(/, label: "os.popen()" },
+  { pattern: /\bos\.exec[vple]+\s*\(/, label: "os.exec*()" },
+  { pattern: /\bos\.spawn[vple]*\s*\(/, label: "os.spawn*()" },
+  { pattern: /\beval\s*\(/, label: "eval()" },
+  { pattern: /\b__import__\s*\(/, label: "dynamic __import__()" },
+  { pattern: /\bimport\s+ctypes\b/, label: "import ctypes" },
+  { pattern: /\bfrom\s+ctypes\b/, label: "from ctypes" },
+  { pattern: /\bimport\s+pty\b/, label: "import pty" },
+  { pattern: /\bimport\s+pickle\b/, label: "import pickle (unsafe deserialization)" },
+  { pattern: /\bimport\s+marshal\b/, label: "import marshal" },
+];
+
+async function scanPythonFiles(
+  zip: JSZip,
+): Promise<{ file: string; finding: string }[]> {
+  const findings: { file: string; finding: string }[] = [];
+
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir || !path.endsWith(".py")) continue;
+    const source = await entry.async("string");
+    const lines = source.split("\n");
+
+    for (const { pattern, label } of DANGEROUS_PATTERNS) {
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Skip commented-out lines
+        if (line.trimStart().startsWith("#")) continue;
+        if (pattern.test(line)) {
+          findings.push({ file: path, finding: `${label} on line ${i + 1}` });
+          break; // one finding per pattern per file is enough
+        }
+      }
+    }
+  }
+
+  return findings;
+}
+
 export async function POST(request: Request) {
   const authResult = await requireAuth();
   if ("error" in authResult) return authResult.error;
@@ -95,6 +139,15 @@ export async function POST(request: Request) {
           400,
         );
       }
+    }
+  }
+
+  // 3b-1b. Scan all .py files for dangerous patterns
+  if (runtime === "CUSTOM") {
+    const findings = await scanPythonFiles(zip);
+    if (findings.length > 0) {
+      const detail = findings.map((f) => `${f.file}: ${f.finding}`).join("; ");
+      return jsonError(`Package contains disallowed code patterns — ${detail}`, 400);
     }
   }
 
@@ -209,6 +262,9 @@ export async function POST(request: Request) {
 
   // 8. Create everything in a transaction
   const result = await prisma.$transaction(async (tx) => {
+    // New agents start as PENDING until an admin approves them.
+    // Existing agents keep their current status — the new version goes to PENDING
+    // and won't be used for provisioning until approved.
     const agent = existingAgent
       ? await tx.agent.update({
           where: { id: existingAgent.id },
@@ -220,10 +276,10 @@ export async function POST(request: Request) {
             pricePerMonth,
             modelTier: modelTier as any,
             runtime,
-            currentVersion: version,
-            status: "LIVE",
             onboardingQuestions: onboardingQuestions ?? undefined,
             memoryTemplate: memoryTemplate ?? undefined,
+            // Do NOT update currentVersion or status — the new version must be
+            // approved before it becomes the active version.
           },
         })
       : await tx.agent.create({
@@ -236,7 +292,7 @@ export async function POST(request: Request) {
             pricePerMonth,
             modelTier: modelTier as any,
             creatorId: creator.id,
-            status: "LIVE",
+            status: "PENDING",
             runtime,
             currentVersion: version,
             onboardingQuestions: onboardingQuestions ?? undefined,
@@ -251,8 +307,8 @@ export async function POST(request: Request) {
         packageUrl: `storage://${slug}/${version}`,
         manifestData: manifest as any,
         storagePath,
-        vetStatus: "MANUALLY_APPROVED",
-        publishedAt: new Date(),
+        vetStatus: "PENDING",
+        publishedAt: null,
       },
     });
 

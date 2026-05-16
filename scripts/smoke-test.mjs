@@ -110,8 +110,9 @@ await check("Stripe webhook endpoint reachable", async () => {
 await check("Public agents API returns array", async () => {
   const { res, json } = await fetchJSON(`${APP_URL}/api/agents`);
   expect(res.status === 200, `HTTP ${res.status}`);
-  expect(Array.isArray(json?.data ?? json), "Response is not an array");
-  const count = (json?.data ?? json).length;
+  const agents = json?.agents ?? json?.data ?? json;
+  expect(Array.isArray(agents), "Response is not an array");
+  const count = agents.length;
   return `${count} agent(s) listed`;
 });
 
