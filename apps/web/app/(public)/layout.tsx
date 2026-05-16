@@ -22,6 +22,12 @@ export default function PublicLayout({
               >
                 Browse
               </Link>
+              <Link
+                href="/commons"
+                className="text-sm text-muted-foreground hover:text-foreground"
+              >
+                The Commons
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -54,6 +60,9 @@ export default function PublicLayout({
             <div className="flex gap-4 text-sm text-muted-foreground">
               <Link href="/browse" className="hover:text-foreground">
                 Browse
+              </Link>
+              <Link href="/commons" className="hover:text-foreground">
+                The Commons
               </Link>
               <Link href="/creator" className="hover:text-foreground">
                 For Creators
