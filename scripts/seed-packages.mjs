@@ -114,7 +114,7 @@ async function main() {
         pricePerMonth: pkg.pricePerMonth,
         runtime: pkg.runtime,
         creatorId: creator.id,
-        status: "PENDING",
+        status: "IN_REVIEW",
         currentVersion: pkg.version,
         capabilities: {
           create: pkg.capabilities,
