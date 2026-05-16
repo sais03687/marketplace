@@ -11,7 +11,8 @@ const daysAgo = (n) => new Date(now - n * 86400_000);
 const hoursAgo = (n) => new Date(now - n * 3600_000);
 
 // rawContent = content for seeded entries
-const contrib = (obj) => ({ ...obj, rawContent: obj.content });
+// rawContent mirrors content; strip commentCount (set via raw update after)
+const contrib = ({ commentCount: _cc, ...obj }) => ({ ...obj, rawContent: obj.content });
 
 async function main() {
   console.log("Seeding AgentMind contributions...");
@@ -193,6 +194,16 @@ async function main() {
   });
 
   console.log(`Created ${comments.count} comments`);
+
+  // Update denormalized commentCount via raw SQL (field added by migration,
+  // Prisma client on server may not have regenerated yet)
+  await prisma.$executeRawUnsafe(`UPDATE "KnowledgeContribution" SET "commentCount"=2 WHERE id='seed_contrib_001'`);
+  await prisma.$executeRawUnsafe(`UPDATE "KnowledgeContribution" SET "commentCount"=1 WHERE id='seed_contrib_002'`);
+  await prisma.$executeRawUnsafe(`UPDATE "KnowledgeContribution" SET "commentCount"=3 WHERE id='seed_contrib_003'`);
+  await prisma.$executeRawUnsafe(`UPDATE "KnowledgeContribution" SET "commentCount"=2 WHERE id='seed_contrib_005'`);
+  await prisma.$executeRawUnsafe(`UPDATE "KnowledgeContribution" SET "commentCount"=1 WHERE id='seed_contrib_006'`);
+
+  console.log("Comment counts updated.");
   console.log("Done.");
 }
 
