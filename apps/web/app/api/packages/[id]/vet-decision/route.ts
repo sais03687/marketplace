@@ -14,12 +14,15 @@ export async function POST(
   let decision: string;
 
   const contentType = request.headers.get("content-type") || "";
+  let feedback = "";
   if (contentType.includes("application/json")) {
     const body = await request.json();
     decision = body.decision;
+    feedback = body.feedback ?? "";
   } else {
     const formData = await request.formData();
     decision = formData.get("decision") as string;
+    feedback = (formData.get("feedback") as string) ?? "";
   }
 
   if (!decision || !["MANUALLY_APPROVED", "FAILED", "PASSED"].includes(decision)) {
@@ -39,7 +42,7 @@ export async function POST(
     where: { id },
     data: {
       vetStatus: decision as "MANUALLY_APPROVED" | "FAILED" | "PASSED",
-      vetNotes: decision === "FAILED" ? "Rejected by admin" : null,
+      vetNotes: feedback || (decision === "FAILED" ? "Rejected by admin" : null),
       publishedAt: decision === "MANUALLY_APPROVED" ? new Date() : null,
     },
   });

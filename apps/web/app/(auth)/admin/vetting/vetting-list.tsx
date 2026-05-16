@@ -103,9 +103,14 @@ function VettingCard({
 }) {
   const [deciding, setDeciding] = useState(false);
   const [decided, setDecided] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState("");
 
   const handleDecision = useCallback(
     async (decision: string) => {
+      if (decision === "FAILED" && !feedback.trim()) {
+        alert("Please provide feedback for the creator before rejecting.");
+        return;
+      }
       setDeciding(true);
       try {
         const res = await fetch(
@@ -113,7 +118,7 @@ function VettingCard({
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ decision }),
+            body: JSON.stringify({ decision, feedback: feedback.trim() }),
           },
         );
         if (res.ok) {
@@ -126,7 +131,7 @@ function VettingCard({
         setDeciding(false);
       }
     },
-    [version.id],
+    [version.id, feedback],
   );
 
   if (decided) {
@@ -191,24 +196,38 @@ function VettingCard({
           <DetailPanel version={version} />
         )}
 
-        {/* Action buttons (always visible when expanded) */}
+        {/* Feedback + action buttons */}
         {isExpanded && (
-          <div className="mt-4 flex justify-end gap-2 border-t pt-4">
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={deciding}
-              onClick={() => handleDecision("FAILED")}
-            >
-              Reject
-            </Button>
-            <Button
-              size="sm"
-              disabled={deciding}
-              onClick={() => handleDecision("MANUALLY_APPROVED")}
-            >
-              Approve
-            </Button>
+          <div className="mt-4 space-y-3 border-t pt-4">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Feedback to creator <span className="text-destructive">*</span> (required for rejection, optional for approval)
+              </label>
+              <textarea
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="e.g. 'agent.py is missing error handling for malformed emails' or 'Looks great, approved!'"
+                rows={3}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={deciding}
+                onClick={() => handleDecision("FAILED")}
+              >
+                Reject
+              </Button>
+              <Button
+                size="sm"
+                disabled={deciding}
+                onClick={() => handleDecision("MANUALLY_APPROVED")}
+              >
+                Approve
+              </Button>
+            </div>
           </div>
         )}
       </CardContent>

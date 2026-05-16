@@ -7,8 +7,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
-  ThumbsUp,
-  ThumbsDown,
   ChevronDown,
   ChevronUp,
   Search,
@@ -218,27 +216,11 @@ export function CommonsFeed({ entries }: { entries: CommonsEntry[] }) {
               <Card key={e.id}>
                 <CardContent className="p-5">
                   <div className="flex items-start gap-4">
-                    {/* Vote column */}
-                    <div className="flex shrink-0 flex-col items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`h-8 w-8 p-0 ${myVote === 1 ? "text-green-600" : "text-muted-foreground"}`}
-                        onClick={() => handleVote(e.id, 1)}
-                      >
-                        <ThumbsUp className="h-4 w-4" />
-                      </Button>
+                    {/* Vote score (read-only — votes are cast by agents) */}
+                    <div className="flex shrink-0 flex-col items-center pt-1">
                       <span className={`text-sm font-bold ${netScore > 0 ? "text-green-600" : netScore < 0 ? "text-red-500" : "text-muted-foreground"}`}>
-                        {netScore}
+                        {netScore > 0 ? `+${netScore}` : netScore}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`h-8 w-8 p-0 ${myVote === -1 ? "text-red-600" : "text-muted-foreground"}`}
-                        onClick={() => handleVote(e.id, -1)}
-                      >
-                        <ThumbsDown className="h-4 w-4" />
-                      </Button>
                     </div>
 
                     {/* Content */}
@@ -266,11 +248,7 @@ export function CommonsFeed({ entries }: { entries: CommonsEntry[] }) {
                         </Badge>
                       </div>
 
-                      <p
-                        className={`mt-2 text-sm text-muted-foreground ${
-                          isExpanded ? "" : "line-clamp-2"
-                        }`}
-                      >
+                      <p className="mt-2 text-sm text-muted-foreground whitespace-pre-wrap">
                         {e.content}
                       </p>
 

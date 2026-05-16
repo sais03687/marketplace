@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ThumbsUp, ThumbsDown, ChevronDown, ChevronUp, Search, MessageCircle, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronUp, Search, MessageCircle, Loader2 } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 
 interface Comment {
@@ -48,8 +47,7 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [votes, setVotes] = useState<Record<string, number>>({});
-  const [voteCounts, setVoteCounts] = useState<Record<string, { up: number; down: number }>>(
+  const [voteCounts] = useState<Record<string, { up: number; down: number }>>(
     () => {
       const counts: Record<string, { up: number; down: number }> = {};
       for (const c of insights) {
@@ -82,42 +80,6 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
     }
     return true;
   });
-
-  async function handleVote(contributionId: string, vote: 1 | -1) {
-    const prev = votes[contributionId];
-    if (prev === vote) return; // already voted same way
-
-    // Optimistic update
-    setVotes((v) => ({ ...v, [contributionId]: vote }));
-    setVoteCounts((vc) => {
-      const current = vc[contributionId] || { up: 0, down: 0 };
-      const updated = { ...current };
-      // Undo previous vote if exists
-      if (prev === 1) updated.up--;
-      if (prev === -1) updated.down--;
-      // Apply new vote
-      if (vote === 1) updated.up++;
-      if (vote === -1) updated.down++;
-      return { ...vc, [contributionId]: updated };
-    });
-
-    // Note: voting requires a deploymentId. This is a public page so we can't
-    // easily get one. We'll show the vote UI but the actual POST will fail
-    // gracefully for non-deployed visitors.
-    try {
-      await fetch("/api/agentmind/vote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          deploymentId: "public",
-          contributionId,
-          vote,
-        }),
-      });
-    } catch {
-      // Silently fail for public visitors
-    }
-  }
 
   async function loadComments(contributionId: string) {
     if (comments[contributionId] !== undefined || loadingComments[contributionId]) return;
@@ -186,7 +148,6 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
         <div className="mt-4 space-y-3">
           {filtered.map((c) => {
             const isExpanded = expandedId === c.id;
-            const myVote = votes[c.id];
             const counts = voteCounts[c.id] || { up: c.upvotes, down: c.downvotes };
             const commentList = comments[c.id] ?? [];
             const isLoadingComments = loadingComments[c.id] ?? false;
@@ -196,27 +157,11 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
               <Card key={c.id}>
                 <CardContent className="p-5">
                   <div className="flex items-start gap-4">
-                    {/* Vote buttons */}
-                    <div className="flex shrink-0 flex-col items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`h-8 w-8 p-0 ${myVote === 1 ? "text-green-600" : "text-muted-foreground"}`}
-                        onClick={() => handleVote(c.id, 1)}
-                      >
-                        <ThumbsUp className="h-4 w-4" />
-                      </Button>
-                      <span className="text-sm font-medium">
-                        {counts.up - counts.down}
+                    {/* Vote score (read-only — votes are cast by agents) */}
+                    <div className="flex shrink-0 flex-col items-center pt-1">
+                      <span className={`text-sm font-bold ${counts.up - counts.down > 0 ? "text-green-600" : counts.up - counts.down < 0 ? "text-red-500" : "text-muted-foreground"}`}>
+                        {counts.up - counts.down > 0 ? `+${counts.up - counts.down}` : counts.up - counts.down}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`h-8 w-8 p-0 ${myVote === -1 ? "text-red-600" : "text-muted-foreground"}`}
-                        onClick={() => handleVote(c.id, -1)}
-                      >
-                        <ThumbsDown className="h-4 w-4" />
-                      </Button>
                     </div>
 
                     {/* Content */}
@@ -234,12 +179,7 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
                         </span>
                       </div>
 
-                      {/* Truncated / expanded content */}
-                      <p
-                        className={`mt-2 text-sm text-muted-foreground ${
-                          isExpanded ? "" : "line-clamp-2"
-                        }`}
-                      >
+                      <p className="mt-2 text-sm text-muted-foreground whitespace-pre-wrap">
                         {c.content}
                       </p>
 
@@ -252,24 +192,17 @@ export function InsightsList({ insights }: { insights: Insight[] }) {
                         <span className="text-xs text-muted-foreground">
                           {formatDate(c.createdAt)}
                         </span>
-                        {cCount > 0 && (
-                          <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                            <MessageCircle className="h-3 w-3" />
-                            {cCount}
-                          </span>
-                        )}
                         <button
                           onClick={() => handleExpand(c.id)}
-                          className="ml-auto flex items-center gap-1 text-xs text-primary hover:underline"
+                          className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                         >
+                          <MessageCircle className="h-3 w-3" />
+                          {cCount > 0 ? cCount : ""}
+                          {" "}
                           {isExpanded ? (
-                            <>
-                              Show less <ChevronUp className="h-3 w-3" />
-                            </>
+                            <><ChevronUp className="h-3 w-3" /> Hide</>
                           ) : (
-                            <>
-                              Read more <ChevronDown className="h-3 w-3" />
-                            </>
+                            <><ChevronDown className="h-3 w-3" /> Discuss</>
                           )}
                         </button>
                       </div>
