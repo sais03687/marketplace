@@ -1273,6 +1273,33 @@ async def _handle_message(message: str, context: dict):
             if pre_approved or not needs_approval_policy:
                 if not pre_approved:
                     print(f"[adapter] Auto-approving ({policy_reason})", flush=True)
+                    # Record the auto-approval in the DB so AgentMind eligibility
+                    # is satisfied after the first successful task (Fix B).
+                    try:
+                        risk = result.get("risk_assessment") or {}
+                        auto_stakes = float(risk.get("stakes") or 2.0)
+                        auto_ambiguity = float(risk.get("ambiguity") or 2.0)
+                        auto_reversibility = float(risk.get("reversibility") or 2.0)
+                        async with httpx.AsyncClient(timeout=10.0) as _ac:
+                            await _ac.post(
+                                f"{APPROVAL_WEBHOOK}/api/deployments/{DEPLOYMENT_ID}/approvals/auto-complete",
+                                json={
+                                    "taskType": result.get("task_type", action),
+                                    "draft": result.get("text", ""),
+                                    "originalRequest": context.get("subject", ""),
+                                    "reasoning": f"Auto-approved: {policy_reason}",
+                                    "threadId": result.get("thread_id") or context.get("thread_id"),
+                                    "stakesScore": auto_stakes,
+                                    "ambiguityScore": auto_ambiguity,
+                                    "reversibilityScore": auto_reversibility,
+                                },
+                                headers={
+                                    "Authorization": f"Bearer {APPROVAL_TOKEN}",
+                                    "Content-Type": "application/json",
+                                },
+                            )
+                    except Exception as _e:
+                        print(f"[adapter] Failed to record auto-approval (non-fatal): {_e}", flush=True)
                 else:
                     print(f"[adapter] Pre-approved session ({context.get('session_key', '')})", flush=True)
             else:
