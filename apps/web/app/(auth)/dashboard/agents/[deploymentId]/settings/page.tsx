@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, X } from "lucide-react";
 
 type ApprovalPolicy = "always" | "external-only" | "risk-based" | "never";
 
@@ -23,6 +23,12 @@ interface DeploymentSettings {
   autoUpdate: boolean;
   autonomyConfig: AutonomyConfig;
   runtime: string;
+}
+
+interface AllowlistState {
+  allowedEmails: string[];
+  companyDomain: string;
+  managerEmail: string | null;
 }
 
 const POLICY_OPTIONS: { value: ApprovalPolicy; label: string; help: string }[] = [
@@ -54,6 +60,10 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<DeploymentSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [allowlist, setAllowlist] = useState<AllowlistState>({ allowedEmails: [], companyDomain: "", managerEmail: null });
+  const [allowlistInput, setAllowlistInput] = useState("");
+  const [savingAllowlist, setSavingAllowlist] = useState(false);
+  const [savedAllowlist, setSavedAllowlist] = useState(false);
 
   useEffect(() => {
     fetch(`/api/deployments/${deploymentId}`)
@@ -67,6 +77,13 @@ export default function SettingsPage() {
           runtime: data.agent?.runtime || "CUSTOM",
         });
       });
+    fetch(`/api/deployments/${deploymentId}/allowlist`)
+      .then((r) => r.json())
+      .then((data) => setAllowlist({
+        allowedEmails: data.allowedEmails ?? [],
+        companyDomain: data.companyDomain ?? "",
+        managerEmail: data.managerEmail ?? null,
+      }));
   }, [deploymentId]);
 
   const handleSave = async () => {
@@ -96,6 +113,33 @@ export default function SettingsPage() {
       ...settings,
       autonomyConfig: { ...settings.autonomyConfig, ...patch },
     });
+  };
+
+  const handleSaveAllowlist = async () => {
+    setSavingAllowlist(true);
+    setSavedAllowlist(false);
+    await fetch(`/api/deployments/${deploymentId}/allowlist`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowedEmails: allowlist.allowedEmails }),
+    });
+    setSavingAllowlist(false);
+    setSavedAllowlist(true);
+    setTimeout(() => setSavedAllowlist(false), 2000);
+  };
+
+  const addAllowlistEntry = () => {
+    const entry = allowlistInput.toLowerCase().trim();
+    if (!entry || allowlist.allowedEmails.includes(entry)) {
+      setAllowlistInput("");
+      return;
+    }
+    setAllowlist((al) => ({ ...al, allowedEmails: [...al.allowedEmails, entry] }));
+    setAllowlistInput("");
+  };
+
+  const removeAllowlistEntry = (entry: string) => {
+    setAllowlist((al) => ({ ...al, allowedEmails: al.allowedEmails.filter((e) => e !== entry) }));
   };
 
   const linesToList = (s: string): string[] =>
@@ -266,6 +310,58 @@ export default function SettingsPage() {
               the next container restart (not on save).
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Email Allowlist</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Restrict who can email this agent. Your company domain
+            {allowlist.companyDomain ? ` (@${allowlist.companyDomain})` : ""} and manager
+            email are always allowed. Leave empty to allow anyone.
+          </p>
+
+          {/* Tag list */}
+          {allowlist.allowedEmails.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {allowlist.allowedEmails.map((entry) => (
+                <span
+                  key={entry}
+                  className="flex items-center gap-1 rounded-full border bg-muted px-3 py-1 text-xs font-medium"
+                >
+                  {entry}
+                  <button onClick={() => removeAllowlistEntry(entry)} className="ml-1 text-muted-foreground hover:text-foreground">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Add entry */}
+          <div className="flex gap-2">
+            <Input
+              placeholder="alice@acme.com or @partner.io"
+              value={allowlistInput}
+              onChange={(e) => setAllowlistInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addAllowlistEntry()}
+              className="flex-1"
+            />
+            <Button variant="outline" onClick={addAllowlistEntry} type="button">
+              Add
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Use <code className="rounded bg-muted px-1">@domain.com</code> to allow an entire domain. Press Enter or click Add.
+          </p>
+
+          <Button onClick={handleSaveAllowlist} disabled={savingAllowlist} size="sm">
+            {savingAllowlist ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : savedAllowlist ? <Check className="mr-2 h-4 w-4" /> : null}
+            {savingAllowlist ? "Saving..." : savedAllowlist ? "Saved" : "Save Allowlist"}
+          </Button>
         </CardContent>
       </Card>
 

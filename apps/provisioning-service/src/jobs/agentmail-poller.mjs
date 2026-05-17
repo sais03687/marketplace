@@ -195,6 +195,71 @@ async function getPendingApprovals(threadId) {
   }
 }
 
+// ─── Email Allowlist ─────────────────────────────────────────────────────────
+
+/** { allowedEmails: string[], companyDomain: string, managerEmail: string|null } */
+let allowlistCache = { allowedEmails: [], companyDomain: "", managerEmail: null };
+const ALLOWLIST_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
+
+async function fetchAllowlist() {
+  if (!DEPLOYMENT_ID) return;
+  try {
+    const res = await fetch(`${MARKETPLACE_URL}/api/deployments/${DEPLOYMENT_ID}/allowlist`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      allowlistCache = await res.json();
+    }
+  } catch {
+    // Non-fatal — keep previous cache
+  }
+}
+
+/**
+ * Extract the bare email address from a "Name <email>" or plain "email" string.
+ */
+function extractEmail(from) {
+  if (!from) return "";
+  const match = from.match(/<([^>]+)>/);
+  return (match ? match[1] : from).toLowerCase().trim();
+}
+
+/**
+ * Returns true if the sender is permitted to email this agent.
+ *
+ * Rules (in order):
+ *  1. If allowedEmails is empty → allow everyone (no restriction mode)
+ *  2. Company domain always allowed (intra-company)
+ *  3. Manager email always allowed
+ *  4. Exact email match in list
+ *  5. Domain wildcard match (@domain.com) in list
+ */
+function isSenderAllowed(fromHeader) {
+  const { allowedEmails, companyDomain, managerEmail } = allowlistCache;
+  if (!allowedEmails || allowedEmails.length === 0) return true;
+
+  const email = extractEmail(fromHeader);
+  if (!email) return false;
+
+  // Always allow company domain
+  if (companyDomain && email.endsWith(`@${companyDomain}`)) return true;
+
+  // Always allow manager email
+  if (managerEmail && email === managerEmail.toLowerCase()) return true;
+
+  // Check list entries
+  for (const entry of allowedEmails) {
+    if (entry.startsWith("@")) {
+      // Domain wildcard: @partner.com
+      if (email.endsWith(entry)) return true;
+    } else {
+      if (email === entry) return true;
+    }
+  }
+
+  return false;
+}
+
 // ─── Email Polling ──────────────────────────────────────────────────────────
 
 const processedIds = new Set();
@@ -304,6 +369,12 @@ async function poll() {
 
       // Skip already-read messages
       if (!msg.labels?.includes("unread")) {
+        continue;
+      }
+
+      // Allowlist check — skip if sender is not permitted
+      if (!isSenderAllowed(msg.from)) {
+        console.log(`  [blocked] From: ${msg.from} | not in allowlist — skipping`);
         continue;
       }
 
@@ -494,6 +565,17 @@ if (driveEnabled) {
 } else {
   console.log(`[drive-watcher] Disabled (no GOOGLE_SERVICE_ACCOUNT_KEY)`);
 }
+
+// Fetch allowlist at startup
+await fetchAllowlist();
+if (allowlistCache.allowedEmails.length > 0) {
+  console.log(`[allowlist] Active — ${allowlistCache.allowedEmails.length} entries (+company domain: ${allowlistCache.companyDomain})`);
+} else {
+  console.log(`[allowlist] Open — no restrictions`);
+}
+
+// Refresh allowlist every 5 minutes
+setInterval(fetchAllowlist, ALLOWLIST_REFRESH_MS);
 
 // Initial email poll — mark existing as seen without forwarding
 const existing = await listMessages();

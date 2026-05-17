@@ -104,6 +104,7 @@ model Deployment {
   onboardingData                Json?
   approvalWebhookToken          String                  @default(cuid())
   weeklyDigestEmail             String?
+  allowedEmails                 Json                    @default("[]")
   autoUpdate                    Boolean                 @default(true)
   createdAt                     DateTime                @default(now())
   updatedAt                     DateTime                @updatedAt
