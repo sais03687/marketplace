@@ -228,27 +228,24 @@ function extractEmail(from) {
  * Returns true if the sender is permitted to email this agent.
  *
  * Rules (in order):
- *  1. If allowedEmails is empty → allow everyone (no restriction mode)
- *  2. Company domain always allowed (intra-company)
- *  3. Manager email always allowed
- *  4. Exact email match in list
- *  5. Domain wildcard match (@domain.com) in list
+ *  1. Manager email is always allowed (set at hire time)
+ *  2. Exact email match in allowedEmails list
+ *  3. Domain wildcard match (@domain.com) in allowedEmails list
+ *  4. If none of the above match → deny
+ *
+ * An empty allowedEmails list means only the manager email is allowed.
  */
 function isSenderAllowed(fromHeader) {
-  const { allowedEmails, companyDomain, managerEmail } = allowlistCache;
-  if (!allowedEmails || allowedEmails.length === 0) return true;
+  const { allowedEmails, managerEmail } = allowlistCache;
 
   const email = extractEmail(fromHeader);
   if (!email) return false;
 
-  // Always allow company domain
-  if (companyDomain && email.endsWith(`@${companyDomain}`)) return true;
-
-  // Always allow manager email
+  // Manager email is always allowed
   if (managerEmail && email === managerEmail.toLowerCase()) return true;
 
-  // Check list entries
-  for (const entry of allowedEmails) {
+  // Check explicit allowlist entries
+  for (const entry of (allowedEmails || [])) {
     if (entry.startsWith("@")) {
       // Domain wildcard: @partner.com
       if (email.endsWith(entry)) return true;
@@ -568,11 +565,8 @@ if (driveEnabled) {
 
 // Fetch allowlist at startup
 await fetchAllowlist();
-if (allowlistCache.allowedEmails.length > 0) {
-  console.log(`[allowlist] Active — ${allowlistCache.allowedEmails.length} entries (+company domain: ${allowlistCache.companyDomain})`);
-} else {
-  console.log(`[allowlist] Open — no restrictions`);
-}
+const managerLabel = allowlistCache.managerEmail ? ` (manager: ${allowlistCache.managerEmail})` : "";
+console.log(`[allowlist] ${allowlistCache.allowedEmails.length} additional entries${managerLabel}`);
 
 // Refresh allowlist every 5 minutes
 setInterval(fetchAllowlist, ALLOWLIST_REFRESH_MS);

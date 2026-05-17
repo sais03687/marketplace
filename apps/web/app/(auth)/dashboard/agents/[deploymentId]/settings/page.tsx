@@ -319,9 +319,10 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Restrict who can email this agent. Your company domain
-            {allowlist.companyDomain ? ` (@${allowlist.companyDomain})` : ""} and manager
-            email are always allowed. Leave empty to allow anyone.
+            Only the manager email set at hire time
+            {allowlist.managerEmail ? ` (${allowlist.managerEmail})` : ""} can
+            email this agent by default. Add emails or domains below to grant
+            additional access.
           </p>
 
           {/* Tag list */}
