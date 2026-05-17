@@ -4,6 +4,9 @@ import { config } from "./config.js";
 import { getContainerPort } from "./clients/docker.js";
 import { startPoller } from "./jobs/poller-manager.js";
 import { restartLocalAgent } from "./jobs/local-runner.js";
+import Dockerode from "dockerode";
+
+const docker = new Dockerode();
 
 console.log("[provisioning-service] Starting...");
 
@@ -123,6 +126,21 @@ async function recoverDockerPollers(): Promise<void> {
       } else {
         // Old format: ask Docker for the mapped port
         port = await getContainerPort(containerName);
+      }
+
+      // Verify the container is actually running before spawning a poller.
+      // If it was manually removed or crashed, skip it and mark the deployment FIRED
+      // so it doesn't come back on the next restart.
+      const resolvedName = containerName.startsWith("http://")
+        ? `custom-agent-${dep.id.slice(0, 8)}`
+        : containerName;
+      try {
+        const info = await docker.getContainer(resolvedName).inspect();
+        if (!info.State.Running) throw new Error(`container not running (state: ${info.State.Status})`);
+      } catch (containerErr: any) {
+        console.warn(`[recovery] Container for ${dep.id.slice(0, 8)} is gone — marking FIRED: ${containerErr.message}`);
+        await prisma.deployment.update({ where: { id: dep.id }, data: { status: "FIRED", firedAt: new Date() } });
+        continue;
       }
 
       startPoller({

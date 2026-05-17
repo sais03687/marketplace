@@ -265,14 +265,16 @@ export async function spawnCustomAgent(
  * Stop and remove a custom agent container + its poller process.
  */
 export async function stopCustomAgent(deploymentId: string): Promise<void> {
-  const entry = customProcesses.get(deploymentId);
-  if (!entry) return;
-
+  // Always stop the poller — even if customProcesses map is empty (e.g. after a service restart)
   stopPoller(deploymentId);
+
+  const entry = customProcesses.get(deploymentId);
+  // Fall back to the deterministic container name if not tracked in memory
+  const containerName = entry?.containerName ?? `custom-agent-${deploymentId.slice(0, 8)}`;
 
   // Stop and remove container
   try {
-    const container = docker.getContainer(entry.containerName);
+    const container = docker.getContainer(containerName);
     try {
       await container.stop({ t: 10 });
     } catch (err: any) {
@@ -280,7 +282,7 @@ export async function stopCustomAgent(deploymentId: string): Promise<void> {
     }
     await container.remove({ force: true });
   } catch (err: any) {
-    console.warn(`[custom-runner] Failed to stop container ${entry.containerName}: ${err.message}`);
+    console.warn(`[custom-runner] Failed to stop container ${containerName}: ${err.message}`);
   }
 
   customProcesses.delete(deploymentId);
