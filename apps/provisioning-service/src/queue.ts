@@ -5,10 +5,18 @@ export const provisioningQueue = new Queue("provisioning", {
   connection: { url: config.redisUrl },
 });
 
-export type ProvisionJobData = {
-  type: "provision" | "deprovision" | "update" | "pause" | "resume";
-  deploymentId: string;
-};
+export interface CustomTest {
+  name: string;
+  endpoint: string;
+  method?: string;
+  body?: unknown;
+  expectStatus?: number;
+  headers?: Record<string, string>;
+}
+
+export type ProvisionJobData =
+  | { type: "provision" | "deprovision" | "update" | "pause" | "resume"; deploymentId: string }
+  | { type: "vet_package"; versionId: string; customTests?: CustomTest[]; skipDefaultTests?: boolean };
 
 export async function enqueueProvision(deploymentId: string): Promise<string> {
   const job = await provisioningQueue.add("provision", {
@@ -46,6 +54,14 @@ export async function enqueueResume(deploymentId: string): Promise<string> {
   const job = await provisioningQueue.add("resume", {
     type: "resume",
     deploymentId,
+  } satisfies ProvisionJobData);
+  return job.id!;
+}
+
+export async function enqueueVetPackage(versionId: string): Promise<string> {
+  const job = await provisioningQueue.add("vet_package", {
+    type: "vet_package",
+    versionId,
   } satisfies ProvisionJobData);
   return job.id!;
 }

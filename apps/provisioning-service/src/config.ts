@@ -24,10 +24,10 @@ export const config = {
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   openrouterApiKey: process.env.OPENROUTER_API_KEY || "",
 
-  // Featherless AI (OpenAI-compatible LLM)
+  // LLM for agent runtime (OpenRouter by default)
   llmApiKey: process.env.LLM_API_KEY || "",
-  llmBaseUrl: process.env.LLM_BASE_URL || "https://api.featherless.ai/v1",
-  llmModel: process.env.LLM_MODEL || "Qwen/Qwen3-14B",
+  llmBaseUrl: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
+  llmModel: process.env.LLM_MODEL || "google/gemini-2.5-flash",
 
   // Google Calendar integration
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",

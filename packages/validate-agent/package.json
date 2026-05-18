@@ -1,0 +1,29 @@
+{
+  "name": "@marketplace/validate-agent",
+  "version": "1.0.0",
+  "description": "CLI validator for marketplace agent packages — run before uploading",
+  "type": "module",
+  "bin": {
+    "validate-agent": "./dist/cli.mjs"
+  },
+  "files": [
+    "dist/cli.mjs"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepublishOnly": "node build.mjs"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "@marketplace/agent-package-schema": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

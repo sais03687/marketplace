@@ -32,11 +32,11 @@ const LLM_API_KEY =
 const LLM_BASE_URL =
   process.env.AGENTMIND_REFLECTION_BASE_URL ||
   process.env.LLM_BASE_URL ||
-  "https://api.featherless.ai/v1";
+  "https://openrouter.ai/api/v1";
 
 const LLM_MODEL =
   process.env.AGENTMIND_REFLECTION_MODEL ||
-  "Qwen/Qwen3-14B";
+  "google/gemini-2.5-flash";
 
 const TIMEOUT_MS = 20_000;
 

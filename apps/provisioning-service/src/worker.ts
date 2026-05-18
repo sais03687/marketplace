@@ -7,27 +7,34 @@ import { updateJob } from "./jobs/update.js";
 import { pauseJob, resumeJob } from "./jobs/pause.js";
 
 async function processJob(job: Job<ProvisionJobData>): Promise<void> {
-  const { type, deploymentId } = job.data;
-  console.log(`[worker] Processing ${type} job for deployment ${deploymentId}`);
+  console.log(`[worker] Processing ${job.data.type} job`);
 
-  switch (type) {
+  switch (job.data.type) {
     case "provision":
-      await provisionJob(deploymentId);
+      await provisionJob(job.data.deploymentId);
       break;
     case "deprovision":
-      await deprovisionJob(deploymentId);
+      await deprovisionJob(job.data.deploymentId);
       break;
     case "update":
-      await updateJob(deploymentId);
+      await updateJob(job.data.deploymentId);
       break;
     case "pause":
-      await pauseJob(deploymentId);
+      await pauseJob(job.data.deploymentId);
       break;
     case "resume":
-      await resumeJob(deploymentId);
+      await resumeJob(job.data.deploymentId);
       break;
+    case "vet_package": {
+      const { vetPackageJob } = await import("./jobs/vet-package.js");
+      await vetPackageJob(job.data.versionId, {
+        customTests: job.data.customTests,
+        skipDefaultTests: job.data.skipDefaultTests,
+      });
+      break;
+    }
     default:
-      throw new Error(`Unknown job type: ${type}`);
+      throw new Error(`Unknown job type: ${(job.data as any).type}`);
   }
 }
 

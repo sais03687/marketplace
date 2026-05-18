@@ -687,6 +687,79 @@ def _is_internal_recipient(to: str) -> bool:
 
 _approved_actions: dict[str, dict] = {}  # approval_id -> resolution data
 
+
+# ─── Return Contract Validator ────────────────────────────────────────────────
+
+_VALID_ACTIONS = {"send_email", "reply_email", "resolve_approval", "none"}
+
+
+def _validate_result(result: dict) -> None:
+    """Non-fatal runtime validation of the dict returned by run_agent().
+
+    Logs warnings for contract violations — never raises. When the action is
+    unknown we coerce it to "none" so downstream code has a safe default.
+    All other violations are informational only; the adapter will still attempt
+    the action and may surface a more specific error later.
+    """
+    action = result.get("action")
+
+    if action not in _VALID_ACTIONS:
+        logging.warning(
+            "[adapter] run_agent returned unknown action %r — coercing to 'none'. "
+            "Valid actions: %s",
+            action,
+            ", ".join(sorted(_VALID_ACTIONS)),
+        )
+        result["action"] = "none"
+        action = "none"
+
+    if action == "send_email":
+        if not result.get("to"):
+            logging.warning(
+                "[adapter] action='send_email' but 'to' is missing or empty — "
+                "email send will fail. Set result['to'] to the recipient address."
+            )
+        if not result.get("text"):
+            logging.warning(
+                "[adapter] action='send_email' but 'text' is missing or empty — "
+                "email will be sent with a blank body."
+            )
+
+    if action == "reply_email":
+        if not result.get("text"):
+            logging.warning(
+                "[adapter] action='reply_email' but 'text' is missing or empty — "
+                "reply will be sent with a blank body."
+            )
+
+    if action == "resolve_approval":
+        if not result.get("approval_id"):
+            logging.warning(
+                "[adapter] action='resolve_approval' but 'approval_id' is missing — "
+                "resolution will fail. Make sure run_agent returns the approval_id "
+                "received from approve_fn()."
+            )
+
+    risk = result.get("risk_assessment")
+    if risk and isinstance(risk, dict):
+        for key in ("stakes", "ambiguity", "reversibility", "combined"):
+            val = risk.get(key)
+            if val is not None:
+                try:
+                    fval = float(val)
+                    if not (1.0 <= fval <= 10.0):
+                        logging.warning(
+                            "[adapter] risk_assessment.%s=%r is outside [1, 10] — "
+                            "will be clamped by downstream logic.",
+                            key, val,
+                        )
+                except (TypeError, ValueError):
+                    logging.warning(
+                        "[adapter] risk_assessment.%s=%r is not numeric — ignoring.",
+                        key, val,
+                    )
+
+
 _original_queue = queue_for_approval
 _original_resolve = wait_for_resolution
 
@@ -1001,6 +1074,8 @@ async def _handle_message(message: str, context: dict):
         if not isinstance(result, dict):
             print(f"[adapter] run_agent returned non-dict ({type(result).__name__}) — skipping", flush=True)
             return
+
+        _validate_result(result)
 
         action = result.get("action", "none")
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)

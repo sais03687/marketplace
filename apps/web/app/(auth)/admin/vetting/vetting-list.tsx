@@ -31,7 +31,7 @@ interface VersionData {
   };
 }
 
-type Tab = "overview" | "files" | "onboarding";
+type Tab = "overview" | "files" | "onboarding" | "sandbox";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -244,7 +244,7 @@ function DetailPanel({ version }: { version: VersionData }) {
     <div className="mt-4 border-t pt-4">
       {/* Tab bar */}
       <div className="flex gap-1 border-b">
-        {(["overview", "files", "onboarding"] as Tab[]).map((t) => (
+        {(["overview", "sandbox", "files", "onboarding"] as Tab[]).map((t) => (
           <button
             key={t}
             className={`px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
@@ -261,6 +261,7 @@ function DetailPanel({ version }: { version: VersionData }) {
 
       <div className="mt-4">
         {tab === "overview" && <OverviewTab version={version} />}
+        {tab === "sandbox" && <SandboxTab versionId={version.id} runtime={version.agent.runtime} />}
         {tab === "files" && <FilesTab versionId={version.id} />}
         {tab === "onboarding" && <OnboardingTab versionId={version.id} />}
       </div>
@@ -440,6 +441,309 @@ function FilesTab({ versionId }: { versionId: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+// ── Sandbox Tab ───────────────────────────────────────────────────────────────
+
+interface SandboxStep {
+  name: string;
+  status: "pass" | "fail" | "skip" | "warn";
+  detail: string;
+  findings?: string[];
+}
+
+interface SandboxReport {
+  runAt?: string;
+  slug?: string;
+  version?: string;
+  runtime?: string;
+  steps?: SandboxStep[];
+  overallStatus?: "pass" | "fail";
+  summary?: string;
+  status?: string; // "queued" | "running"
+  startedAt?: string;
+  queuedAt?: string;
+}
+
+const DEFAULT_CUSTOM_TESTS_PLACEHOLDER = `[
+  {
+    "name": "Example: check a custom endpoint",
+    "endpoint": "/my-endpoint",
+    "method": "POST",
+    "body": { "key": "value" },
+    "expectStatus": 200
+  }
+]`;
+
+function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string }) {
+  const [loading, setLoading] = useState(false);
+  const [report, setReport] = useState<SandboxReport | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Configurable test options
+  const [showConfig, setShowConfig] = useState(false);
+  const [skipDefaultTests, setSkipDefaultTests] = useState(false);
+  const [customTestsJson, setCustomTestsJson] = useState("");
+  const [jsonError, setJsonError] = useState<string | null>(null);
+
+  const isCustom = runtime === "CUSTOM";
+
+  // Load existing results on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/packages/${versionId}/vet-sandbox`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled && data.testResults) {
+          setReport(data.testResults as SandboxReport);
+        }
+      } catch { /* best effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, [versionId]);
+
+  // Polling loop while running/queued
+  useEffect(() => {
+    if (!polling) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/packages/${versionId}/vet-sandbox`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const r = data.testResults as SandboxReport | null;
+        if (cancelled) return;
+        setReport(r);
+        // Stop polling once we have steps (job completed)
+        if (r?.steps && r.steps.length > 0) {
+          setPolling(false);
+        }
+      } catch { /* best effort */ }
+    }, 3000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [polling, versionId]);
+
+  const parseCustomTests = useCallback((): unknown[] | null => {
+    if (!customTestsJson.trim()) return [];
+    try {
+      const parsed = JSON.parse(customTestsJson);
+      if (!Array.isArray(parsed)) {
+        setJsonError("Must be a JSON array");
+        return null;
+      }
+      setJsonError(null);
+      return parsed;
+    } catch (e: unknown) {
+      setJsonError(e instanceof Error ? e.message : "Invalid JSON");
+      return null;
+    }
+  }, [customTestsJson]);
+
+  const runSandbox = useCallback(async () => {
+    const customTests = parseCustomTests();
+    if (customTests === null) return; // JSON parse error
+
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/packages/${versionId}/vet-sandbox`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customTests: customTests.length > 0 ? customTests : undefined,
+          skipDefaultTests: skipDefaultTests || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed to queue vetting job");
+        return;
+      }
+      setReport({ status: "queued", queuedAt: new Date().toISOString() });
+      setPolling(true);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }, [versionId, parseCustomTests, skipDefaultTests]);
+
+  const isRunning = report?.status === "queued" || report?.status === "running";
+  const hasDone = report?.steps && report.steps.length > 0;
+
+  return (
+    <div className="space-y-4 text-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-medium">Automated Vetting Sandbox</p>
+          <p className="text-xs text-muted-foreground">
+            {isCustom
+              ? "Builds the Docker image and fires synthetic HTTP tests against the container."
+              : "Static validation only — sandbox requires custom runtime."}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {isCustom && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setShowConfig((v) => !v)}
+              disabled={isRunning}
+              className="text-xs"
+            >
+              {showConfig ? "Hide config" : "Configure tests"}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={loading || isRunning || !isCustom || !!jsonError}
+            onClick={runSandbox}
+            title={!isCustom ? "Sandbox vetting is only available for custom runtime packages" : undefined}
+          >
+            {isRunning ? "Running…" : loading ? "Queuing…" : "Run Sandbox"}
+          </Button>
+        </div>
+      </div>
+
+      {/* Configurable test panel */}
+      {showConfig && isCustom && (
+        <div className="rounded border bg-muted/40 p-3 space-y-3">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Test Configuration</p>
+
+          {/* Skip default tests toggle */}
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={skipDefaultTests}
+              onChange={(e) => setSkipDefaultTests(e.target.checked)}
+              className="h-3.5 w-3.5 rounded border"
+            />
+            <span className="text-xs">
+              Skip default platform tests
+              <span className="ml-1 text-muted-foreground">
+                (health, memory, skills, onboarding, email hooks)
+              </span>
+            </span>
+          </label>
+
+          {/* Custom tests JSON editor */}
+          <div>
+            <label className="mb-1 block text-xs font-medium">
+              Custom tests
+              <span className="ml-1 text-muted-foreground font-normal">(JSON array — leave blank to omit)</span>
+            </label>
+            <textarea
+              value={customTestsJson}
+              onChange={(e) => {
+                setCustomTestsJson(e.target.value);
+                setJsonError(null);
+              }}
+              placeholder={DEFAULT_CUSTOM_TESTS_PLACEHOLDER}
+              rows={8}
+              spellCheck={false}
+              className="w-full rounded border bg-background px-3 py-2 font-mono text-xs placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            {jsonError && (
+              <p className="mt-1 text-xs text-destructive">JSON error: {jsonError}</p>
+            )}
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Each test: <code className="bg-muted px-0.5 rounded">{"{ name, endpoint, method?, body?, expectStatus?, headers? }"}</code>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded border border-destructive bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
+      )}
+
+      {isRunning && (
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <span className="text-xs">
+            {report?.status === "queued" ? "Queued — waiting for provisioning service…" : "Building and testing…"}
+          </span>
+        </div>
+      )}
+
+      {hasDone && report && (
+        <div className="space-y-2">
+          {/* Overall badge */}
+          <div className="flex items-center gap-2">
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                report.overallStatus === "pass"
+                  ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                  : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+              }`}
+            >
+              {report.overallStatus === "pass" ? "✓ PASS" : "✗ FAIL"}
+            </span>
+            <span className="text-xs text-muted-foreground">{report.summary}</span>
+            {report.runAt && (
+              <span className="ml-auto text-xs text-muted-foreground">
+                {new Date(report.runAt).toLocaleString()}
+              </span>
+            )}
+          </div>
+
+          {/* Step results */}
+          <div className="rounded border divide-y">
+            {report.steps!.map((step, i) => (
+              <div key={i} className="px-3 py-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium">{step.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{step.detail}</span>
+                    <StatusBadge status={step.status} />
+                  </div>
+                </div>
+                {step.findings && step.findings.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {step.findings.map((f, j) => (
+                      <li key={j} className="text-xs text-destructive font-mono bg-destructive/5 rounded px-2 py-0.5">
+                        {f}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!hasDone && !isRunning && !error && (
+        <p className="text-xs text-muted-foreground">
+          {isCustom
+            ? "No sandbox results yet. Click \"Run Sandbox\" to start."
+            : "This package uses the OpenClaw runtime. Sandbox vetting requires custom runtime packages."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: "pass" | "fail" | "skip" | "warn" }) {
+  const cfg = {
+    pass: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
+    fail: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+    skip: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
+    warn: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400",
+  }[status];
+  const label = { pass: "PASS", fail: "FAIL", skip: "SKIP", warn: "WARN" }[status];
+  return (
+    <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold ${cfg}`}>
+      {label}
+    </span>
   );
 }
 

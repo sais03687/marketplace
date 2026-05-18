@@ -13,13 +13,19 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\bos\.popen\s*\(/, label: "os.popen()" },
   { pattern: /\bos\.exec[vple]+\s*\(/, label: "os.exec*()" },
   { pattern: /\bos\.spawn[vple]*\s*\(/, label: "os.spawn*()" },
-  { pattern: /\beval\s*\(/, label: "eval()" },
+  { pattern: /(?<!\.)\beval\s*\(/, label: "eval()" },
   { pattern: /\b__import__\s*\(/, label: "dynamic __import__()" },
   { pattern: /\bimport\s+ctypes\b/, label: "import ctypes" },
   { pattern: /\bfrom\s+ctypes\b/, label: "from ctypes" },
   { pattern: /\bimport\s+pty\b/, label: "import pty" },
   { pattern: /\bimport\s+pickle\b/, label: "import pickle (unsafe deserialization)" },
   { pattern: /\bimport\s+marshal\b/, label: "import marshal" },
+  // Additional patterns not in earlier version — added to match validator
+  { pattern: /(?<!\.)\bexec\s*\(/, label: "exec() — same power as eval()" },
+  { pattern: /(?<!\.)\bcompile\s*\(/, label: "compile() — creates code objects from strings" },
+  { pattern: /\bimport\s+multiprocessing\b/, label: "import multiprocessing (subprocess-equivalent)" },
+  { pattern: /\bfrom\s+multiprocessing\b/, label: "from multiprocessing" },
+  { pattern: /\bimport\s+socket\b|\bfrom\s+socket\b/, label: "import socket (raw socket access)" },
 ];
 
 async function scanPythonFiles(
