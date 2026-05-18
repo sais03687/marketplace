@@ -20,6 +20,19 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field
 
+try:
+    # Relative import works when loaded as `creator.agent` (the normal case in the container).
+    # Falls back to bare import if run as a standalone script (e.g. local testing).
+    from . import google_tools as _gt  # type: ignore
+    _GOOGLE_AVAILABLE = _gt.AVAILABLE
+except (ImportError, ValueError):
+    try:
+        import google_tools as _gt  # type: ignore
+        _GOOGLE_AVAILABLE = _gt.AVAILABLE
+    except ImportError:
+        _gt = None  # type: ignore
+        _GOOGLE_AVAILABLE = False
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 # Platform sets these env vars at provision time — no hardcoded defaults
@@ -73,9 +86,24 @@ class AgentState(BaseModel):
     knowledge_hits: list = Field(default_factory=list)
     original_draft: str = ""
     task_type: str = ""
+    # Google enrichment
+    enriched_content: str = ""   # message after auto-fetching Google URLs
 
 
 # ─── Nodes ───────────────────────────────────────────────────────────────────
+
+async def fetch_google_context(state: AgentState) -> AgentState:
+    """Auto-enrich the message with Google file content for any detected URLs."""
+    if not _GOOGLE_AVAILABLE or not _gt:
+        state.enriched_content = state.content
+        return state
+    try:
+        state.enriched_content = await _gt.enrich_message(state.content)
+    except Exception as exc:
+        print(f"[google] enrich_message failed (non-fatal): {exc}", flush=True)
+        state.enriched_content = state.content
+    return state
+
 
 async def search_commons(state: AgentState) -> AgentState:
     """Search AgentMind for relevant knowledge before composing a response."""
@@ -137,6 +165,23 @@ Respond with a JSON object (no markdown fences):
     "thread_id": "thread id or null"
   }},
   "reasoning": "why you chose this action",
+  "google_read_requests": [
+    // optional — include if you need more Google data before responding
+    // {{"type": "drive_search", "query": "...", "limit": 5}}
+    // {{"type": "drive_get_file", "file_id": "..."}}
+    // {{"type": "sheets_read", "file_id": "...", "range": "A1:Z50"}}
+    // {{"type": "docs_read", "file_id": "..."}}
+    // {{"type": "calendar_list", "time_min": "2026-05-16T00:00:00Z", "time_max": "2026-05-23T23:59:59Z"}}
+  ],
+  "google_writes": [
+    // optional — executed after email is sent
+    // {{"type": "sheets_write", "file_id": "...", "range": "B2", "values": [["v1","v2"]]}}
+    // {{"type": "sheets_append", "file_id": "...", "range": "Sheet1", "values": [["new","row"]]}}
+    // {{"type": "docs_append", "file_id": "...", "text": "appended text"}}
+    // {{"type": "calendar_create", "summary": "...", "start": "...", "end": "...", "attendees": ["x@y.com"], "timezone": "UTC"}}
+    // {{"type": "calendar_update", "event_id": "...", "summary": "new title"}}
+    // {{"type": "calendar_delete", "event_id": "..."}}
+  ],
   "insight_worthy": <true if you learned something new or want to contribute to AgentMind>,
   "insight": {{
     "type": "CORRECTION | PATTERN | RESPONSE_TEMPLATE | TASK_RECIPE | null",
@@ -176,10 +221,13 @@ async def analyze_task(state: AgentState) -> AgentState:
             except Exception as e:
                 print(f"[agentmind] Report usage failed (non-fatal): {e}")
 
+    # Use enriched content (with Google file data) if available
+    message_content = state.enriched_content or state.content
+
     prompt = ANALYSIS_PROMPT.format(
         agent_name=ctx.get("agent_name", "Agent"),
         company_name=ctx.get("company_name", ""),
-        content=state.content,
+        content=message_content,
         hook_name=ctx.get("hook_name", ""),
         session_key=ctx.get("session_key", ""),
         soul_instructions=_soul_md,
@@ -244,6 +292,48 @@ async def analyze_task(state: AgentState) -> AgentState:
         "reversibility": _clamp(risk.get("reversibility", 8)),
         "combined": _clamp(risk.get("combined", 8.0)),
     }
+
+    # ── Google read-request second pass ──────────────────────────────────────
+    # If the LLM wants more data (drive_search, calendar_list, etc.), fetch it
+    # and re-invoke once so it can give an informed response.
+    google_read_requests = analysis.get("google_read_requests") or []
+    if google_read_requests and _GOOGLE_AVAILABLE and _gt:
+        try:
+            read_data = await _gt.execute_reads(google_read_requests)
+            if read_data:
+                print(f"[google] Second pass: fetched {len(google_read_requests)} read request(s)", flush=True)
+                enriched2 = message_content + f"\n\n[Google Data]\n{read_data}"
+                prompt2 = ANALYSIS_PROMPT.format(
+                    agent_name=ctx.get("agent_name", "Agent"),
+                    company_name=ctx.get("company_name", ""),
+                    content=enriched2,
+                    hook_name=ctx.get("hook_name", ""),
+                    session_key=ctx.get("session_key", ""),
+                    soul_instructions=_soul_md,
+                    behavioral_rules=_agents_md,
+                    tools_guide=_tools_md,
+                    agentmind_prompt=ctx.get("agentmind_prompt", ""),
+                    knowledge_context=knowledge_context,
+                )
+                response2 = await asyncio.wait_for(llm.ainvoke(prompt2), timeout=45)
+                text2 = response2.content if hasattr(response2, "content") else str(response2)
+                try:
+                    cleaned2 = text2.strip()
+                    if cleaned2.startswith("```"):
+                        cleaned2 = cleaned2.split("\n", 1)[1].rsplit("```", 1)[0]
+                    analysis = json.loads(cleaned2)
+                    # Re-clamp risk scores
+                    risk2 = analysis.get("risk_assessment", {})
+                    analysis["risk_assessment"] = {
+                        "stakes": _clamp(risk2.get("stakes", 8)),
+                        "ambiguity": _clamp(risk2.get("ambiguity", 8)),
+                        "reversibility": _clamp(risk2.get("reversibility", 8)),
+                        "combined": _clamp(risk2.get("combined", 8.0)),
+                    }
+                except (json.JSONDecodeError, IndexError):
+                    pass  # keep original analysis if second pass parse fails
+        except Exception as exc:
+            print(f"[google] Read-request second pass failed (non-fatal): {exc}", flush=True)
 
     state.analysis = analysis
     state.task_type = analysis.get("task_type", "unknown")
@@ -327,6 +417,23 @@ async def format_response(state: AgentState) -> AgentState:
     return state
 
 
+async def execute_google_ops(state: AgentState) -> AgentState:
+    """Execute any google_writes the LLM included in its response.
+
+    Runs after the email is prepared (before maybe_contribute).
+    Non-fatal: write errors are logged but don't abort the response.
+    """
+    writes = state.analysis.get("google_writes") or []
+    if not writes or not _GOOGLE_AVAILABLE or not _gt:
+        return state
+    try:
+        results = await _gt.execute_writes(writes)
+        print(f"[google] Executed {len(writes)} write(s): {results}", flush=True)
+    except Exception as exc:
+        print(f"[google] execute_writes failed (non-fatal): {exc}", flush=True)
+    return state
+
+
 async def maybe_contribute(state: AgentState) -> AgentState:
     """Autonomously contribute an insight to AgentMind if the LLM flagged one."""
     if not state.contribute_fn:
@@ -367,17 +474,21 @@ def should_approve(state: AgentState) -> str:
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
+    graph.add_node("fetch_google_context", fetch_google_context)
     graph.add_node("search_commons", search_commons)
     graph.add_node("analyze_task", analyze_task)
     graph.add_node("handle_approval", handle_approval)
     graph.add_node("format_response", format_response)
+    graph.add_node("execute_google_ops", execute_google_ops)
     graph.add_node("maybe_contribute", maybe_contribute)
 
-    graph.set_entry_point("search_commons")
+    graph.set_entry_point("fetch_google_context")
+    graph.add_edge("fetch_google_context", "search_commons")
     graph.add_edge("search_commons", "analyze_task")
     graph.add_conditional_edges("analyze_task", should_approve)
-    graph.add_edge("handle_approval", "maybe_contribute")
-    graph.add_edge("format_response", "maybe_contribute")
+    graph.add_edge("handle_approval", "execute_google_ops")
+    graph.add_edge("format_response", "execute_google_ops")
+    graph.add_edge("execute_google_ops", "maybe_contribute")
     graph.add_edge("maybe_contribute", END)
 
     return graph
