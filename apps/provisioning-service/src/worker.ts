@@ -42,6 +42,9 @@ export function startWorker(): Worker<ProvisionJobData> {
   const worker = new Worker<ProvisionJobData>("provisioning", processJob, {
     connection: { url: config.redisUrl },
     concurrency: 2,
+    // Poll every 5s when queue is empty — prevents hammering Upstash free tier.
+    // Jobs are still picked up within ~5s of being enqueued, which is fine.
+    drainDelay: 5000,
   });
 
   worker.on("completed", (job) => {
