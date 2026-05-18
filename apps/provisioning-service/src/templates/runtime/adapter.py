@@ -7,6 +7,7 @@ Implements the 3-endpoint adapter contract:
   POST /internal/approvals/{id}/resolve — receive approval resolutions
 """
 
+import datetime
 import json
 import os
 import re
@@ -151,8 +152,9 @@ _GOOGLE_SA_INFO = _load_sa_info()
 
 _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/calendar",
 ]
 
 _google_token_cache: dict = {"token": None, "expires_at": 0.0}
@@ -259,58 +261,406 @@ async def google_docs_read(doc_id: str) -> str:
         return "".join(parts)[:8000]
 
 
+async def google_docs_append(doc_id: str, text: str) -> str:
+    """Append text to the end of a Google Doc."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    # First get the doc to find end index
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://docs.googleapis.com/v1/documents/{doc_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not resp.is_success:
+            return f"[Error reading doc {doc_id}: {resp.status_code}]"
+        body = resp.json().get("body", {}).get("content", [])
+        end_index = 1
+        for block in body:
+            ei = block.get("endIndex")
+            if ei:
+                end_index = ei
+        # Insert text before last newline (index is 1-based, end_index is exclusive)
+        insert_index = max(1, end_index - 1)
+        patch = {"requests": [{"insertText": {"location": {"index": insert_index}, "text": text}}]}
+        resp2 = await client.post(
+            f"https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=patch,
+        )
+        if not resp2.is_success:
+            return f"[Error writing to doc {doc_id}: {resp2.status_code}]"
+        return f"[Appended {len(text)} chars to doc {doc_id}]"
+
+
+async def google_drive_search(query: str, limit: int = 10) -> str:
+    """Search Google Drive files visible to the service account."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    # Build a Drive API query — support plain text or raw q= syntax
+    if not any(op in query for op in ["=", "contains", "in", "has", "trashed"]):
+        q = f"name contains '{query}' and trashed = false"
+    else:
+        q = query
+    params = f"q={q}&pageSize={limit}&fields=files(id,name,mimeType,modifiedTime,owners,size,webViewLink)"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://www.googleapis.com/drive/v3/files?{params}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not resp.is_success:
+            return f"[Drive search failed: {resp.status_code}]"
+        files = resp.json().get("files", [])
+        if not files:
+            return "[No files found matching that query]"
+        lines = [f"Found {len(files)} file(s):"]
+        for f in files:
+            lines.append(
+                f"  - {f['name']} ({f.get('mimeType','').split('.')[-1]}) "
+                f"| ID: {f['id']} | Modified: {f.get('modifiedTime','?')[:10]} "
+                f"| Link: {f.get('webViewLink','')}"
+            )
+        return "\n".join(lines)
+
+
+async def google_drive_get_file(file_id: str) -> str:
+    """Get metadata and text content for a Drive file."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Get metadata
+        meta_resp = await client.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}"
+            "?fields=id,name,mimeType,modifiedTime,owners,size,webViewLink",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not meta_resp.is_success:
+            return f"[Error getting file {file_id}: {meta_resp.status_code}]"
+        meta = meta_resp.json()
+        mime = meta.get("mimeType", "")
+
+        info = (
+            f"File: {meta.get('name')}\n"
+            f"Type: {mime}\n"
+            f"ID: {file_id}\n"
+            f"Modified: {meta.get('modifiedTime','?')[:10]}\n"
+            f"Link: {meta.get('webViewLink','')}\n"
+        )
+
+        # Try to export text content for Google native types
+        if "spreadsheet" in mime:
+            content = await google_sheets_read(file_id)
+            return info + f"\nContent:\n{content[:4000]}"
+        elif "document" in mime:
+            content = await google_docs_read(file_id)
+            return info + f"\nContent:\n{content[:4000]}"
+        elif "presentation" in mime:
+            # Export as plain text
+            export_resp = await client.get(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=text/plain",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if export_resp.is_success:
+                return info + f"\nContent:\n{export_resp.text[:4000]}"
+        else:
+            # Try plain download for text files
+            dl_resp = await client.get(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if dl_resp.is_success and len(dl_resp.content) < 50_000:
+                try:
+                    return info + f"\nContent:\n{dl_resp.text[:4000]}"
+                except Exception:
+                    pass
+        return info + "\n[Binary file — content not extracted]"
+
+
+async def google_calendar_list_events(
+    calendar_id: str = "primary",
+    time_min: str | None = None,
+    time_max: str | None = None,
+    max_results: int = 20,
+) -> str:
+    """List Google Calendar events in a time range."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    import urllib.parse
+    now = datetime.datetime.utcnow()
+    t_min = time_min or now.strftime("%Y-%m-%dT00:00:00Z")
+    t_max = time_max or (now + datetime.timedelta(days=7)).strftime("%Y-%m-%dT23:59:59Z")
+    params = urllib.parse.urlencode({
+        "timeMin": t_min,
+        "timeMax": t_max,
+        "maxResults": max_results,
+        "singleEvents": "true",
+        "orderBy": "startTime",
+        "fields": "items(id,summary,description,start,end,attendees,location,status)",
+    })
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://www.googleapis.com/calendar/v3/calendars/{urllib.parse.quote(calendar_id)}/events?{params}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if not resp.is_success:
+            return f"[Calendar list failed ({resp.status_code}): share your calendar with {GOOGLE_SA_EMAIL}]"
+        items = resp.json().get("items", [])
+        if not items:
+            return f"[No events found between {t_min[:10]} and {t_max[:10]}]"
+        lines = [f"Calendar events ({t_min[:10]} → {t_max[:10]}):"]
+        for ev in items:
+            start = ev.get("start", {})
+            end = ev.get("end", {})
+            start_str = start.get("dateTime", start.get("date", "?"))[:16]
+            end_str = end.get("dateTime", end.get("date", "?"))[:16]
+            attendees = [a.get("email","") for a in ev.get("attendees", [])]
+            att_str = f" | Attendees: {', '.join(attendees)}" if attendees else ""
+            loc = f" | Location: {ev['location']}" if ev.get("location") else ""
+            lines.append(f"  [{ev['id']}] {ev.get('summary','(no title)')} — {start_str} → {end_str}{loc}{att_str}")
+        return "\n".join(lines)
+
+
+async def google_calendar_create_event(
+    calendar_id: str = "primary",
+    summary: str = "",
+    description: str = "",
+    start: str = "",
+    end: str = "",
+    attendees: list | None = None,
+    location: str = "",
+    timezone: str = "UTC",
+) -> str:
+    """Create a Google Calendar event."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    import urllib.parse
+    body: dict = {
+        "summary": summary,
+        "description": description,
+        "start": {"dateTime": start, "timeZone": timezone} if "T" in start else {"date": start},
+        "end": {"dateTime": end, "timeZone": timezone} if "T" in end else {"date": end},
+    }
+    if location:
+        body["location"] = location
+    if attendees:
+        body["attendees"] = [{"email": a} for a in attendees]
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            f"https://www.googleapis.com/calendar/v3/calendars/{urllib.parse.quote(calendar_id)}/events",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=body,
+        )
+        if not resp.is_success:
+            return f"[Calendar create failed ({resp.status_code}): {resp.text[:200]}]"
+        ev = resp.json()
+        return f"[Created event '{ev.get('summary')}' — ID: {ev.get('id')} | Link: {ev.get('htmlLink','')}]"
+
+
+async def google_calendar_update_event(
+    event_id: str,
+    calendar_id: str = "primary",
+    summary: str | None = None,
+    description: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    location: str | None = None,
+    timezone: str = "UTC",
+) -> str:
+    """Update an existing Google Calendar event (partial update)."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    import urllib.parse
+    patch: dict = {}
+    if summary is not None:
+        patch["summary"] = summary
+    if description is not None:
+        patch["description"] = description
+    if location is not None:
+        patch["location"] = location
+    if start is not None:
+        patch["start"] = {"dateTime": start, "timeZone": timezone} if "T" in start else {"date": start}
+    if end is not None:
+        patch["end"] = {"dateTime": end, "timeZone": timezone} if "T" in end else {"date": end}
+    if not patch:
+        return "[No fields to update]"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.patch(
+            f"https://www.googleapis.com/calendar/v3/calendars/{urllib.parse.quote(calendar_id)}/events/{event_id}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=patch,
+        )
+        if not resp.is_success:
+            return f"[Calendar update failed ({resp.status_code}): {resp.text[:200]}]"
+        ev = resp.json()
+        return f"[Updated event '{ev.get('summary')}' ({event_id})]"
+
+
+async def google_calendar_delete_event(event_id: str, calendar_id: str = "primary") -> str:
+    """Delete a Google Calendar event."""
+    token = await _get_google_access_token()
+    if not token:
+        return "[Google Workspace not configured]"
+    import urllib.parse
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.delete(
+            f"https://www.googleapis.com/calendar/v3/calendars/{urllib.parse.quote(calendar_id)}/events/{event_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if resp.status_code == 204:
+            return f"[Deleted event {event_id}]"
+        return f"[Calendar delete failed ({resp.status_code}): {resp.text[:200]}]"
+
+
 # Google URL patterns for context enrichment
 _GOOGLE_SHEETS_RE = re.compile(r"docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)")
 _GOOGLE_DOCS_RE = re.compile(r"docs\.google\.com/document/d/([a-zA-Z0-9_-]+)")
+_GOOGLE_DRIVE_RE = re.compile(r"drive\.google\.com/(?:file/d/|open\?id=)([a-zA-Z0-9_-]+)")
+
+
+_CALENDAR_KEYWORDS = re.compile(
+    r"\b(schedul|calendar|meeting|availab|free slot|busy|appointment|event|book a|"
+    r"set up a call|block time|when are you|what('s| is) on|remind me|rsvp|invite)\b",
+    re.IGNORECASE,
+)
 
 
 async def _enrich_with_google_content(message: str) -> str:
-    """Detect Google file URLs in the message and pre-fetch their content."""
+    """Pre-fetch Google file content and calendar data relevant to the message."""
     if not _GOOGLE_SA_INFO:
         return message
 
     additions = []
     seen_ids: set[str] = set()
 
+    # Sheets URLs
     for match in _GOOGLE_SHEETS_RE.finditer(message):
         fid = match.group(1)
         if fid not in seen_ids:
             seen_ids.add(fid)
             try:
                 content = await google_sheets_read(fid)
-                additions.append(f"\n\n[Google Sheet {fid} — content pre-fetched for your reference]:\n{content[:4000]}")
+                additions.append(f"\n\n[Google Sheet {fid} — pre-fetched]:\n{content[:4000]}")
             except Exception as exc:
                 print(f"[adapter] Sheet pre-fetch {fid} failed: {exc}", flush=True)
 
+    # Docs URLs
     for match in _GOOGLE_DOCS_RE.finditer(message):
         fid = match.group(1)
         if fid not in seen_ids:
             seen_ids.add(fid)
             try:
                 content = await google_docs_read(fid)
-                additions.append(f"\n\n[Google Doc {fid} — content pre-fetched for your reference]:\n{content[:4000]}")
+                additions.append(f"\n\n[Google Doc {fid} — pre-fetched]:\n{content[:4000]}")
             except Exception as exc:
                 print(f"[adapter] Doc pre-fetch {fid} failed: {exc}", flush=True)
+
+    # Drive file URLs
+    for match in _GOOGLE_DRIVE_RE.finditer(message):
+        fid = match.group(1)
+        if fid not in seen_ids:
+            seen_ids.add(fid)
+            try:
+                content = await google_drive_get_file(fid)
+                additions.append(f"\n\n[Google Drive file {fid} — pre-fetched]:\n{content[:4000]}")
+            except Exception as exc:
+                print(f"[adapter] Drive pre-fetch {fid} failed: {exc}", flush=True)
+
+    # Proactive calendar fetch when message mentions scheduling
+    if _CALENDAR_KEYWORDS.search(message):
+        try:
+            now = datetime.datetime.utcnow()
+            t_min = now.strftime("%Y-%m-%dT00:00:00Z")
+            t_max = (now + datetime.timedelta(days=7)).strftime("%Y-%m-%dT23:59:59Z")
+            cal_content = await google_calendar_list_events(time_min=t_min, time_max=t_max)
+            additions.append(f"\n\n[Calendar — next 7 days, pre-fetched]:\n{cal_content}")
+        except Exception as exc:
+            print(f"[adapter] Calendar pre-fetch failed: {exc}", flush=True)
 
     if additions:
         return message + "".join(additions)
     return message
 
 
+async def _execute_google_reads(read_requests: list[dict]) -> str:
+    """Execute read requests from the agent and return results as a formatted string."""
+    parts = []
+    for req in read_requests:
+        req_type = req.get("type", "")
+        try:
+            if req_type == "drive_search":
+                r = await google_drive_search(req.get("query", ""), req.get("limit", 10))
+                parts.append(f"[Drive search '{req.get('query')}']:\n{r}")
+            elif req_type == "drive_get_file":
+                r = await google_drive_get_file(req["file_id"])
+                parts.append(f"[Drive file {req['file_id']}]:\n{r}")
+            elif req_type == "sheets_read":
+                r = await google_sheets_read(req["file_id"], req.get("range", "A1:Z1000"))
+                parts.append(f"[Sheet {req['file_id']} {req.get('range','')}]:\n{r}")
+            elif req_type == "docs_read":
+                r = await google_docs_read(req["file_id"])
+                parts.append(f"[Doc {req['file_id']}]:\n{r[:4000]}")
+            elif req_type == "calendar_list":
+                r = await google_calendar_list_events(
+                    req.get("calendar_id", "primary"),
+                    req.get("time_min"),
+                    req.get("time_max"),
+                    req.get("max_results", 20),
+                )
+                parts.append(f"[Calendar events]:\n{r}")
+        except Exception as exc:
+            parts.append(f"[{req_type} failed: {exc}]")
+    return "\n\n".join(parts)
+
+
 async def _execute_google_writes(google_writes: list[dict]) -> list[str]:
-    """Execute a list of Google write operations returned by the agent."""
+    """Execute a list of Google write/action operations returned by the agent."""
     results = []
     for op in google_writes:
         op_type = op.get("type", "")
         try:
             if op_type == "sheets_write":
                 r = await google_sheets_write(op["file_id"], op["range"], op["values"])
-                results.append(r)
             elif op_type == "sheets_append":
                 r = await google_sheets_append(op["file_id"], op["range"], op["values"])
-                results.append(r)
+            elif op_type == "docs_append":
+                r = await google_docs_append(op["file_id"], op["text"])
+            elif op_type == "calendar_create":
+                r = await google_calendar_create_event(
+                    calendar_id=op.get("calendar_id", "primary"),
+                    summary=op.get("summary", ""),
+                    description=op.get("description", ""),
+                    start=op.get("start", ""),
+                    end=op.get("end", ""),
+                    attendees=op.get("attendees"),
+                    location=op.get("location", ""),
+                    timezone=op.get("timezone", "UTC"),
+                )
+            elif op_type == "calendar_update":
+                r = await google_calendar_update_event(
+                    event_id=op["event_id"],
+                    calendar_id=op.get("calendar_id", "primary"),
+                    summary=op.get("summary"),
+                    description=op.get("description"),
+                    start=op.get("start"),
+                    end=op.get("end"),
+                    location=op.get("location"),
+                    timezone=op.get("timezone", "UTC"),
+                )
+            elif op_type == "calendar_delete":
+                r = await google_calendar_delete_event(
+                    event_id=op["event_id"],
+                    calendar_id=op.get("calendar_id", "primary"),
+                )
+            else:
+                r = f"[Unknown op type: {op_type}]"
+            results.append(r)
         except Exception as exc:
-            results.append(f"[Google write failed: {exc}]")
+            results.append(f"[Google op '{op_type}' failed: {exc}]")
     return results
 
 
@@ -1215,6 +1565,31 @@ async def _handle_message(message: str, context: dict):
         if not isinstance(result, dict):
             print(f"[adapter] run_agent returned non-dict ({type(result).__name__}) — skipping", flush=True)
             return
+
+        # ── Google read-request second pass ──────────────────────────────────
+        # If the agent returned google_read_requests (e.g. drive_search, calendar_list,
+        # docs_read), execute them and re-run the agent with the fetched data so it
+        # can compose an informed response. Limited to one extra pass to avoid loops.
+        google_read_requests = result.get("google_read_requests") or []
+        if google_read_requests and _GOOGLE_SA_INFO:
+            print(f"[adapter] Agent requested {len(google_read_requests)} Google read(s) — fetching...", flush=True)
+            try:
+                read_data = await _execute_google_reads(google_read_requests)
+                enriched2 = enriched_message + f"\n\n[Google Data Retrieved]\n{read_data}"
+                result = await run_agent(
+                    content=enriched2,
+                    context=context,
+                    approve_fn=_bypass_approve,
+                    resolve_fn=_bypass_resolve,
+                    contribute_fn=contribute_knowledge,
+                    search_fn=search_knowledge,
+                )
+                if not isinstance(result, dict):
+                    print(f"[adapter] Second-pass run_agent returned non-dict — skipping", flush=True)
+                    return
+                print(f"[adapter] Second pass complete", flush=True)
+            except Exception as exc:
+                print(f"[adapter] Google read-request second pass failed: {exc}", flush=True)
 
         action = result.get("action", "none")
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)
