@@ -77,11 +77,20 @@ You must call the approval queue and wait for resolution before proceeding.
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface TestDetail {
+  name: string;
+  passed: boolean;
+  httpStatus?: number;
+  responseBody?: string;   // first 500 chars of response
+  error?: string;
+}
+
 interface StepResult {
   name: string;
   status: "pass" | "fail" | "skip" | "warn";
   detail: string;
   findings?: string[];
+  testDetails?: TestDetail[]; // per-test response info for HTTP tests step
 }
 
 interface VetReport {
@@ -342,94 +351,102 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
       // ── Step 5: HTTP tests ───────────────────────────────────────────────────
       {
         const base = `http://127.0.0.1:${hostPort}`;
-        const testResults: { name: string; passed: boolean; error?: string }[] = [];
+        const testDetails: TestDetail[] = [];
+
+        // Each runnable test returns status + body snippet for debugging
+        type HttpTest = { name: string; run: () => Promise<{ httpStatus: number; responseBody: string }> };
+
+        async function runFetch(
+          url: string,
+          init: RequestInit & { signal: AbortSignal },
+          expectStatus: number,
+        ): Promise<{ httpStatus: number; responseBody: string }> {
+          const r = await fetch(url, init);
+          const raw = await r.text().catch(() => "");
+          const responseBody = raw.slice(0, 500) + (raw.length > 500 ? "…" : "");
+          if (r.status !== expectStatus) {
+            throw Object.assign(
+              new Error(`Expected HTTP ${expectStatus}, got ${r.status}`),
+              { httpStatus: r.status, responseBody },
+            );
+          }
+          return { httpStatus: r.status, responseBody };
+        }
 
         // Built-in platform tests (skippable via skipDefaultTests)
-        type HttpTest = { name: string; run: () => Promise<void> };
         const builtInTests: HttpTest[] = [
           {
             name: "GET /internal/health",
             run: async () => {
-              const r = await fetch(`${base}/internal/health`, { signal: AbortSignal.timeout(5000) });
-              const b = await r.json();
-              if (!r.ok || b?.ok !== true) throw new Error(`Expected {ok:true}, got ${JSON.stringify(b)}`);
+              const res = await runFetch(`${base}/internal/health`, { signal: AbortSignal.timeout(5000) }, 200);
+              let b: any;
+              try { b = JSON.parse(res.responseBody); } catch { b = null; }
+              if (b?.ok !== true) throw Object.assign(new Error(`Expected {ok:true}`), res);
+              return res;
             },
           },
           {
             name: "GET /internal/memory",
             run: async () => {
-              const r = await fetch(`${base}/internal/memory`, { signal: AbortSignal.timeout(5000) });
-              if (!r.ok) throw new Error(`HTTP ${r.status}`);
-              const b = await r.json();
-              if (typeof b?.memory === "undefined") throw new Error("Missing 'memory' key");
+              const res = await runFetch(`${base}/internal/memory`, { signal: AbortSignal.timeout(5000) }, 200);
+              let b: any;
+              try { b = JSON.parse(res.responseBody); } catch { b = null; }
+              if (typeof b?.memory === "undefined") throw Object.assign(new Error("Missing 'memory' key"), res);
+              return res;
             },
           },
           {
             name: "GET /internal/skills",
             run: async () => {
-              const r = await fetch(`${base}/internal/skills`, { signal: AbortSignal.timeout(5000) });
-              if (!r.ok) throw new Error(`HTTP ${r.status}`);
-              const b = await r.json();
-              if (!Array.isArray(b?.skills)) throw new Error("Missing 'skills' array");
+              const res = await runFetch(`${base}/internal/skills`, { signal: AbortSignal.timeout(5000) }, 200);
+              let b: any;
+              try { b = JSON.parse(res.responseBody); } catch { b = null; }
+              if (!Array.isArray(b?.skills)) throw Object.assign(new Error("Missing 'skills' array"), res);
+              return res;
             },
           },
           {
             name: "POST /hooks/agent (onboarding hook)",
-            run: async () => {
-              const r = await fetch(`${base}/hooks/agent`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: "Hello, please introduce yourself.", name: "hook:onboarding", sessionKey: "hook:onboarding" }),
-                signal: AbortSignal.timeout(15_000),
-              });
-              if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            },
+            run: () => runFetch(`${base}/hooks/agent`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ message: "Hello, please introduce yourself.", name: "hook:onboarding", sessionKey: "hook:onboarding" }),
+              signal: AbortSignal.timeout(15_000),
+            }, 200),
           },
           {
             name: "POST /hooks/agentmail (synthetic email)",
-            run: async () => {
-              const r = await fetch(`${base}/hooks/agentmail`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  id: `vet-${randomBytes(4).toString("hex")}`,
-                  thread_id: null,
-                  from: { address: "manager@vet.internal", name: "Vet Manager" },
-                  to: [{ address: "test@vet.internal", name: "VetAgent" }],
-                  subject: "Vetting test",
-                  text: "This is a synthetic test. Please acknowledge.",
-                  html: "<p>Synthetic test.</p>",
-                  date: new Date().toISOString(),
-                  inboxId: "vet-inbox",
-                }),
-                signal: AbortSignal.timeout(15_000),
-              });
-              if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            },
+            run: () => runFetch(`${base}/hooks/agentmail`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                id: `vet-${randomBytes(4).toString("hex")}`,
+                thread_id: null,
+                from: { address: "manager@vet.internal", name: "Vet Manager" },
+                to: [{ address: "test@vet.internal", name: "VetAgent" }],
+                subject: "Vetting test",
+                text: "This is a synthetic test. Please acknowledge.",
+                html: "<p>Synthetic test.</p>",
+                date: new Date().toISOString(),
+                inboxId: "vet-inbox",
+              }),
+              signal: AbortSignal.timeout(15_000),
+            }, 200),
           },
         ];
 
         // Convert caller-supplied CustomTest definitions into runnable tests
         const customRunnable: HttpTest[] = customTests.map((ct) => ({
           name: ct.name,
-          run: async () => {
-            const method = (ct.method ?? "GET").toUpperCase();
-            const expectStatus = ct.expectStatus ?? 200;
-            const timeout = 20_000;
-            const headers: Record<string, string> = {
+          run: () => runFetch(`${base}${ct.endpoint}`, {
+            method: (ct.method ?? "GET").toUpperCase(),
+            headers: {
               ...(ct.body !== undefined ? { "Content-Type": "application/json" } : {}),
               ...(ct.headers ?? {}),
-            };
-            const r = await fetch(`${base}${ct.endpoint}`, {
-              method,
-              headers,
-              body: ct.body !== undefined ? JSON.stringify(ct.body) : undefined,
-              signal: AbortSignal.timeout(timeout),
-            });
-            if (r.status !== expectStatus) {
-              throw new Error(`Expected HTTP ${expectStatus}, got ${r.status}`);
-            }
-          },
+            },
+            body: ct.body !== undefined ? JSON.stringify(ct.body) : undefined,
+            signal: AbortSignal.timeout(20_000),
+          }, ct.expectStatus ?? 200),
         }));
 
         const httpTests: HttpTest[] = [
@@ -447,11 +464,17 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           let passed = 0;
           for (const test of httpTests) {
             try {
-              await test.run();
-              testResults.push({ name: test.name, passed: true });
+              const { httpStatus, responseBody } = await test.run();
+              testDetails.push({ name: test.name, passed: true, httpStatus, responseBody });
               passed++;
             } catch (e: any) {
-              testResults.push({ name: test.name, passed: false, error: e.message });
+              testDetails.push({
+                name: test.name,
+                passed: false,
+                httpStatus: e.httpStatus,
+                responseBody: e.responseBody,
+                error: e.message,
+              });
             }
           }
 
@@ -460,7 +483,8 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             name: "HTTP tests",
             status: allPassed ? "pass" : "fail",
             detail: `${passed}/${httpTests.length} passed (${totalLabel})`,
-            findings: testResults.filter((t) => !t.passed).map((t) => `${t.name}: ${t.error}`),
+            findings: testDetails.filter((t) => !t.passed).map((t) => `${t.name}: ${t.error}`),
+            testDetails,
           });
           if (!allPassed) report.overallStatus = "fail";
         }

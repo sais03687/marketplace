@@ -446,11 +446,20 @@ function FilesTab({ versionId }: { versionId: string }) {
 
 // ── Sandbox Tab ───────────────────────────────────────────────────────────────
 
+interface SandboxTestDetail {
+  name: string;
+  passed: boolean;
+  httpStatus?: number;
+  responseBody?: string;
+  error?: string;
+}
+
 interface SandboxStep {
   name: string;
   status: "pass" | "fail" | "skip" | "warn";
   detail: string;
   findings?: string[];
+  testDetails?: SandboxTestDetail[];
 }
 
 interface SandboxReport {
@@ -466,15 +475,233 @@ interface SandboxReport {
   queuedAt?: string;
 }
 
-const DEFAULT_CUSTOM_TESTS_PLACEHOLDER = `[
-  {
-    "name": "Example: check a custom endpoint",
-    "endpoint": "/my-endpoint",
-    "method": "POST",
-    "body": { "key": "value" },
-    "expectStatus": 200
-  }
-]`;
+// ── Test Builder types ───────────────────────────────────────────────────────
+
+interface TestDraft {
+  id: string;
+  name: string;
+  method: string;
+  endpoint: string;
+  expectStatus: string;
+  body: string;       // raw JSON string
+  showBody: boolean;
+}
+
+// ── Test Builder ─────────────────────────────────────────────────────────────
+
+let _draftCounter = 0;
+function newDraft(overrides: Partial<TestDraft> = {}): TestDraft {
+  return {
+    id: `draft-${++_draftCounter}`,
+    name: "",
+    method: "GET",
+    endpoint: "",
+    expectStatus: "200",
+    body: "",
+    showBody: false,
+    ...overrides,
+  };
+}
+
+function draftsToPayload(drafts: TestDraft[]): unknown[] {
+  return drafts
+    .filter((d) => d.endpoint.trim())
+    .map((d) => {
+      const obj: Record<string, unknown> = {
+        name: d.name || `${d.method} ${d.endpoint}`,
+        endpoint: d.endpoint,
+        method: d.method,
+        expectStatus: parseInt(d.expectStatus, 10) || 200,
+      };
+      if (d.body.trim()) {
+        try { obj.body = JSON.parse(d.body); } catch { obj.body = d.body; }
+      }
+      return obj;
+    });
+}
+
+function draftsToJson(drafts: TestDraft[]): string {
+  return JSON.stringify(draftsToPayload(drafts), null, 2);
+}
+
+const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+function TestBuilder({
+  drafts,
+  onChange,
+  disabled,
+}: {
+  drafts: TestDraft[];
+  onChange: (drafts: TestDraft[]) => void;
+  disabled: boolean;
+}) {
+  const [jsonMode, setJsonMode] = useState(false);
+  const [jsonText, setJsonText] = useState("");
+  const [jsonErr, setJsonErr] = useState<string | null>(null);
+
+  const enterJsonMode = () => {
+    setJsonText(drafts.length > 0 ? draftsToJson(drafts) : "[]");
+    setJsonErr(null);
+    setJsonMode(true);
+  };
+
+  const exitJsonMode = () => {
+    try {
+      const parsed = JSON.parse(jsonText.trim() || "[]");
+      if (!Array.isArray(parsed)) { setJsonErr("Must be a JSON array"); return; }
+      // Convert parsed array back to drafts
+      const newDrafts: TestDraft[] = parsed.map((item: any) => newDraft({
+        name: item.name ?? "",
+        method: (item.method ?? "GET").toUpperCase(),
+        endpoint: item.endpoint ?? "",
+        expectStatus: String(item.expectStatus ?? 200),
+        body: item.body !== undefined ? JSON.stringify(item.body, null, 2) : "",
+      }));
+      onChange(newDrafts);
+      setJsonErr(null);
+      setJsonMode(false);
+    } catch (e: unknown) {
+      setJsonErr(e instanceof Error ? e.message : "Invalid JSON");
+    }
+  };
+
+  const update = (id: string, patch: Partial<TestDraft>) => {
+    onChange(drafts.map((d) => d.id === id ? { ...d, ...patch } : d));
+  };
+  const remove = (id: string) => onChange(drafts.filter((d) => d.id !== id));
+  const add = () => onChange([...drafts, newDraft()]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Custom tests {drafts.length > 0 && `(${drafts.length})`}
+        </span>
+        <button
+          type="button"
+          onClick={jsonMode ? exitJsonMode : enterJsonMode}
+          disabled={disabled}
+          className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2 disabled:opacity-40"
+        >
+          {jsonMode ? "← Back to form" : "Edit as JSON"}
+        </button>
+      </div>
+
+      {jsonMode ? (
+        <div>
+          <textarea
+            value={jsonText}
+            onChange={(e) => { setJsonText(e.target.value); setJsonErr(null); }}
+            rows={10}
+            spellCheck={false}
+            className="w-full rounded border bg-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          {jsonErr && <p className="mt-0.5 text-xs text-destructive">{jsonErr}</p>}
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Click "← Back to form" to apply changes.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {drafts.length === 0 && (
+            <p className="text-[11px] text-muted-foreground italic">
+              No custom tests — only the 5 built-in platform tests will run.
+            </p>
+          )}
+
+          {drafts.map((d) => (
+            <div key={d.id} className="rounded border bg-muted/30 p-2 space-y-1.5">
+              {/* Row 1: method + endpoint + remove */}
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={d.method}
+                  onChange={(e) => update(d.id, { method: e.target.value })}
+                  disabled={disabled}
+                  className="rounded border bg-background px-1.5 py-1 text-xs font-mono w-20 focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {METHODS.map((m) => <option key={m}>{m}</option>)}
+                </select>
+                <input
+                  type="text"
+                  value={d.endpoint}
+                  onChange={(e) => update(d.id, { endpoint: e.target.value })}
+                  disabled={disabled}
+                  placeholder="/endpoint/path"
+                  className="flex-1 rounded border bg-background px-2 py-1 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring placeholder:text-muted-foreground/50"
+                />
+                <button
+                  type="button"
+                  onClick={() => remove(d.id)}
+                  disabled={disabled}
+                  className="text-muted-foreground hover:text-destructive disabled:opacity-40 px-1 text-sm leading-none"
+                  title="Remove test"
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Row 2: name + expected status */}
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={d.name}
+                  onChange={(e) => update(d.id, { name: e.target.value })}
+                  disabled={disabled}
+                  placeholder="Test name (optional)"
+                  className="flex-1 rounded border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring placeholder:text-muted-foreground/50"
+                />
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-[10px] text-muted-foreground">expect</span>
+                  <input
+                    type="number"
+                    value={d.expectStatus}
+                    onChange={(e) => update(d.id, { expectStatus: e.target.value })}
+                    disabled={disabled}
+                    className="w-14 rounded border bg-background px-1.5 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
+                </div>
+              </div>
+
+              {/* Body toggle + editor */}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => update(d.id, { showBody: !d.showBody })}
+                  disabled={disabled}
+                  className="text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  {d.showBody ? "▾ Hide body" : "▸ Add body (JSON)"}
+                </button>
+                {d.showBody && (
+                  <textarea
+                    value={d.body}
+                    onChange={(e) => update(d.id, { body: e.target.value })}
+                    disabled={disabled}
+                    placeholder='{ "key": "value" }'
+                    rows={4}
+                    spellCheck={false}
+                    className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring placeholder:text-muted-foreground/50"
+                  />
+                )}
+              </div>
+            </div>
+          ))}
+
+          <button
+            type="button"
+            onClick={add}
+            disabled={disabled}
+            className="text-xs text-primary hover:underline disabled:opacity-40"
+          >
+            + Add test
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sandbox Tab ───────────────────────────────────────────────────────────────
 
 function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string }) {
   const [loading, setLoading] = useState(false);
@@ -482,11 +709,9 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
   const [polling, setPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Configurable test options
   const [showConfig, setShowConfig] = useState(false);
   const [skipDefaultTests, setSkipDefaultTests] = useState(false);
-  const [customTestsJson, setCustomTestsJson] = useState("");
-  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<TestDraft[]>([]);
 
   const isCustom = runtime === "CUSTOM";
 
@@ -518,37 +743,16 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
         const r = data.testResults as SandboxReport | null;
         if (cancelled) return;
         setReport(r);
-        // Stop polling once we have steps (job completed)
-        if (r?.steps && r.steps.length > 0) {
-          setPolling(false);
-        }
+        if (r?.steps && r.steps.length > 0) setPolling(false);
       } catch { /* best effort */ }
     }, 3000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [polling, versionId]);
 
-  const parseCustomTests = useCallback((): unknown[] | null => {
-    if (!customTestsJson.trim()) return [];
-    try {
-      const parsed = JSON.parse(customTestsJson);
-      if (!Array.isArray(parsed)) {
-        setJsonError("Must be a JSON array");
-        return null;
-      }
-      setJsonError(null);
-      return parsed;
-    } catch (e: unknown) {
-      setJsonError(e instanceof Error ? e.message : "Invalid JSON");
-      return null;
-    }
-  }, [customTestsJson]);
-
   const runSandbox = useCallback(async () => {
-    const customTests = parseCustomTests();
-    if (customTests === null) return; // JSON parse error
-
     setLoading(true);
     setError(null);
+    const customTests = draftsToPayload(drafts);
     try {
       const res = await fetch(`/api/packages/${versionId}/vet-sandbox`, {
         method: "POST",
@@ -559,10 +763,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
         }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Failed to queue vetting job");
-        return;
-      }
+      if (!res.ok) { setError(data.error ?? "Failed to queue vetting job"); return; }
       setReport({ status: "queued", queuedAt: new Date().toISOString() });
       setPolling(true);
     } catch (e: unknown) {
@@ -570,7 +771,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
     } finally {
       setLoading(false);
     }
-  }, [versionId, parseCustomTests, skipDefaultTests]);
+  }, [versionId, drafts, skipDefaultTests]);
 
   const isRunning = report?.status === "queued" || report?.status === "running";
   const hasDone = report?.steps && report.steps.length > 0;
@@ -596,13 +797,13 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
               disabled={isRunning}
               className="text-xs"
             >
-              {showConfig ? "Hide config" : "Configure tests"}
+              {showConfig ? "Hide config ▲" : "Configure tests ▼"}
             </Button>
           )}
           <Button
             size="sm"
             variant="outline"
-            disabled={loading || isRunning || !isCustom || !!jsonError}
+            disabled={loading || isRunning || !isCustom}
             onClick={runSandbox}
             title={!isCustom ? "Sandbox vetting is only available for custom runtime packages" : undefined}
           >
@@ -611,51 +812,26 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
         </div>
       </div>
 
-      {/* Configurable test panel */}
+      {/* Config panel */}
       {showConfig && isCustom && (
-        <div className="rounded border bg-muted/40 p-3 space-y-3">
-          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Test Configuration</p>
-
-          {/* Skip default tests toggle */}
+        <div className="rounded border bg-muted/30 p-3 space-y-3">
           <label className="flex items-center gap-2 cursor-pointer select-none">
             <input
               type="checkbox"
               checked={skipDefaultTests}
               onChange={(e) => setSkipDefaultTests(e.target.checked)}
+              disabled={isRunning}
               className="h-3.5 w-3.5 rounded border"
             />
             <span className="text-xs">
-              Skip default platform tests
+              Skip built-in platform tests
               <span className="ml-1 text-muted-foreground">
-                (health, memory, skills, onboarding, email hooks)
+                (health, memory, skills, onboarding, email)
               </span>
             </span>
           </label>
 
-          {/* Custom tests JSON editor */}
-          <div>
-            <label className="mb-1 block text-xs font-medium">
-              Custom tests
-              <span className="ml-1 text-muted-foreground font-normal">(JSON array — leave blank to omit)</span>
-            </label>
-            <textarea
-              value={customTestsJson}
-              onChange={(e) => {
-                setCustomTestsJson(e.target.value);
-                setJsonError(null);
-              }}
-              placeholder={DEFAULT_CUSTOM_TESTS_PLACEHOLDER}
-              rows={8}
-              spellCheck={false}
-              className="w-full rounded border bg-background px-3 py-2 font-mono text-xs placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            {jsonError && (
-              <p className="mt-1 text-xs text-destructive">JSON error: {jsonError}</p>
-            )}
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              Each test: <code className="bg-muted px-0.5 rounded">{"{ name, endpoint, method?, body?, expectStatus?, headers? }"}</code>
-            </p>
-          </div>
+          <TestBuilder drafts={drafts} onChange={setDrafts} disabled={isRunning} />
         </div>
       )}
 
@@ -676,7 +852,6 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
 
       {hasDone && report && (
         <div className="space-y-2">
-          {/* Overall badge */}
           <div className="flex items-center gap-2">
             <span
               className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
@@ -695,27 +870,9 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
             )}
           </div>
 
-          {/* Step results */}
           <div className="rounded border divide-y">
             {report.steps!.map((step, i) => (
-              <div key={i} className="px-3 py-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium">{step.name}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">{step.detail}</span>
-                    <StatusBadge status={step.status} />
-                  </div>
-                </div>
-                {step.findings && step.findings.length > 0 && (
-                  <ul className="mt-1.5 space-y-0.5">
-                    {step.findings.map((f, j) => (
-                      <li key={j} className="text-xs text-destructive font-mono bg-destructive/5 rounded px-2 py-0.5">
-                        {f}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
+              <StepRow key={i} step={step} />
             ))}
           </div>
         </div>
@@ -727,6 +884,99 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
             ? "No sandbox results yet. Click \"Run Sandbox\" to start."
             : "This package uses the OpenClaw runtime. Sandbox vetting requires custom runtime packages."}
         </p>
+      )}
+    </div>
+  );
+}
+
+// ── Step Row (with expandable test details) ───────────────────────────────────
+
+function StepRow({ step }: { step: SandboxStep }) {
+  const [expanded, setExpanded] = useState(step.status === "fail");
+  const hasDetails = (step.testDetails && step.testDetails.length > 0) ||
+                     (step.findings && step.findings.length > 0);
+
+  return (
+    <div className="px-3 py-2">
+      <div
+        className={`flex items-center justify-between ${hasDetails ? "cursor-pointer select-none" : ""}`}
+        onClick={() => hasDetails && setExpanded((v) => !v)}
+      >
+        <div className="flex items-center gap-2">
+          {hasDetails && (
+            <span className="text-[10px] text-muted-foreground">{expanded ? "▾" : "▸"}</span>
+          )}
+          <span className="font-medium">{step.name}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{step.detail}</span>
+          <StatusBadge status={step.status} />
+        </div>
+      </div>
+
+      {expanded && hasDetails && (
+        <div className="mt-2 space-y-1.5 pl-4">
+          {/* Per-test response rows */}
+          {step.testDetails?.map((td, j) => (
+            <TestDetailRow key={j} td={td} />
+          ))}
+
+          {/* Static findings (manifest errors, dangerous patterns, etc.) */}
+          {step.findings && step.findings.length > 0 && !step.testDetails && (
+            <ul className="space-y-0.5">
+              {step.findings.map((f, j) => (
+                <li key={j} className="text-xs text-destructive font-mono bg-destructive/5 rounded px-2 py-0.5">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TestDetailRow({ td }: { td: SandboxTestDetail }) {
+  const [showBody, setShowBody] = useState(false);
+
+  return (
+    <div className={`rounded border text-xs ${td.passed ? "border-border" : "border-destructive/40"}`}>
+      <div className="flex items-center gap-2 px-2 py-1.5">
+        <span className={`font-mono text-[10px] font-semibold ${td.passed ? "text-green-600 dark:text-green-400" : "text-destructive"}`}>
+          {td.passed ? "✓" : "✗"}
+        </span>
+        <span className="flex-1 font-medium truncate">{td.name}</span>
+        {td.httpStatus !== undefined && (
+          <span className={`font-mono text-[10px] rounded px-1 py-0.5 ${
+            td.httpStatus >= 200 && td.httpStatus < 300
+              ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+              : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
+          }`}>
+            HTTP {td.httpStatus}
+          </span>
+        )}
+        {td.responseBody && (
+          <button
+            type="button"
+            onClick={() => setShowBody((v) => !v)}
+            className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-1"
+          >
+            {showBody ? "hide response" : "see response"}
+          </button>
+        )}
+      </div>
+
+      {td.error && (
+        <div className="px-2 pb-1.5 text-[11px] text-destructive font-mono">
+          {td.error}
+        </div>
+      )}
+
+      {showBody && td.responseBody && (
+        <pre className="border-t px-2 py-1.5 text-[10px] font-mono text-muted-foreground overflow-auto max-h-40 whitespace-pre-wrap break-all">
+          {td.responseBody}
+        </pre>
       )}
     </div>
   );
