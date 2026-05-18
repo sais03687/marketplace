@@ -456,11 +456,15 @@ if (!isCustom) {
             if (!(f in t)) findings.push({ level: "error", msg: `tests[${i}]: missing "${f}".` });
           if (t.input?.channel && !["email","slack"].includes(t.input.channel))
             findings.push({ level: "error", msg: `tests[${i}]: channel must be "email" or "slack".` });
-          if (t.expectedBehavior) {
-            if ("shouldQueue" in t.expectedBehavior && typeof t.expectedBehavior.shouldQueue !== "boolean")
-              findings.push({ level: "error", msg: `tests[${i}]: shouldQueue must be boolean.` });
-            if ("shouldClarify" in t.expectedBehavior && typeof t.expectedBehavior.shouldClarify !== "boolean")
-              findings.push({ level: "error", msg: `tests[${i}]: shouldClarify must be boolean.` });
+          if (t.expectedBehavior !== undefined) {
+            if (typeof t.expectedBehavior !== "object" || t.expectedBehavior === null || Array.isArray(t.expectedBehavior)) {
+              findings.push({ level: "error", msg: `tests[${i}]: expectedBehavior must be an object, got ${typeof t.expectedBehavior}.` });
+            } else {
+              if ("shouldQueue" in t.expectedBehavior && typeof t.expectedBehavior.shouldQueue !== "boolean")
+                findings.push({ level: "error", msg: `tests[${i}]: shouldQueue must be boolean.` });
+              if ("shouldClarify" in t.expectedBehavior && typeof t.expectedBehavior.shouldClarify !== "boolean")
+                findings.push({ level: "error", msg: `tests[${i}]: shouldClarify must be boolean.` });
+            }
           }
         }
       }
