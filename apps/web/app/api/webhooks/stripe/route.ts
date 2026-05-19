@@ -86,15 +86,20 @@ export async function POST(request: NextRequest) {
     case "invoice.paid": {
       const subscriptionId = obj.subscription as string | null;
       if (subscriptionId) {
-        // Mark subscription as active — deployment continues
         const deployment = await prisma.deployment.findFirst({
           where: { stripeSubscriptionId: subscriptionId },
         });
         if (deployment && deployment.status === "PAUSED") {
           await prisma.deployment.update({
             where: { id: deployment.id },
-            data: { status: "ACTIVE", pausedAt: null },
+            data: { status: "ACTIVE", pausedAt: null, pauseReason: null },
           });
+          // Restart the container if it was paused for billing
+          try {
+            await getProvisioningQueue().add("resume", { type: "resume", deploymentId: deployment.id });
+          } catch (err: any) {
+            console.error(`[stripe-webhook] Failed to enqueue resume for ${deployment.id}: ${err.message}`);
+          }
         }
       }
       break;
@@ -103,14 +108,17 @@ export async function POST(request: NextRequest) {
     case "invoice.payment_failed": {
       const subscriptionId = obj.subscription as string | null;
       if (subscriptionId) {
-        // Pause deployment on payment failure
         const deployment = await prisma.deployment.findFirst({
           where: { stripeSubscriptionId: subscriptionId },
         });
-        if (deployment) {
+        if (deployment && deployment.status !== "FIRED") {
           await prisma.deployment.update({
             where: { id: deployment.id },
-            data: { status: "PAUSED", pausedAt: new Date() },
+            data: {
+              status: "PAUSED",
+              pausedAt: new Date(),
+              pauseReason: "Payment failed — please update your billing details to resume this agent.",
+            },
           });
         }
       }
