@@ -109,6 +109,7 @@ model Deployment {
   createdAt                     DateTime                @default(now())
   updatedAt                     DateTime                @updatedAt
   pausedAt                      DateTime?
+  pauseReason                   String?
   firedAt                       DateTime?
   agentEmailInboxId             String?
   deploymentServiceAccountEmail String?

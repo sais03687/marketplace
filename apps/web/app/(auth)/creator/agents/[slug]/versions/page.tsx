@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Upload, ArrowLeft } from "lucide-react";
+import { Loader2, Upload, ArrowLeft, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { formatDate } from "@/lib/utils";
 
@@ -33,6 +33,8 @@ export default function VersionsPage({
   const [changelog, setChangelog] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const fetchVersions = useCallback(async () => {
     try {
@@ -90,6 +92,37 @@ export default function VersionsPage({
     }
 
     setUploading(false);
+  };
+
+  const handleDeleteVersion = async (versionId: string) => {
+    if (confirmDeleteId !== versionId) {
+      setConfirmDeleteId(versionId);
+      return;
+    }
+
+    setDeletingId(versionId);
+    setConfirmDeleteId(null);
+    setError(null);
+
+    try {
+      const res = await fetch(`/api/packages/${versionId}`, { method: "DELETE" });
+      if (res.ok) {
+        const data = await res.json();
+        const msg = data.pausedDeployments > 0
+          ? `Version deleted. ${data.pausedDeployments} active deployment(s) have been paused and buyers notified.`
+          : "Version deleted.";
+        setSuccessMsg(msg);
+        setTimeout(() => setSuccessMsg(null), 8000);
+        await fetchVersions();
+      } else {
+        const data = await res.json().catch(() => null);
+        setError(data?.error || "Delete failed");
+      }
+    } catch {
+      setError("Network error");
+    }
+
+    setDeletingId(null);
   };
 
   if (loading) {
@@ -160,6 +193,12 @@ export default function VersionsPage({
         </div>
       )}
 
+      {error && !showUpload && (
+        <div className="mb-4 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800">
+          {error}
+        </div>
+      )}
+
       <div className="space-y-3">
         {versions.length === 0 ? (
           <p className="text-muted-foreground">No versions found.</p>
@@ -167,7 +206,7 @@ export default function VersionsPage({
           versions.map((v) => (
             <Card key={v.id}>
               <CardContent className="p-4 flex items-center justify-between">
-                <div>
+                <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-semibold">v{v.version}</span>
                     <Badge
@@ -188,10 +227,48 @@ export default function VersionsPage({
                       {v.changelog}
                     </p>
                   )}
+                  <span className="text-xs text-muted-foreground">
+                    {formatDate(v.createdAt)}
+                  </span>
                 </div>
-                <span className="text-xs text-muted-foreground">
-                  {formatDate(v.createdAt)}
-                </span>
+
+                <div className="flex items-center gap-2 ml-4 shrink-0">
+                  {confirmDeleteId === v.id ? (
+                    <>
+                      <span className="text-xs text-red-600 font-medium">Confirm?</span>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => handleDeleteVersion(v.id)}
+                        disabled={deletingId === v.id}
+                      >
+                        {deletingId === v.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          "Yes, delete"
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setConfirmDeleteId(null)}
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => handleDeleteVersion(v.id)}
+                      disabled={deletingId === v.id || v.vetStatus === "PENDING"}
+                      title={v.vetStatus === "PENDING" ? "Cannot delete a version under review" : "Delete version"}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))

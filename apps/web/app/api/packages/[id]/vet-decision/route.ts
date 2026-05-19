@@ -1,5 +1,23 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { getStripe } from "@/lib/stripe";
+import { Queue } from "bullmq";
+
+let provisioningQueue: Queue | null = null;
+function getProvisioningQueue() {
+  if (!provisioningQueue) {
+    provisioningQueue = new Queue("provisioning", {
+      connection: {
+        host: new URL(process.env.REDIS_URL || "redis://localhost:6379").hostname,
+        port: parseInt(
+          new URL(process.env.REDIS_URL || "redis://localhost:6379").port || "6379",
+          10,
+        ),
+      },
+    });
+  }
+  return provisioningQueue;
+}
 
 export async function POST(
   request: Request,
@@ -105,6 +123,51 @@ export async function POST(
       where: { id: version.agentId },
       data: updateData,
     });
+
+    // Auto-resume any deployments that were paused due to a previous version removal
+    const pausedDeployments = await prisma.deployment.findMany({
+      where: {
+        agentId: version.agentId,
+        status: "PAUSED",
+        pauseReason: { not: null },
+      },
+    });
+
+    if (pausedDeployments.length > 0) {
+      const queue = getProvisioningQueue();
+      const stripe = getStripe();
+
+      await Promise.all(
+        pausedDeployments.map(async (dep) => {
+          await prisma.deployment.update({
+            where: { id: dep.id },
+            data: {
+              status: "ACTIVE",
+              agentVersion: version.version,
+              pauseReason: null,
+            },
+          });
+
+          try {
+            await queue.add("resume", { type: "resume", deploymentId: dep.id });
+          } catch (err: any) {
+            console.warn(`[vet-decision] Failed to enqueue resume for ${dep.id}:`, err.message);
+          }
+
+          if (dep.stripeSubscriptionId && stripe) {
+            try {
+              await stripe.subscriptions.update(dep.stripeSubscriptionId, {
+                pause_collection: "",
+              } as any);
+            } catch (err: any) {
+              console.warn(`[vet-decision] Stripe resume failed for ${dep.stripeSubscriptionId}:`, err.message);
+            }
+          }
+        }),
+      );
+
+      console.log(`[vet-decision] Auto-resumed ${pausedDeployments.length} deployment(s) for agent ${version.agentId}`);
+    }
   }
 
   return jsonSuccess({ message: `Decision: ${decision}` });

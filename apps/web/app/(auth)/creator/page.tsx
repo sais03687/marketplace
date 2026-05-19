@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, Pencil, GitBranch } from "lucide-react";
 import Link from "next/link";
 import { formatPrice } from "@/lib/utils";
+import { DeleteAgentButton } from "./delete-agent-button";
 
 export const dynamic = "force-dynamic";
 
@@ -115,7 +116,7 @@ export default async function CreatorDashboardPage() {
                       {agent._count.deployments} deployments
                     </span>
                   </div>
-                  <div className="mt-3 flex gap-2">
+                  <div className="mt-3 flex gap-2 flex-wrap">
                     <Button variant="outline" size="sm" asChild>
                       <Link href={`/creator/agents/${agent.slug}/edit`}>
                         <Pencil className="mr-1 h-3 w-3" />
@@ -128,6 +129,7 @@ export default async function CreatorDashboardPage() {
                         Versions
                       </Link>
                     </Button>
+                    <DeleteAgentButton slug={agent.slug} agentName={agent.name} />
                   </div>
                 </CardContent>
               </Card>

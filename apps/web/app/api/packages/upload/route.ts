@@ -298,7 +298,7 @@ export async function POST(request: Request) {
             pricePerMonth,
             modelTier: modelTier as any,
             creatorId: creator.id,
-            status: "PENDING",
+            status: "IN_REVIEW",
             runtime,
             currentVersion: version,
             onboardingQuestions: onboardingQuestions ?? undefined,
