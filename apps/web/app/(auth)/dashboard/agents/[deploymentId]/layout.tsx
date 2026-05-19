@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 
 const TABS = [
   { slug: "", label: "Overview" },
+  { slug: "/approvals", label: "Approvals" },
   { slug: "/trust-scores", label: "Trust Scores" },
   { slug: "/memory", label: "Memory" },
   { slug: "/skill-files", label: "Skill Files" },

@@ -23,11 +23,11 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
     id: "approval_policy",
     type: "choice",
     question:
-      "When should I ask you to approve outbound emails before sending?",
+      "When should I ask you to approve outbound emails before sending? (We recommend starting with 'Always ask' for your first few days so you can see exactly how I work before giving me more autonomy.)",
     options: [
       {
         value: "always",
-        label: "Always ask — I want to review every email before it goes out",
+        label: "Always ask — review every email before it goes out (recommended to start)",
       },
       {
         value: "external-only",
@@ -41,7 +41,7 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
       },
       { value: "never", label: "Never ask — fully autonomous" },
     ],
-    default: "external-only",
+    default: "always",
     memoryKey: "org.approval_policy",
     required: true,
   },

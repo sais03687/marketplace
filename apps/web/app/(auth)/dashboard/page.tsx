@@ -52,7 +52,14 @@ export default async function DashboardPage() {
     },
   });
 
-  const totalPending = deployments.reduce(
+  const deploymentsWithUpdate = deployments.map((d) => ({
+    ...d,
+    updateAvailable:
+      d.agent.currentVersion !== null &&
+      d.agentVersion !== d.agent.currentVersion,
+  }));
+
+  const totalPending = deploymentsWithUpdate.reduce(
     (sum, d) => sum + (d._count?.approvals ?? 0),
     0,
   );
@@ -94,7 +101,7 @@ export default async function DashboardPage() {
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">Active Agents</p>
             <p className="text-2xl font-bold">
-              {deployments.filter((d) => d.status === "ACTIVE").length}
+              {deploymentsWithUpdate.filter((d) => d.status === "ACTIVE").length}
             </p>
           </CardContent>
         </Card>
@@ -107,13 +114,13 @@ export default async function DashboardPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">Total Hired</p>
-            <p className="text-2xl font-bold">{deployments.length}</p>
+            <p className="text-2xl font-bold">{deploymentsWithUpdate.length}</p>
           </CardContent>
         </Card>
       </div>
 
       {/* Agent Cards */}
-      {deployments.length === 0 ? (
+      {deploymentsWithUpdate.length === 0 ? (
         <div className="mt-12 flex flex-col items-center justify-center py-12 text-center">
           <Bot className="h-12 w-12 text-muted-foreground" />
           <h2 className="mt-4 text-xl font-semibold">
@@ -128,8 +135,8 @@ export default async function DashboardPage() {
         </div>
       ) : (
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {deployments.map((d) => (
-            <AgentStatusCard key={d.id} deployment={d} />
+          {deploymentsWithUpdate.map((d) => (
+            <AgentStatusCard key={d.id} deployment={d} updateAvailable={d.updateAvailable} />
           ))}
         </div>
       )}

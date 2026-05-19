@@ -5,7 +5,20 @@ import { useParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Check, Loader2, X } from "lucide-react";
+
+interface Question {
+  id: string;
+  order: number;
+  question: string;
+  memoryKey: string;
+  required: boolean;
+  type?: "text" | "choice";
+  options?: Array<{ value: string; label: string }>;
+  default?: string;
+}
 
 type ApprovalPolicy = "always" | "external-only" | "risk-based" | "never";
 
@@ -34,12 +47,12 @@ interface AllowlistState {
 const POLICY_OPTIONS: { value: ApprovalPolicy; label: string; help: string }[] = [
   {
     value: "always",
-    label: "Always ask",
-    help: "I want to review every outbound email before it is sent.",
+    label: "Always ask (recommended to start)",
+    help: "Review every outbound email before it is sent. Best for the first few days while building trust.",
   },
   {
     value: "external-only",
-    label: "External only (default)",
+    label: "External only",
     help: "Only ask for recipients not on my team or in my contacts list.",
   },
   {
@@ -64,6 +77,11 @@ export default function SettingsPage() {
   const [allowlistInput, setAllowlistInput] = useState("");
   const [savingAllowlist, setSavingAllowlist] = useState(false);
   const [savedAllowlist, setSavedAllowlist] = useState(false);
+  const [onboardingQuestions, setOnboardingQuestions] = useState<Question[]>([]);
+  const [onboardingAnswers, setOnboardingAnswers] = useState<Record<string, string>>({});
+  const [savingAnswers, setSavingAnswers] = useState(false);
+  const [savedAnswers, setSavedAnswers] = useState(false);
+  const [answersError, setAnswersError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`/api/deployments/${deploymentId}`)
@@ -84,6 +102,21 @@ export default function SettingsPage() {
         companyDomain: data.companyDomain ?? "",
         managerEmail: data.managerEmail ?? null,
       }));
+    fetch(`/api/deployments/${deploymentId}/onboarding`)
+      .then((r) => r.json())
+      .then((data) => {
+        const questions: Question[] = (data.questions ?? []).sort(
+          (a: Question, b: Question) => (a.order ?? 0) - (b.order ?? 0),
+        );
+        setOnboardingQuestions(questions);
+        // Pre-fill with saved answers, falling back to question defaults
+        const saved: Record<string, string> = data.onboardingData ?? {};
+        const merged: Record<string, string> = {};
+        for (const q of questions) {
+          merged[q.id] = saved[q.id] ?? q.default ?? "";
+        }
+        setOnboardingAnswers(merged);
+      });
   }, [deploymentId]);
 
   const handleSave = async () => {
@@ -147,6 +180,29 @@ export default function SettingsPage() {
       .split(/[\n,;]/)
       .map((x) => x.trim())
       .filter(Boolean);
+
+  const handleSaveAnswers = async () => {
+    setSavingAnswers(true);
+    setSavedAnswers(false);
+    setAnswersError(null);
+    try {
+      const res = await fetch(`/api/deployments/${deploymentId}/onboarding`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers: onboardingAnswers }),
+      });
+      if (res.ok) {
+        setSavedAnswers(true);
+        setTimeout(() => setSavedAnswers(false), 2000);
+      } else {
+        const data = await res.json().catch(() => null);
+        setAnswersError(data?.error || "Failed to save preferences");
+      }
+    } catch {
+      setAnswersError("Network error. Please try again.");
+    }
+    setSavingAnswers(false);
+  };
 
   if (!settings) {
     return <div className="text-muted-foreground">Loading settings...</div>;
@@ -223,7 +279,7 @@ export default function SettingsPage() {
                     value={opt.value}
                     checked={
                       (settings.autonomyConfig.approvalPolicy ??
-                        "external-only") === opt.value
+                        "always") === opt.value
                     }
                     onChange={() => updatePolicy({ approvalPolicy: opt.value })}
                     className="mt-0.5"
@@ -400,6 +456,84 @@ export default function SettingsPage() {
           {saving ? "Saving..." : saved ? "Saved" : "Save Changes"}
         </Button>
       </div>
+
+      {onboardingQuestions.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Preferences</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <p className="text-sm text-muted-foreground">
+              These answers shape how your agent behaves. Changes take effect
+              immediately for approval policy; other answers are relayed to the
+              agent as an update.
+            </p>
+            {onboardingQuestions.map((q) => {
+              const value = onboardingAnswers[q.id] ?? q.default ?? "";
+              return (
+                <div key={q.id} className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm font-medium">{q.question}</label>
+                    {q.required && (
+                      <Badge variant="outline" className="text-[10px]">
+                        Required
+                      </Badge>
+                    )}
+                  </div>
+                  {q.type === "choice" && q.options ? (
+                    <div className="space-y-1.5">
+                      {q.options.map((opt) => (
+                        <label
+                          key={opt.value}
+                          className="flex items-start gap-2 cursor-pointer rounded border p-2.5 hover:bg-accent/40"
+                        >
+                          <input
+                            type="radio"
+                            name={q.id}
+                            value={opt.value}
+                            checked={value === opt.value}
+                            onChange={() =>
+                              setOnboardingAnswers({
+                                ...onboardingAnswers,
+                                [q.id]: opt.value,
+                              })
+                            }
+                            className="mt-0.5"
+                          />
+                          <span className="text-sm">{opt.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <Textarea
+                      value={value}
+                      onChange={(e) =>
+                        setOnboardingAnswers({
+                          ...onboardingAnswers,
+                          [q.id]: e.target.value,
+                        })
+                      }
+                      rows={3}
+                      placeholder="Type your answer..."
+                    />
+                  )}
+                </div>
+              );
+            })}
+            {answersError && (
+              <p className="text-sm text-red-500">{answersError}</p>
+            )}
+            <Button onClick={handleSaveAnswers} disabled={savingAnswers} size="sm">
+              {savingAnswers ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : savedAnswers ? (
+                <Check className="mr-2 h-4 w-4" />
+              ) : null}
+              {savingAnswers ? "Saving..." : savedAnswers ? "Saved" : "Save Preferences"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

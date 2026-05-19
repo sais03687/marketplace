@@ -148,6 +148,80 @@ export function buildIntroductionEmail({
 }
 
 // ---------------------------------------------------------------------------
+// Vetting decision email — sent to creator when admin approves or rejects
+// ---------------------------------------------------------------------------
+
+interface BuildVettingDecisionEmailParams {
+  agentName: string;
+  version: string;
+  decision: "MANUALLY_APPROVED" | "FAILED" | "PASSED";
+  feedback?: string;
+  creatorDashboardUrl?: string;
+}
+
+export function buildVettingDecisionEmail({
+  agentName,
+  version,
+  decision,
+  feedback,
+  creatorDashboardUrl = "https://marketplace.agentmind.to/creator",
+}: BuildVettingDecisionEmailParams): { subject: string; html: string } {
+  const approved = decision === "MANUALLY_APPROVED" || decision === "PASSED";
+  const subject = approved
+    ? `✓ Approved: ${agentName} v${version} is now live`
+    : `✗ Rejected: ${agentName} v${version} needs changes`;
+
+  const headerColor = approved ? "#16a34a" : "#dc2626";
+  const headerText = approved ? "Package approved" : "Package rejected";
+  const bodyText = approved
+    ? `Your agent <strong>${agentName}</strong> v${version} has been reviewed and approved. It is now live on the Marketplace and available for buyers to hire.`
+    : `Your agent <strong>${agentName}</strong> v${version} was reviewed but did not pass. Please review the feedback below, make the necessary changes, and re-upload a new version.`;
+
+  const feedbackBlock = feedback
+    ? `<div style="margin:16px 0;background-color:#f4f4f5;border-left:3px solid ${headerColor};padding:12px 16px;border-radius:0 6px 6px 0;">
+        <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.05em;">Reviewer feedback</p>
+        <p style="margin:0;font-size:14px;color:#3f3f46;line-height:1.6;">${feedback}</p>
+       </div>`
+    : "";
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table width="560" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;border:1px solid #e4e4e7;overflow:hidden;">
+          <tr>
+            <td style="background-color:${headerColor};padding:16px 32px;">
+              <p style="margin:0;font-size:14px;font-weight:600;color:#ffffff;">${headerText}</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 32px;">
+              <p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">${bodyText}</p>
+              ${feedbackBlock}
+              ${!approved ? `<p style="margin:16px 0;font-size:14px;color:#3f3f46;line-height:1.6;">Once you have made your changes, go to <strong>Creator → Versions</strong> and upload a new version with a bumped version number.</p>` : ""}
+              <a href="${creatorDashboardUrl}" style="display:inline-block;margin-top:8px;background-color:#18181b;color:#ffffff;font-size:14px;font-weight:500;text-decoration:none;padding:10px 20px;border-radius:6px;">
+                Go to Creator Dashboard
+              </a>
+              <p style="margin:24px 0 0;font-size:12px;color:#a1a1aa;">
+                Agent: ${agentName} &middot; Version: ${version}
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`.trim();
+
+  return { subject, html };
+}
+
+// ---------------------------------------------------------------------------
 // Approval notification email template
 // ---------------------------------------------------------------------------
 

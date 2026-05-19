@@ -29,5 +29,9 @@ export async function GET(
     return jsonError("Deployment not found", 404);
   }
 
-  return jsonSuccess(deployment);
+  const updateAvailable =
+    deployment.agent.currentVersion !== null &&
+    deployment.agentVersion !== deployment.agent.currentVersion;
+
+  return jsonSuccess({ ...deployment, updateAvailable });
 }

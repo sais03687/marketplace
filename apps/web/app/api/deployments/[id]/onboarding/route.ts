@@ -50,9 +50,13 @@ export async function POST(
   if ("error" in depResult) return depResult.error;
   const { deployment } = depResult;
 
-  // Allow submissions from INTERVIEW (post-hire onboarding) or OBSERVATION
-  // (re-submission to update answers already given during the hire wizard).
-  if (deployment.onboardingState !== "INTERVIEW" && deployment.onboardingState !== "OBSERVATION") {
+  // Allow submissions from INTERVIEW, OBSERVATION, or LIVE (buyers can update
+  // their answers at any time from the Settings page).
+  if (
+    deployment.onboardingState !== "INTERVIEW" &&
+    deployment.onboardingState !== "OBSERVATION" &&
+    deployment.onboardingState !== "LIVE"
+  ) {
     return jsonError("Onboarding is past the setup stage", 409);
   }
 
@@ -115,13 +119,17 @@ export async function POST(
     ...autonomyPatch,
   };
 
-  // Store answers and advance to OBSERVATION
+  // Store answers. If already LIVE, keep that state — only advance to OBSERVATION
+  // from INTERVIEW/OBSERVATION (buyers updating from Settings stay LIVE).
+  const nextState =
+    deployment.onboardingState === "LIVE" ? "LIVE" : "OBSERVATION";
+
   const updated = await prisma.deployment.update({
     where: { id },
     data: {
       onboardingData: answers as any,
       autonomyConfig: mergedAutonomyConfig as any,
-      onboardingState: "OBSERVATION",
+      onboardingState: nextState,
     },
   });
 

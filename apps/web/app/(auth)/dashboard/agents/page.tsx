@@ -24,6 +24,13 @@ export default async function AgentsPage() {
     orderBy: { createdAt: "desc" },
   });
 
+  const deploymentsWithUpdate = deployments.map((d) => ({
+    ...d,
+    updateAvailable:
+      d.agent.currentVersion !== null &&
+      d.agentVersion !== d.agent.currentVersion,
+  }));
+
   return (
     <div>
       <h1 className="text-2xl font-bold">All Agents</h1>
@@ -32,8 +39,8 @@ export default async function AgentsPage() {
       </p>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {deployments.map((d) => (
-          <AgentStatusCard key={d.id} deployment={d} />
+        {deploymentsWithUpdate.map((d) => (
+          <AgentStatusCard key={d.id} deployment={d} updateAvailable={d.updateAvailable} />
         ))}
       </div>
     </div>
