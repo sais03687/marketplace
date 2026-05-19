@@ -460,6 +460,7 @@ interface SandboxStep {
   detail: string;
   findings?: string[];
   testDetails?: SandboxTestDetail[];
+  logLines?: string[];
 }
 
 interface SandboxReport {
@@ -712,6 +713,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
   const [showConfig, setShowConfig] = useState(false);
   const [skipDefaultTests, setSkipDefaultTests] = useState(false);
   const [drafts, setDrafts] = useState<TestDraft[]>([]);
+  const [viewMode, setViewMode] = useState<"pretty" | "terminal">("pretty");
 
   const isCustom = runtime === "CUSTOM";
 
@@ -832,6 +834,60 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
           </label>
 
           <TestBuilder drafts={drafts} onChange={setDrafts} disabled={isRunning} />
+
+          <div className="border-t pt-3 mt-1">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Built-in platform tests {skipDefaultTests && <span className="text-yellow-600">(skipped)</span>}
+              </span>
+            </div>
+            <div className="rounded bg-gray-950 text-gray-100 font-mono text-[10px] p-3 overflow-auto max-h-64">
+              <pre>{JSON.stringify([
+                {
+                  name: "GET /internal/health",
+                  description: "Verifies container is up. Checks response body contains { ok: true }.",
+                  endpoint: "/internal/health",
+                  method: "GET",
+                  expectStatus: 200,
+                  validate: "body.ok === true"
+                },
+                {
+                  name: "GET /internal/memory",
+                  description: "Verifies memory subsystem loaded. Checks response contains { memory: {...} }.",
+                  endpoint: "/internal/memory",
+                  method: "GET",
+                  expectStatus: 200,
+                  validate: "typeof body.memory !== 'undefined'"
+                },
+                {
+                  name: "GET /internal/skills",
+                  description: "Verifies skill registry loaded. Checks response contains { skills: [...] }.",
+                  endpoint: "/internal/skills",
+                  method: "GET",
+                  expectStatus: 200,
+                  validate: "Array.isArray(body.skills)"
+                },
+                {
+                  name: "POST /hooks/agent (onboarding)",
+                  description: "Fires the agent hook with an onboarding message. Checks HTTP 200 within 15s.",
+                  endpoint: "/hooks/agent",
+                  method: "POST",
+                  body: { message: "Hello, please introduce yourself.", name: "hook:onboarding", sessionKey: "hook:onboarding" },
+                  expectStatus: 200,
+                  timeout: "15s"
+                },
+                {
+                  name: "POST /hooks/agentmail (email)",
+                  description: "Fires the email hook with a synthetic email from manager@vet.internal. Checks HTTP 200 within 15s.",
+                  endpoint: "/hooks/agentmail",
+                  method: "POST",
+                  body: { from: { address: "manager@vet.internal" }, subject: "Vetting test", text: "Synthetic test. Please acknowledge." },
+                  expectStatus: 200,
+                  timeout: "15s"
+                }
+              ], null, 2)}</pre>
+            </div>
+          </div>
         </div>
       )}
 
@@ -852,7 +908,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
 
       {hasDone && report && (
         <div className="space-y-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span
               className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
                 report.overallStatus === "pass"
@@ -862,19 +918,39 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
             >
               {report.overallStatus === "pass" ? "✓ PASS" : "✗ FAIL"}
             </span>
-            <span className="text-xs text-muted-foreground">{report.summary}</span>
-            {report.runAt && (
-              <span className="ml-auto text-xs text-muted-foreground">
-                {new Date(report.runAt).toLocaleString()}
-              </span>
-            )}
+            <span className="text-xs text-muted-foreground flex-1">{report.summary}</span>
+            <div className="flex items-center gap-1 ml-auto">
+              <button
+                type="button"
+                onClick={() => setViewMode("pretty")}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium ${viewMode === "pretty" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground border"}`}
+              >
+                Results
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("terminal")}
+                className={`px-2 py-0.5 rounded text-[10px] font-medium ${viewMode === "terminal" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground border"}`}
+              >
+                Terminal
+              </button>
+              {report.runAt && (
+                <span className="text-xs text-muted-foreground ml-2">
+                  {new Date(report.runAt).toLocaleString()}
+                </span>
+              )}
+            </div>
           </div>
 
-          <div className="rounded border divide-y">
-            {report.steps!.map((step, i) => (
-              <StepRow key={i} step={step} />
-            ))}
-          </div>
+          {viewMode === "terminal" ? (
+            <TerminalView steps={report.steps!} />
+          ) : (
+            <div className="rounded border divide-y">
+              {report.steps!.map((step, i) => (
+                <StepRow key={i} step={step} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -889,12 +965,46 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
   );
 }
 
+// ── Terminal View ─────────────────────────────────────────────────────────────
+
+function TerminalView({ steps }: { steps: SandboxStep[] }) {
+  return (
+    <div className="rounded bg-gray-950 text-gray-100 font-mono text-[11px] p-4 overflow-auto max-h-[600px] space-y-3">
+      {steps.map((step, i) => (
+        <div key={i}>
+          <div className={`font-bold mb-1 ${
+            step.status === "pass" ? "text-green-400" :
+            step.status === "fail" ? "text-red-400" :
+            step.status === "skip" ? "text-gray-500" : "text-yellow-400"
+          }`}>
+            [{step.status.toUpperCase()}] {step.name} — {step.detail}
+          </div>
+          {step.logLines && step.logLines.map((line, j) => (
+            <div key={j} className="text-gray-400 pl-2 leading-relaxed whitespace-pre-wrap break-all">
+              {line}
+            </div>
+          ))}
+          {step.findings && step.findings.length > 0 && !step.logLines && step.findings.map((f, j) => (
+            <div key={j} className="text-red-400 pl-2">⚠ {f}</div>
+          ))}
+          {step.testDetails && !step.logLines && step.testDetails.map((td, j) => (
+            <div key={j} className={`pl-2 ${td.passed ? "text-green-400" : "text-red-400"}`}>
+              {td.passed ? "✓" : "✗"} {td.name}{td.httpStatus !== undefined ? ` → HTTP ${td.httpStatus}` : ""}{td.error ? `: ${td.error}` : ""}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Step Row (with expandable test details) ───────────────────────────────────
 
 function StepRow({ step }: { step: SandboxStep }) {
   const [expanded, setExpanded] = useState(step.status === "fail");
   const hasDetails = (step.testDetails && step.testDetails.length > 0) ||
-                     (step.findings && step.findings.length > 0);
+                     (step.findings && step.findings.length > 0) ||
+                     (step.logLines && step.logLines.length > 0);
 
   return (
     <div className="px-3 py-2">
@@ -930,6 +1040,14 @@ function StepRow({ step }: { step: SandboxStep }) {
                 </li>
               ))}
             </ul>
+          )}
+
+          {step.logLines && step.logLines.length > 0 && !step.testDetails && (
+            <div className="mt-2 rounded bg-gray-950 text-gray-300 font-mono text-[10px] p-2 max-h-48 overflow-auto">
+              {step.logLines.map((line, j) => (
+                <div key={j} className="whitespace-pre-wrap break-all leading-relaxed">{line}</div>
+              ))}
+            </div>
           )}
         </div>
       )}

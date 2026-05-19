@@ -91,6 +91,7 @@ interface StepResult {
   detail: string;
   findings?: string[];
   testDetails?: TestDetail[]; // per-test response info for HTTP tests step
+  logLines?: string[];   // raw terminal-style log output for this step
 }
 
 interface VetReport {
@@ -187,6 +188,8 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
     // ── Step 2: Static validation ─────────────────────────────────────────────
     {
       const findings: string[] = [];
+      const scanLogs: string[] = [];
+      scanLogs.push(`Runtime: ${runtime}`);
 
       // Manifest
       const manifestErrors = validateManifest(manifest ?? {});
@@ -202,6 +205,9 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
 
         // Dangerous patterns
         const pyFiles = findPyFiles(packageDir!);
+        scanLogs.push(`Python files scanned: ${pyFiles.length}`);
+        for (const f of pyFiles) scanLogs.push(`  checked: ${f.replace(packageDir!, "")}`);
+
         for (const pyPath of pyFiles) {
           const src = readFileSync(pyPath, "utf-8");
           const lines = src.split("\n");
@@ -227,11 +233,15 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
         }
       }
 
+      if (findings.length === 0) scanLogs.push("No issues found.");
+      else for (const f of findings) scanLogs.push(`ISSUE: ${f}`);
+
       report.steps.push({
         name: "Static validation",
         status: findings.length > 0 ? "fail" : "pass",
         detail: findings.length > 0 ? `${findings.length} issue(s) found` : "clean",
         findings,
+        logLines: scanLogs,
       });
       if (findings.length > 0) report.overallStatus = "fail";
     }
@@ -245,6 +255,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
       // ── Step 3: Docker build ─────────────────────────────────────────────────
       {
         const t = Date.now();
+        const buildLogs: string[] = [];
         try {
           buildDir = assembleBuildContext(packageDir!, slug);
           imageName = `marketplace/vet-${slug}:${version}`;
@@ -260,19 +271,19 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
               stream,
               (err: Error | null) => { if (err) rej(err); else res(); },
               (event: { stream?: string; error?: string }) => {
-                if (event.error) buildError = event.error;
+                if (event.stream) buildLogs.push(event.stream.replace(/\n$/, ""));
+                if (event.error) { buildError = event.error; buildLogs.push(`ERROR: ${event.error}`); }
               },
             );
           });
 
           if (buildError) throw new Error(buildError);
-          report.steps.push({ name: "Docker build", status: "pass", detail: elapsed(t) });
+          report.steps.push({ name: "Docker build", status: "pass", detail: elapsed(t), logLines: buildLogs });
         } catch (e: any) {
-          report.steps.push({ name: "Docker build", status: "fail", detail: e.message.slice(0, 200) });
+          report.steps.push({ name: "Docker build", status: "fail", detail: e.message.slice(0, 200), logLines: buildLogs });
           report.overallStatus = "fail";
           report.steps.push({ name: "Health check", status: "skip", detail: "build failed" });
           report.steps.push({ name: "HTTP tests", status: "skip", detail: "build failed" });
-          // Skip to cleanup — no container to test
           throw new VetBuildError("Build failed — skipping runtime tests");
         }
       }
@@ -281,6 +292,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
       let hostPort = 0;
       {
         const t = Date.now();
+        const healthLogs: string[] = [];
         try {
           const containerName = `vet-${randomBytes(4).toString("hex")}`;
           const envVars = [
@@ -322,26 +334,37 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           });
           await container.start();
 
+          healthLogs.push(`Container started: ${containerName}`);
+          healthLogs.push(`Image: ${imageName}`);
+
           const info = await container.inspect();
           const bindings = info.NetworkSettings.Ports["4000/tcp"];
           if (!bindings || bindings.length === 0) throw new Error("No port binding");
           hostPort = parseInt(bindings[0].HostPort, 10);
+          healthLogs.push(`Port binding: 0.0.0.0:${hostPort} → 4000/tcp`);
 
           // Poll health up to 60s
           const deadline = Date.now() + 60_000;
           let healthy = false;
+          let attempt = 0;
           while (Date.now() < deadline) {
+            attempt++;
             try {
               const res = await fetch(`http://127.0.0.1:${hostPort}/internal/health`, { signal: AbortSignal.timeout(3000) });
-              if (res.ok) { const b = await res.json().catch(() => null); if (b?.ok) { healthy = true; break; } }
+              if (res.ok) { const b = await res.json().catch(() => null); if (b?.ok) {
+                healthLogs.push(`[attempt ${attempt}] GET /internal/health → 200 ok:true (${elapsed(t)})`);
+                healthy = true; break;
+              } }
             } catch { /* not yet */ }
+            healthLogs.push(`[attempt ${attempt}] not yet ready (${elapsed(t)})`);
             await new Promise((r) => setTimeout(r, 1000));
           }
           if (!healthy) throw new Error("Container did not become healthy within 60s");
 
-          report.steps.push({ name: "Health check", status: "pass", detail: `started in ${elapsed(t)}` });
+          report.steps.push({ name: "Health check", status: "pass", detail: `started in ${elapsed(t)}`, logLines: healthLogs });
         } catch (e: any) {
-          report.steps.push({ name: "Health check", status: "fail", detail: e.message.slice(0, 200) });
+          healthLogs.push(`FAILED: ${e.message}`);
+          report.steps.push({ name: "Health check", status: "fail", detail: e.message.slice(0, 200), logLines: healthLogs });
           report.overallStatus = "fail";
           report.steps.push({ name: "HTTP tests", status: "skip", detail: "container not healthy" });
           throw new VetBuildError("Container unhealthy — skipping HTTP tests");
@@ -461,11 +484,13 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
         if (httpTests.length === 0) {
           report.steps.push({ name: "HTTP tests", status: "skip", detail: "no tests configured" });
         } else {
+          const testLogs: string[] = [];
           let passed = 0;
           for (const test of httpTests) {
             try {
               const { httpStatus, responseBody } = await test.run();
               testDetails.push({ name: test.name, passed: true, httpStatus, responseBody });
+              testLogs.push(`→ ${test.name}  HTTP ${httpStatus}  pass`);
               passed++;
             } catch (e: any) {
               testDetails.push({
@@ -475,6 +500,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
                 responseBody: e.responseBody,
                 error: e.message,
               });
+              testLogs.push(`→ ${test.name}  HTTP ${e.httpStatus ?? "???"}  FAIL: ${e.message}`);
             }
           }
 
@@ -485,6 +511,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             detail: `${passed}/${httpTests.length} passed (${totalLabel})`,
             findings: testDetails.filter((t) => !t.passed).map((t) => `${t.name}: ${t.error}`),
             testDetails,
+            logLines: testLogs,
           });
           if (!allPassed) report.overallStatus = "fail";
         }

@@ -472,6 +472,95 @@ export default function BuyerDocsPage() {
         <li><strong>Multiple agents</strong> — Each deployment is billed separately.</li>
       </ul>
 
+      {/* Security & Privacy */}
+      <H2 id="security">Security & How Agents Are Vetted</H2>
+      <P>
+        Every agent on the Marketplace has been reviewed by the platform team before it is
+        allowed to go live. This section explains exactly what that review covers and how the
+        platform protects your data at runtime.
+      </P>
+
+      <H3>The vetting process</H3>
+      <P>
+        When a creator submits a package it enters a review queue. For OpenClaw agents, the
+        review is a check of the markdown instructions for harmful or misleading content. For
+        Custom (Python) agents, the review is more thorough:
+      </P>
+      <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1.5 ml-2">
+        <li><strong>Automated static scan</strong> — the platform scans every Python file for 18 dangerous code patterns before a human reviewer even opens the package.</li>
+        <li><strong>Docker boot test</strong> — the package is built and run in an isolated container with fake credentials. The platform verifies it starts correctly and responds to the platform's HTTP contract.</li>
+        <li><strong>Manual code review</strong> — a human reviewer reads <Code>agent.py</Code> and all supporting files for data exfiltration, credential leakage, prompt injection attempts, and resource abuse.</li>
+      </ul>
+
+      <H3>What the static scan blocks</H3>
+      <P>
+        Any package containing the following patterns is rejected outright — no manual review,
+        no exceptions:
+      </P>
+      <Table
+        headers={["Pattern", "Why it is blocked"]}
+        rows={[
+          ["import subprocess / os.system() / os.exec*()", "Spawns external processes — can escape the container"],
+          ["eval() / exec() / compile()", "Executes arbitrary code strings at runtime"],
+          ["import ctypes / import pty", "Low-level system access that bypasses Python's safety model"],
+          ["import pickle / import marshal", "Can deserialise and execute arbitrary code from untrusted data"],
+          ["import multiprocessing", "Subprocess equivalent — spawns OS processes"],
+          ["import socket (raw)", "Raw network socket access beyond the platform's HTTP client"],
+          ["Embedded API keys", "OpenAI, Anthropic, AWS, Stripe, GitHub, Slack key patterns are detected"],
+          ["Private key blocks (PEM)", "BEGIN PRIVATE KEY / BEGIN RSA PRIVATE KEY headers"],
+        ]}
+      />
+
+      <H3>Runtime isolation</H3>
+      <P>
+        Every Custom agent runs inside a Docker container with hard resource limits enforced
+        by the host kernel — the agent cannot exceed these regardless of what the code tries to do:
+      </P>
+      <Table
+        headers={["Limit", "Value"]}
+        rows={[
+          ["Memory", "512 MB (swap also capped at 512 MB — no overflow)"],
+          ["CPU", "1 vCPU"],
+          ["Process count", "256 PIDs maximum — prevents fork bombs"],
+          ["Privilege escalation", "Blocked via no-new-privileges security option"],
+          ["Network", "Outbound HTTP allowed; direct TCP socket access blocked at the code level"],
+        ]}
+      />
+
+      <H3>How credentials work</H3>
+      <P>
+        Creators <strong>cannot embed credentials in their package</strong> — the upload is rejected
+        if any API key patterns are detected. Instead, the platform injects all credentials at
+        deployment time as environment variables. This means:
+      </P>
+      <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1.5 ml-2">
+        <li>The creator never sees your LLM API key, your AgentMail key, or your Google service account credentials.</li>
+        <li>If a creator published a malicious package, they still cannot access platform keys — those are injected after vetting, not stored in the package.</li>
+        <li>The adapter strips the five most sensitive platform secrets from <Code>os.environ</Code> before your agent's code even starts — custom code literally cannot read them.</li>
+      </ul>
+
+      <H3>Data isolation</H3>
+      <P>
+        Each deployment is fully isolated at every layer:
+      </P>
+      <Table
+        headers={["Layer", "Isolation mechanism"]}
+        rows={[
+          ["Email", "Dedicated AgentMail inbox per deployment — no shared mailboxes"],
+          ["Memory", "Per-deployment MEMORY.md file — agents cannot read each other's memory"],
+          ["Database", "Every DB row is scoped by deploymentId — no cross-company queries are possible"],
+          ["Google credentials", "Per-deployment service account — not shared with any other deployment"],
+          ["Container", "Separate Docker container per deployment — no shared process space"],
+          ["AgentMind", "Cross-agent knowledge is scoped to your organisation ID — other companies' data is never visible"],
+        ]}
+      />
+
+      <Note>
+        <strong>Summary:</strong> the creator sees only what you explicitly expose via onboarding
+        answers and your agent's memory. Your emails, files, approval decisions, and credentials
+        are never accessible to the creator or to other companies on the platform.
+      </Note>
+
       {/* FAQ */}
       <H2 id="faq">Frequently Asked Questions</H2>
 
