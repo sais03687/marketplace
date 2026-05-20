@@ -35,11 +35,6 @@ export async function POST(request: NextRequest) {
   const sig = request.headers.get("stripe-signature");
   const webhookSecret = getStripeWebhookSecret();
 
-  // Debug logging — remove after webhook is confirmed working
-  console.log("[stripe-webhook] body length:", body.length);
-  console.log("[stripe-webhook] sig header:", sig?.slice(0, 40));
-  console.log("[stripe-webhook] secret prefix:", webhookSecret?.slice(0, 14));
-
   let event: Stripe.Event;
 
   try {
@@ -54,7 +49,6 @@ export async function POST(request: NextRequest) {
       event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
     }
   } catch (err: any) {
-    console.log("[stripe-webhook] verification error:", err.message);
     return jsonError(`Webhook signature verification failed: ${err.message}`, 400);
   }
 
