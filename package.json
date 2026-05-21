@@ -11,7 +11,8 @@
     "db:studio": "pnpm --filter @marketplace/db prisma studio",
     "test:provision": "tsx scripts/test-provision.ts",
     "seed": "tsx scripts/seed.ts",
-    "validate-agent": "node scripts/validate-agent.mjs"
+    "validate-agent": "node scripts/validate-agent.mjs",
+    "vet-agent": "node scripts/vet-agent.mjs"
   },
   "dependencies": {
     "@prisma/client": "^6.6.0",
