@@ -51,6 +51,18 @@ export default async function CreatorDashboardPage() {
     0,
   );
 
+  const payouts = await prisma.payout.findMany({
+    where: { creatorId: creator.id, status: "PAID" },
+    select: { creatorShareCents: true },
+  });
+  const totalEarningsCents = payouts.reduce((sum, p) => sum + p.creatorShareCents, 0);
+
+  const pendingPayouts = await prisma.payout.findMany({
+    where: { creatorId: creator.id, status: "PENDING" },
+    select: { creatorShareCents: true },
+  });
+  const pendingCents = pendingPayouts.reduce((sum, p) => sum + p.creatorShareCents, 0);
+
   return (
     <div>
       <div className="flex items-center justify-between">
@@ -81,13 +93,23 @@ export default async function CreatorDashboardPage() {
             <p className="text-2xl font-bold">{totalDeployments}</p>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className="p-4">
-            <p className="text-sm text-muted-foreground">Earnings</p>
-            <p className="text-2xl font-bold">$0</p>
-            <p className="text-xs text-muted-foreground">Billing not yet active</p>
-          </CardContent>
-        </Card>
+        <Link href="/creator/payouts">
+          <Card className="hover:bg-muted/50 transition-colors cursor-pointer">
+            <CardContent className="p-4">
+              <p className="text-sm text-muted-foreground">Total Earned</p>
+              <p className="text-2xl font-bold">
+                ${(totalEarningsCents / 100).toFixed(2)}
+              </p>
+              {pendingCents > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  +${(pendingCents / 100).toFixed(2)} pending
+                </p>
+              ) : totalEarningsCents === 0 ? (
+                <p className="text-xs text-muted-foreground">No payouts yet</p>
+              ) : null}
+            </CardContent>
+          </Card>
+        </Link>
       </div>
 
       <div className="mt-8">
