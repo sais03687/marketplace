@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { getContainerPort } from "./clients/docker.js";
 import { startPoller } from "./jobs/poller-manager.js";
 import { restartLocalAgent } from "./jobs/local-runner.js";
+import { startProxyServer } from "./server.js";
 import Dockerode from "dockerode";
 
 const docker = new Dockerode();
@@ -162,6 +163,7 @@ async function recoverDockerPollers(): Promise<void> {
 }
 
 const worker = startWorker();
+startProxyServer();
 
 // Recover local OpenClaw agents (gateways + pollers) that went offline with this process
 recoverLocalAgents().catch((err) => {

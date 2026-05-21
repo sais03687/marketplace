@@ -1,5 +1,7 @@
-import { prisma } from "@/lib/db";
-import { jsonError, jsonSuccess, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
+import { jsonSuccess, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
+
+const PROVISIONING_URL = process.env.PROVISIONING_URL || "";
+const PROVISIONING_SECRET = process.env.PROVISIONING_SECRET || "";
 
 export async function GET(
   _request: Request,
@@ -19,18 +21,17 @@ export async function GET(
     return jsonSuccess({ memory: null, message: "Container not running" });
   }
 
+  if (!PROVISIONING_URL) {
+    return jsonSuccess({ memory: null, message: "Provisioning service not configured" });
+  }
+
   try {
-    const containerUrl = deployment.containerName.startsWith("http")
-      ? deployment.containerName
-      : `http://${deployment.containerName}:4100`;
-    const res = await fetch(`${containerUrl}/internal/memory`, {
-      signal: AbortSignal.timeout(5000),
+    const res = await fetch(`${PROVISIONING_URL}/proxy/${id}/memory`, {
+      headers: PROVISIONING_SECRET ? { Authorization: `Bearer ${PROVISIONING_SECRET}` } : {},
+      signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) {
-      return jsonSuccess({ memory: null, message: "Memory not available" });
-    }
-    const memory = await res.json();
-    return jsonSuccess(memory);
+    const data = await res.json();
+    return jsonSuccess(data);
   } catch {
     return jsonSuccess({ memory: null, message: "Container unreachable" });
   }
