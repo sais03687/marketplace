@@ -9,7 +9,6 @@ const TABS = [
   { slug: "/approvals", label: "Approvals" },
   { slug: "/trust-scores", label: "Trust Scores" },
   { slug: "/memory", label: "Memory" },
-  { slug: "/skill-files", label: "Skill Files" },
   { slug: "/knowledge", label: "Knowledge" },
   { slug: "/settings", label: "Settings" },
 ];
