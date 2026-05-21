@@ -222,7 +222,10 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   try {
     const slug = deployment.agent.slug;
     const companySlug = companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-    const username = `${slug}-${companySlug}`;
+    // Include a short deployment-ID suffix so multiple deployments of the same
+    // agent at the same company each get a distinct inbox.
+    const depSuffix = deploymentId.slice(-12);
+    const username = `${slug}-${companySlug}-${depSuffix}`;
 
     const inbox = await withRetry(
       () => createInbox(username, "agentmail.to"),
