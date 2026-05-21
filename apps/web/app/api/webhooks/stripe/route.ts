@@ -62,10 +62,10 @@ export async function POST(request: NextRequest) {
       const customerId = obj.customer as string | null;
 
       if (deploymentId && subscriptionId) {
-        // Save subscription ID and look up company to save customer ID
+        // Advance from PENDING_PAYMENT → PROVISIONING and save subscription ID
         const deployment = await prisma.deployment.update({
           where: { id: deploymentId },
-          data: { stripeSubscriptionId: subscriptionId },
+          data: { stripeSubscriptionId: subscriptionId, status: "PROVISIONING" },
           include: { company: true },
         });
 
@@ -79,6 +79,19 @@ export async function POST(request: NextRequest) {
 
         // Now enqueue provisioning — payment is confirmed
         await getProvisioningQueue().add("provision", { type: "provision", deploymentId });
+      }
+      break;
+    }
+
+    case "checkout.session.expired": {
+      // Buyer abandoned the checkout — delete the PENDING_PAYMENT deployment so it
+      // doesn't linger in the dashboard.
+      const metadata = obj.metadata as Record<string, string> | undefined;
+      const deploymentId = metadata?.deploymentId ?? null;
+      if (deploymentId) {
+        await prisma.deployment.deleteMany({
+          where: { id: deploymentId, status: "PENDING_PAYMENT" },
+        });
       }
       break;
     }

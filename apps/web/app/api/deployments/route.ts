@@ -49,7 +49,7 @@ export async function GET(request: Request) {
   const includeApprovals = url.searchParams.get("includeApprovals") === "true";
 
   const deployments = await prisma.deployment.findMany({
-    where: { companyId: company.id },
+    where: { companyId: company.id, status: { not: "PENDING_PAYMENT" } },
     include: {
       agent: true,
       ...(includeApprovals ? { approvals: { orderBy: { createdAt: "desc" } } } : {}),
@@ -132,7 +132,9 @@ export async function POST(request: Request) {
       ...(data.onboardingAnswers && Object.keys(data.onboardingAnswers).length > 0
         ? { onboardingData: data.onboardingAnswers as any }
         : {}),
-      status: "PROVISIONING",
+      // Stay PENDING_PAYMENT until Stripe confirms — avoids showing ghost deployments
+      // in the dashboard for abandoned checkouts. Webhook moves this to PROVISIONING.
+      status: getStripe() ? "PENDING_PAYMENT" : "PROVISIONING",
     },
   });
 

@@ -304,6 +304,7 @@ enum VetStatus {
 }
 
 enum DeploymentStatus {
+  PENDING_PAYMENT
   PROVISIONING
   ONBOARDING
   ACTIVE
