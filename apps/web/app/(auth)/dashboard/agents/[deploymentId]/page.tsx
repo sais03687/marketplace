@@ -3,10 +3,12 @@
 import { useState, useEffect, useCallback, use } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ApprovalCard } from "@/components/marketplace/approval-card";
 import { OnboardingPanel } from "@/components/dashboard/onboarding-panel";
-import { Loader2, Pause, Play, UserX, RefreshCw, AlertTriangle, ArrowUpCircle } from "lucide-react";
+import { Loader2, Pause, Play, UserX, RefreshCw, AlertTriangle, ArrowUpCircle, Star } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -65,16 +67,30 @@ export default function AgentOverviewPage({
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [confirmFire, setConfirmFire] = useState(false);
+  const [review, setReview] = useState<{ rating: number; headline: string; body: string } | null>(null);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewHeadline, setReviewHeadline] = useState("");
+  const [reviewBody, setReviewBody] = useState("");
+  const [submittingReview, setSubmittingReview] = useState(false);
+  const [daysActive, setDaysActive] = useState(0);
 
   const fetchData = useCallback(async () => {
     try {
-      const [depRes, appRes] = await Promise.all([
+      const [depRes, appRes, revRes] = await Promise.all([
         fetch(`/api/deployments/${deploymentId}`),
         fetch(`/api/deployments/${deploymentId}/approvals`),
+        fetch(`/api/deployments/${deploymentId}/reviews`),
       ]);
+      if (revRes.ok) {
+        const revData = await revRes.json();
+        const existing = Array.isArray(revData) ? revData[0] : null;
+        if (existing) setReview(existing);
+      }
       if (depRes.ok) {
         const d = await depRes.json();
         setDeployment(d);
+        setDaysActive(Math.floor((Date.now() - new Date(d.createdAt).getTime()) / (1000 * 60 * 60 * 24)));
 
         // Compute stats from approval history
         if (appRes.ok) {
@@ -120,6 +136,18 @@ export default function AgentOverviewPage({
       body: JSON.stringify({ action, ...data }),
     });
     fetchData();
+  };
+
+  const handleSubmitReview = async () => {
+    if (!reviewHeadline.trim() || !reviewBody.trim()) return;
+    setSubmittingReview(true);
+    const res = await fetch(`/api/deployments/${deploymentId}/reviews`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating: reviewRating, headline: reviewHeadline, body: reviewBody }),
+    });
+    if (res.ok) setReviewSubmitted(true);
+    setSubmittingReview(false);
   };
 
   if (loading) {
@@ -243,6 +271,42 @@ export default function AgentOverviewPage({
             ))}
           </div>
         </div>
+      )}
+
+      {/* Review */}
+      {isActive && daysActive >= 14 && !review && !reviewSubmitted && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Leave a Review</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-1">
+              {[1, 2, 3, 4, 5].map((s) => (
+                <button key={s} onClick={() => setReviewRating(s)} type="button">
+                  <Star className={`h-5 w-5 ${s <= reviewRating ? "fill-amber-400 text-amber-400" : "text-muted-foreground"}`} />
+                </button>
+              ))}
+            </div>
+            <Input
+              placeholder="Headline (e.g. Saved us 10 hours a week)"
+              value={reviewHeadline}
+              onChange={(e) => setReviewHeadline(e.target.value)}
+            />
+            <Textarea
+              placeholder="Tell others about your experience..."
+              rows={3}
+              value={reviewBody}
+              onChange={(e) => setReviewBody(e.target.value)}
+            />
+            <Button size="sm" onClick={handleSubmitReview} disabled={submittingReview || !reviewHeadline.trim() || !reviewBody.trim()}>
+              {submittingReview ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : null}
+              Submit Review
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+      {reviewSubmitted && (
+        <p className="text-sm text-emerald-600 font-medium">Thanks for your review!</p>
       )}
 
       {/* Action buttons */}
