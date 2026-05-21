@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { CreditCard, Loader2, AlertCircle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { CreditCard, Loader2, AlertCircle, ExternalLink } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 
 interface Subscription {
@@ -30,6 +31,7 @@ export default function BillingPage() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [openingPortal, setOpeningPortal] = useState(false);
 
   const fetchBilling = () => {
     fetch("/api/company/billing")
@@ -57,10 +59,60 @@ export default function BillingPage() {
     setCancelling(null);
   };
 
+  const handleManageBilling = async () => {
+    setOpeningPortal(true);
+    try {
+      const res = await fetch("/api/company/billing/portal", { method: "POST" });
+      const data = await res.json();
+      if (data.url) window.location.href = data.url;
+    } catch {
+      // ignore
+    }
+    setOpeningPortal(false);
+  };
+
+  const pausedSubs = subscriptions.filter((s) => s.status === "PAUSED");
+
   return (
     <div className="max-w-3xl">
-      <h1 className="text-2xl font-bold">Billing</h1>
-      <p className="text-muted-foreground">Manage your agent subscriptions.</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Billing</h1>
+          <p className="text-muted-foreground">Manage your agent subscriptions.</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={handleManageBilling} disabled={openingPortal}>
+          {openingPortal ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <ExternalLink className="mr-2 h-4 w-4" />
+          )}
+          Manage payment method
+        </Button>
+      </div>
+
+      {pausedSubs.length > 0 && (
+        <Alert variant="destructive" className="mt-4">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex items-center justify-between">
+            <span>
+              {pausedSubs.length === 1
+                ? `${pausedSubs[0].agentName} has been paused due to a failed payment.`
+                : `${pausedSubs.length} agents have been paused due to failed payments.`}{" "}
+              Update your payment method to resume.
+            </span>
+            <Button
+              size="sm"
+              variant="destructive"
+              className="ml-4 shrink-0"
+              onClick={handleManageBilling}
+              disabled={openingPortal}
+            >
+              {openingPortal && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Update card
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Card className="mt-6">
         <CardHeader>
