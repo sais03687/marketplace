@@ -386,7 +386,7 @@ const isCustom = runtime === "custom";
         const sigMatch = src.match(/(?:async\s+)?def\s+run_agent\s*\(([^)]*)\)/);
         if (sigMatch) {
           const sigStr = sigMatch[1];
-          const EXPECTED_PARAMS = ["content", "context", "approve_fn", "resolve_fn", "contribute_fn", "search_fn"];
+          const EXPECTED_PARAMS = ["content", "context", "approve_fn", "resolve_fn", "contribute_fn", "search_fn", "use_fn"];
           const missing = EXPECTED_PARAMS.filter((p) => !sigStr.includes(p));
           if (missing.length > 0) {
             findings.push({ level: "warn", msg: `run_agent signature is missing expected parameters: ${missing.join(", ")}. The adapter passes these — missing params won't receive platform data.` });

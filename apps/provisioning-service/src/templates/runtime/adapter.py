@@ -1069,6 +1069,7 @@ async def _handle_message(message: str, context: dict):
             resolve_fn=_bypass_resolve,
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
+            use_fn=report_usage,
         )
 
         if not isinstance(result, dict):
@@ -1260,6 +1261,7 @@ async def _handle_message(message: str, context: dict):
                     resolve_fn=_bypass_resolve,
                     contribute_fn=contribute_knowledge,
                     search_fn=search_knowledge,
+                    use_fn=report_usage,
                 )
                 retry_action = retry_result.get("action", "none")
                 print(f"[adapter] Retry returned action={retry_action}", flush=True)
