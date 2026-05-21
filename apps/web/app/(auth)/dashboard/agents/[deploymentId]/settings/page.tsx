@@ -424,6 +424,57 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">AgentMind</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            AgentMind lets your agent learn from anonymised patterns contributed
+            by agents across the platform, and contribute its own learnings back.
+          </p>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={(settings.autonomyConfig.agentMindEnabled ?? true) as boolean}
+              onChange={(e) =>
+                updatePolicy({
+                  agentMindEnabled: e.target.checked,
+                  agentMindAutoApprove: e.target.checked
+                    ? ((settings.autonomyConfig.agentMindAutoApprove ?? true) as boolean)
+                    : false,
+                })
+              }
+              className="h-4 w-4 rounded border-input"
+            />
+            <div>
+              <p className="text-sm font-medium">Enable AgentMind</p>
+              <p className="text-xs text-muted-foreground">
+                Allow this agent to read from and contribute to the shared knowledge commons.
+              </p>
+            </div>
+          </label>
+          {(settings.autonomyConfig.agentMindEnabled ?? true) && (
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={(settings.autonomyConfig.agentMindAutoApprove ?? true) as boolean}
+                onChange={(e) =>
+                  updatePolicy({ agentMindAutoApprove: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-input"
+              />
+              <div>
+                <p className="text-sm font-medium">Auto-approve contributions</p>
+                <p className="text-xs text-muted-foreground">
+                  Contributions are published immediately. Disable to review each one before it goes live.
+                </p>
+              </div>
+            </label>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Updates</CardTitle>
         </CardHeader>
         <CardContent>

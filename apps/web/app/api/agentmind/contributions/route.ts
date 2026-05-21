@@ -24,12 +24,17 @@ export async function GET(request: NextRequest) {
   const limit = Math.min(50, Math.max(1, parseInt(params.limit ?? "20", 10)));
   const skip = (page - 1) * limit;
 
-  // Get all deployment IDs for this company
+  // Get AgentMind-enabled deployment IDs for this company
   const deployments = await prisma.deployment.findMany({
     where: { companyId: company.id },
-    select: { id: true },
+    select: { id: true, autonomyConfig: true },
   });
-  const deploymentIds = deployments.map((d) => d.id);
+  const deploymentIds = deployments
+    .filter((d) => {
+      const ac = (d.autonomyConfig ?? {}) as Record<string, unknown>;
+      return ac.agentMindEnabled !== false;
+    })
+    .map((d) => d.id);
 
   const where: Record<string, unknown> = {
     deploymentId: { in: deploymentIds },

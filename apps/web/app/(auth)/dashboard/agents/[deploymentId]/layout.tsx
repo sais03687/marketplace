@@ -3,13 +3,14 @@
 import { usePathname, useParams } from "next/navigation";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 
-const TABS = [
+const BASE_TABS = [
   { slug: "", label: "Overview" },
   { slug: "/approvals", label: "Approvals" },
   { slug: "/trust-scores", label: "Trust Scores" },
   { slug: "/memory", label: "Memory" },
-  { slug: "/knowledge", label: "Knowledge" },
+  { slug: "/knowledge", label: "Knowledge", requiresAgentMind: true },
   { slug: "/settings", label: "Settings" },
 ];
 
@@ -22,11 +23,27 @@ export default function AgentDetailLayout({
   const params = useParams();
   const deploymentId = params.deploymentId as string;
   const basePath = `/dashboard/agents/${deploymentId}`;
+  const [agentMindEnabled, setAgentMindEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/deployments/${deploymentId}`)
+      .then((r) => r.json())
+      .then((data) => {
+        const ac = data.autonomyConfig ?? {};
+        // Default: enabled unless explicitly set to false
+        setAgentMindEnabled(ac.agentMindEnabled !== false);
+      })
+      .catch(() => setAgentMindEnabled(false));
+  }, [deploymentId]);
+
+  const tabs = BASE_TABS.filter(
+    (tab) => !tab.requiresAgentMind || agentMindEnabled === true,
+  );
 
   return (
     <div>
       <nav className="flex gap-1 border-b">
-        {TABS.map((tab) => {
+        {tabs.map((tab) => {
           const href = `${basePath}${tab.slug}`;
           const isActive =
             tab.slug === ""

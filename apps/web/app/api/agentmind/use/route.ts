@@ -42,6 +42,11 @@ export async function POST(request: Request) {
     return jsonError("Deployment not found", 404);
   }
 
+  const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;
+  if (ac.agentMindEnabled === false) {
+    return jsonError("AgentMind is disabled for this deployment", 403);
+  }
+
   // Process each contribution: increment usage + auto-upvote
   const results: { id: string; voted: boolean }[] = [];
 

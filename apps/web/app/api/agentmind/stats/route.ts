@@ -8,9 +8,15 @@ export async function GET() {
 
   const deployments = await prisma.deployment.findMany({
     where: { companyId: company.id },
-    select: { id: true },
+    select: { id: true, autonomyConfig: true },
   });
-  const deploymentIds = deployments.map((d) => d.id);
+  // Only count contributions from AgentMind-enabled deployments
+  const deploymentIds = deployments
+    .filter((d) => {
+      const ac = (d.autonomyConfig ?? {}) as Record<string, unknown>;
+      return ac.agentMindEnabled !== false;
+    })
+    .map((d) => d.id);
 
   const [total, approved, pending, rejected] = await Promise.all([
     prisma.knowledgeContribution.count({

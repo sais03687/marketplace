@@ -29,6 +29,11 @@ export async function POST(request: Request) {
     return jsonError("Deployment not found", 404);
   }
 
+  const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;
+  if (ac.agentMindEnabled === false) {
+    return jsonError("AgentMind is disabled for this deployment", 403);
+  }
+
   // Validate contribution exists and is approved
   const contribution = await prisma.knowledgeContribution.findUnique({
     where: { id: contributionId },

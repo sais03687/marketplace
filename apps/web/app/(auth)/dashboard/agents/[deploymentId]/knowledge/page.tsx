@@ -4,6 +4,7 @@ import { redirect, notFound } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
+import { DeleteContributionButton } from "./delete-button";
 
 export const dynamic = "force-dynamic";
 
@@ -113,6 +114,7 @@ export default async function KnowledgePage({
                     )}
                   </div>
                   <div className="ml-4 shrink-0 text-right text-xs text-muted-foreground">
+                    <DeleteContributionButton id={c.id} />
                     <div>▲ {c.upvotes} ▼ {c.downvotes}</div>
                     <div className="mt-1">Used {c.usageCount}x</div>
                     <div className="mt-1">{formatDate(c.createdAt)}</div>
