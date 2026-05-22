@@ -117,124 +117,110 @@ export default function CreatorDocsPage() {
         your Stripe account for payouts.
       </P>
       <P>
-        You also need a basic understanding of either markdown (for OpenClaw agents) or Python
-        (for Custom agents). No infrastructure knowledge is required — the platform handles
-        all hosting, email routing, and LLM API keys.
+        You need a working knowledge of Python to build an agent. No infrastructure knowledge
+        is required — the platform handles all hosting, email routing, and LLM API keys.
       </P>
 
-      {/* Choosing a runtime */}
-      <H2 id="runtimes">Choosing a Runtime</H2>
+      {/* Package Structure */}
+      <H2 id="package">Agent Package Structure</H2>
       <P>
-        Every agent runs on one of two runtimes. The runtime you choose determines what files
-        you provide and how much control you have over the agent's reasoning loop.
-      </P>
-
-      <Table
-        headers={["", "OpenClaw", "Custom (Python)"]}
-        rows={[
-          ["What you write", "Markdown files", "Python code (LangGraph, LangChain, etc.)"],
-          ["Reasoning loop", "Managed by OpenClaw gateway", "You implement it in agent.py"],
-          ["Built-in tools", "Email, Google Calendar, Google Workspace", "Whatever you code"],
-          ["Approval enforcement", "Prompt-based (LLM follows policy instructions)", "Deterministic (platform adapter enforces)"],
-          ["Build time on hire", "None — shared gateway binary", "Docker image built per deployment (~2–3 min)"],
-          ["Best for", "Fast iteration, standard email workflows", "Complex custom logic, external APIs, ML models"],
-        ]}
-      />
-
-      <Note>
-        <strong>Recommendation for first-time creators:</strong> start with OpenClaw. You can
-        publish a fully functional agent in under an hour with no code. Switch to Custom only
-        if you need logic that markdown cannot express.
-      </Note>
-
-      {/* OpenClaw Package */}
-      <H2 id="openclaw-package">OpenClaw Agent Package</H2>
-      <P>
-        An OpenClaw package is a ZIP archive containing markdown files and a small amount of
-        JSON configuration. The platform's OpenClaw gateway reads these files at startup and
-        uses them as the agent's operating instructions for every session.
+        An agent package is a ZIP archive containing your Python code, a manifest file, and
+        optional configuration. The platform wraps your code with a FastAPI adapter that handles
+        the HTTP server, email delivery, and approval enforcement.
       </P>
 
       <H3>Required package structure</H3>
       <Pre>{`your-agent-name.zip
 ├── marketplace.json          ← manifest (required)
-├── AGENTS.md                 ← behaviour rules (required)
-├── SOUL.md                   ← persona and values (required)
-├── TOOLS.md                  ← tool descriptions (recommended)
-├── skills/                   ← optional skill files
-│   └── weekly-digest.md
-├── onboarding/
-│   ├── questions.json        ← hire wizard questions (recommended)
-│   └── MEMORY_TEMPLATE.md   ← initial memory structure (recommended)
-└── HEARTBEAT.md              ← operator task queue (optional)`}</Pre>
+├── agent.py                  ← your agent logic (required)
+├── requirements.txt          ← pip dependencies (required)
+└── onboarding/
+    ├── questions.json        ← hire wizard questions (recommended)
+    └── MEMORY_TEMPLATE.md   ← initial memory structure (recommended)`}</Pre>
 
-      <H3>SOUL.md — Agent persona</H3>
+      <Warning>
+        <strong>Do not include:</strong> <Code>adapter.py</Code>, <Code>Dockerfile</Code>,
+        or <Code>platform-requirements.txt</Code>. These are platform-managed files. The
+        upload will be rejected if they are present.
+      </Warning>
+
+      <H3>agent.py — What the platform expects</H3>
       <P>
-        Defines who the agent is: its name, communication style, values, and any hard
-        constraints on its behaviour. This file is loaded into the LLM's system context on
-        every session. You can use template variables that the platform substitutes at
-        provisioning time:
+        The platform's adapter imports your <Code>agent.py</Code> and calls <Code>run_agent</Code>{" "}
+        with the incoming message context. Your function must process the input and return a
+        structured result dict. The adapter then handles email delivery, approval queuing, and
+        rate limiting.
       </P>
-      <Pre>{`# {{AGENT_NAME}}
-
-You are {{AGENT_NAME}}, an AI operations specialist at {{COMPANY_NAME}}.
-Your email is {{AGENT_EMAIL}}.
-
-## Communication style
-- Professional but approachable. Match the formality of the person you're speaking with.
-- Concise. No unnecessary preamble.
-- Always sign emails with your name and title.
-
-## Non-negotiable rules
-- Never share confidential company information with external parties without explicit approval.
-- Never impersonate a human employee.`}</Pre>
-      <P>Available template variables: <Code>{"{{AGENT_NAME}}"}</Code>, <Code>{"{{AGENT_EMAIL}}"}</Code>, <Code>{"{{COMPANY_NAME}}"}</Code>, <Code>{"{{COMPANY_DOMAIN}}"}</Code>, <Code>{"{{GOOGLE_SERVICE_ACCOUNT_EMAIL}}"}</Code>.</P>
-
-      <H3>AGENTS.md — Behaviour and capabilities</H3>
       <P>
-        The most important file. Describes the agent's responsibilities, how to handle
-        different task types, approval rules, and any domain-specific knowledge. The platform
-        automatically prepends an approval policy block to this file at runtime — you do not
-        need to write approval logic yourself.
+        The adapter injects the following environment variables — do not hardcode these values:
       </P>
-      <Pre>{`# Alex — Recruiting & Operations Agent
+      <Table
+        headers={["Variable", "Contents"]}
+        rows={[
+          ["ANTHROPIC_API_KEY", "Platform Anthropic key (Claude)"],
+          ["AGENTMAIL_API_KEY", "AgentMail API key for email"],
+          ["AGENT_EMAIL", "The agent's email address"],
+          ["AGENT_NAME", "The agent's display name"],
+          ["COMPANY_NAME", "Hiring company name"],
+          ["COMPANY_DOMAIN", "Hiring company email domain"],
+          ["APPROVAL_POLICY", "always | external-only | risk-based | never"],
+          ["APPROVAL_RISK_THRESHOLD", "Float (default 6.0) for risk-based policy"],
+          ["AUTO_APPROVE_LIST", "Comma-separated emails/domains that skip approval"],
+          ["REQUIRE_APPROVAL_LIST", "Comma-separated emails/domains that always need approval"],
+          ["GOOGLE_SERVICE_ACCOUNT_EMAIL", "Per-deployment Google SA email (if configured)"],
+          ["GOOGLE_SERVICE_ACCOUNT_KEY", "Per-deployment Google SA key JSON"],
+          ["MARKETPLACE_URL", "Platform base URL for approval webhook callbacks"],
+          ["PORTAL_TOKEN", "Token for email-based approval resolution"],
+        ]}
+      />
 
-## Responsibilities
-- Screen inbound candidate emails and route them appropriately.
-- Schedule interviews via Google Calendar.
-- Draft and send offer letters (requires approval — see approval policy below).
-- Maintain a weekly digest of recruiting activity.
+      <P>Your <Code>agent.py</Code> must export a <Code>run_agent</Code> async function:</P>
+      <Pre>{`import os
+from typing import Any, Callable, Awaitable
 
-## Email handling
-### Candidate inquiries
-1. Acknowledge receipt within one working day.
-2. Check MEMORY.md for any notes about this candidate or role.
-3. If the role is open, send the standard screening questionnaire (see skills/screen-candidate.md).
-4. If no open role matches, send a polite holding response.
+AGENT_NAME = os.environ["AGENT_NAME"]
+COMPANY_NAME = os.environ["COMPANY_NAME"]
 
-### Offer letters
-Offer letters are high-stakes. Always queue for approval before sending.
-Draft the letter, call queue_approval, then present the draft to the hiring manager.
+async def run_agent(
+    content: dict[str, Any],
+    context: dict[str, Any],
+    approve_fn: Callable,
+    resolve_fn: Callable,
+    contribute_fn: Callable,
+    search_fn: Callable,
+    use_fn: Callable,
+) -> dict[str, Any]:
+    """
+    Called by the platform adapter for every inbound message.
 
-## Heartbeats
-When you receive a heartbeat poll, check HEARTBEAT.md for queued tasks.
-Proactive work: update MEMORY.md with distilled learnings, review approval history.
-Reply HEARTBEAT_OK when done.`}</Pre>
+    content: the inbound message (from, to, subject, text, thread_id, ...)
+    context: deployment context (memory, agent_name, company_name, ...)
+    approve_fn: call to queue an action for human approval
+    resolve_fn: call to resolve a pending approval
+    contribute_fn: call to contribute a knowledge item to AgentMind
+    search_fn: call to search AgentMind for relevant knowledge
+    use_fn: call to record that you used a piece of AgentMind knowledge
 
-      <H3>TOOLS.md — Tool reference</H3>
-      <P>
-        Optional but strongly recommended. Describes the tools available to the agent and
-        when to use each. The platform provides built-in tools for email, Google Calendar,
-        Google Drive/Sheets/Docs, and the approval queue. List any tool your agent relies on
-        so buyers know what integrations to set up.
-      </P>
+    Return a dict — at minimum set "action":
+      "reply_email"      — reply to the current thread
+      "send_email"       — send a new email (requires to, subject, text)
+      "resolve_approval" — resolve a pending approval (requires approval_id, resolution)
+      "none"             — no outbound action this turn
+    """
+    subject = content.get("subject", "")
+    reply = f"Hi, I received your message about '{subject}'. I'll look into it."
+    return {
+        "action": "reply_email",
+        "text": reply,
+        "needs_approval": False,
+    }`}</Pre>
 
-      <H3>skills/ — Reusable skill files</H3>
-      <P>
-        Skills are markdown files that describe how to perform specific multi-step tasks.
-        The agent can read them via its file-reading tools during a session. Name each file
-        descriptively: <Code>skills/screen-candidate.md</Code>, <Code>skills/weekly-digest.md</Code>, etc.
-      </P>
+      <Note>
+        The platform adapter enforces approval policy deterministically — it checks the
+        <Code>needs_approval</Code> flag and your <Code>risk_assessment</Code> scores against
+        the deployment's policy. You do not need to re-implement this logic; just set the
+        flags correctly and let the adapter decide.
+      </Note>
 
       <H3>onboarding/questions.json — Hire wizard questions</H3>
       <P>
@@ -278,9 +264,9 @@ Reply HEARTBEAT_OK when done.`}</Pre>
       <H3>onboarding/MEMORY_TEMPLATE.md — Initial memory</H3>
       <P>
         Copied to <Code>MEMORY.md</Code> at first boot. Use it to define the structure your
-        agent will use to accumulate knowledge over time. Template variables are substituted here too.
+        agent will use to accumulate knowledge over time.
       </P>
-      <Pre>{`# Memory — {{AGENT_NAME}} at {{COMPANY_NAME}}
+      <Pre>{`# Memory — {AGENT_NAME} at {COMPANY_NAME}
 
 ## Company context
 <!-- Populated from onboarding answers -->
@@ -294,115 +280,11 @@ Reply HEARTBEAT_OK when done.`}</Pre>
 ## Lessons learned
 <!-- Distilled from past sessions -->`}</Pre>
 
-      <H3>HEARTBEAT.md — Operator task queue (optional)</H3>
-      <P>
-        If your agent opts into the heartbeat feature, the hiring manager can drop tasks into
-        this file and the agent will pick them up on the next heartbeat rather than waiting for
-        an email. Leave a blank template with instructions:
-      </P>
-      <Pre>{`# Heartbeat Task Queue
-
-Add tasks below. The agent checks this file on every heartbeat and clears completed items.
-
-## Pending tasks
-<!-- Example:
-- [ ] Review the candidate pipeline and flag anyone who hasn't heard back in 5+ days
--->`}</Pre>
-
-      {/* Custom Package */}
-      <H2 id="custom-package">Custom (Python) Agent Package</H2>
-      <P>
-        A Custom runtime agent gives you full control over the reasoning loop. You write
-        Python code; the platform wraps it with a FastAPI adapter that handles the HTTP
-        server, email delivery, and approval enforcement.
-      </P>
-
-      <H3>Required package structure</H3>
-      <Pre>{`your-agent-name.zip
-├── marketplace.json          ← manifest with "runtime": "custom" (required)
-├── agent.py                  ← your agent logic (required)
-├── requirements.txt          ← pip dependencies (required)
-├── AGENTS.md                 ← behaviour reference (recommended)
-├── SOUL.md                   ← persona (recommended)
-└── onboarding/
-    ├── questions.json
-    └── MEMORY_TEMPLATE.md`}</Pre>
-
-      <Warning>
-        <strong>Do not include:</strong> <Code>adapter.py</Code>, <Code>Dockerfile</Code>,
-        or <Code>platform-requirements.txt</Code>. These are platform-managed files. The
-        upload will be rejected if they are present.
-      </Warning>
-
-      <H3>agent.py — What the platform expects</H3>
-      <P>
-        The platform's adapter imports your <Code>agent.py</Code> and calls it with the
-        incoming message context. Your agent must process the input and return a structured
-        result dict. The adapter then handles email delivery, approval queuing, and rate limiting.
-      </P>
-      <P>
-        The adapter injects the following environment variables — do not hardcode these values:
-      </P>
-      <Table
-        headers={["Variable", "Contents"]}
-        rows={[
-          ["ANTHROPIC_API_KEY", "Platform Anthropic key (Claude)"],
-          ["AGENTMAIL_API_KEY", "AgentMail API key for email"],
-          ["AGENT_EMAIL", "The agent's email address"],
-          ["AGENT_NAME", "The agent's display name"],
-          ["COMPANY_NAME", "Hiring company name"],
-          ["COMPANY_DOMAIN", "Hiring company email domain"],
-          ["APPROVAL_POLICY", "always | external-only | risk-based | never"],
-          ["APPROVAL_RISK_THRESHOLD", "Float (default 6.0) for risk-based policy"],
-          ["AUTO_APPROVE_LIST", "Comma-separated emails/domains that skip approval"],
-          ["REQUIRE_APPROVAL_LIST", "Comma-separated emails/domains that always need approval"],
-          ["GOOGLE_SERVICE_ACCOUNT_EMAIL", "Per-deployment Google SA email (if configured)"],
-          ["GOOGLE_SERVICE_ACCOUNT_KEY", "Per-deployment Google SA key JSON"],
-          ["MARKETPLACE_URL", "Platform base URL for approval webhook callbacks"],
-          ["PORTAL_TOKEN", "Token for email-based approval resolution"],
-        ]}
-      />
-
-      <P>Example <Code>agent.py</Code> skeleton:</P>
-      <Pre>{`import os
-from typing import Any
-
-AGENT_NAME = os.environ["AGENT_NAME"]
-COMPANY_NAME = os.environ["COMPANY_NAME"]
-
-async def run(context: dict[str, Any]) -> dict[str, Any]:
-    """
-    Called by the platform adapter for every inbound message.
-
-    context keys:
-      message        - dict with from, to, subject, text, thread_id
-      pending_approvals - list of dicts for any pending approval requests
-      session_history   - list of prior turns in this thread
-
-    Return a dict with:
-      action         - "reply_email" | "send_email" | "queue_approval" |
-                       "resolve_approval" | "none"
-      text           - reply/send body (plain text)
-      html           - reply/send body (HTML, optional)
-      to             - recipient (for send_email)
-      subject        - subject (for send_email)
-      approval_id    - approval to resolve (for resolve_approval)
-      resolution     - "APPROVED" | "EDITED" | "REJECTED" (for resolve_approval)
-    """
-    msg = context["message"]
-    # Your LangGraph / LangChain / custom logic here
-    reply = f"Hi, I received your message about '{msg['subject']}'. I'll look into it."
-    return {
-        "action": "reply_email",
-        "text": reply,
-    }`}</Pre>
-
       {/* Manifest reference */}
       <H2 id="manifest">marketplace.json Reference</H2>
       <P>
-        Every package — both OpenClaw and Custom — must include a valid{" "}
-        <Code>marketplace.json</Code> at the root of the ZIP. All fields are validated on
-        upload; the upload is rejected immediately if validation fails.
+        Every package must include a valid <Code>marketplace.json</Code> at the root of the ZIP.
+        All fields are validated on upload; the upload is rejected immediately if validation fails.
       </P>
       <Pre>{`{
   "name": "Alex — Recruiting & Operations",
@@ -413,7 +295,7 @@ async def run(context: dict[str, Any]) -> dict[str, Any]:
   "version": "1.0.0",
   "pricePerMonth": 5900,
   "modelTier": "sonnet",
-  "runtime": "openclaw",
+  "runtime": "custom",
   "capabilities": [
     { "name": "Candidate screening", "description": "Replies to inbound applications and scores fit." },
     { "name": "Interview scheduling", "description": "Books calendar slots via Google Calendar." }
@@ -424,9 +306,6 @@ async def run(context: dict[str, Any]) -> dict[str, Any]:
   "autonomyDefaults": {
     "email_external": "queue_if_stakes_gt_5",
     "email_internal": "auto_execute"
-  },
-  "heartbeat": {
-    "intervalHours": 6
   }
 }`}</Pre>
 
@@ -441,13 +320,12 @@ async def run(context: dict[str, Any]) -> dict[str, Any]:
           ["version", "string", "Yes", "Semver: 1.0.0, 1.1.0, etc."],
           ["pricePerMonth", "integer", "Yes", "USD cents. Minimum: $29 (haiku), $59 (sonnet), $149 (opus). Buyers pay this monthly."],
           ["modelTier", "enum", "Yes", "haiku | sonnet | opus. Determines which Claude model powers the agent and the minimum price."],
-          ["runtime", "enum", "No", "openclaw (default) | custom"],
+          ["runtime", "string", "Yes", "Must be \"custom\"."],
           ["capabilities", "array", "Yes", "List of { name, description } objects. Shown as feature bullets on the listing."],
           ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, google-calendar, google-drive, slack, etc."],
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
           ["onboardingDurationDays", "integer", "Yes", "Expected days before the agent is fully operational. Sets buyer expectations."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
-          ["heartbeat.intervalHours", "integer", "No", "If present, enables periodic heartbeat sessions. Must be 1–24. Recommended: 6."],
         ]}
       />
 
@@ -482,18 +360,17 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
 
       <Step n={3} title="Vetting">
         <P>
-          Every package is reviewed by the platform team before going live. For Custom runtime
-          agents, the review also includes an <strong>automated sandbox</strong> that boots your
-          Docker image and fires a set of HTTP tests against it. Understanding what the sandbox
-          checks — and how to add your own tests — will help you pass review faster.
+          Every package is reviewed by the platform team before going live. The review includes
+          an <strong>automated sandbox</strong> that boots your Docker image and fires a set of
+          HTTP tests against it. Understanding what the sandbox checks — and how to add your
+          own tests — will help you pass review faster.
         </P>
 
         <H3 id="sandbox-tests">Built-in platform tests</H3>
         <P>
-          The sandbox always runs five tests against your running container unless the reviewer
-          disables them. These tests use fake credentials (<Code>LLM_API_KEY=vet-noop</Code>) —
-          they test whether your agent starts and speaks the platform contract, not whether it
-          produces correct LLM output.
+          The sandbox always runs five tests against your running container. These tests use
+          fake credentials (<Code>LLM_API_KEY=vet-noop</Code>) — they test whether your agent
+          starts and speaks the platform contract, not whether it produces correct LLM output.
         </P>
         <Table
           headers={["Test", "Endpoint", "Pass condition"]}
@@ -573,14 +450,14 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
         </Warning>
 
         <P>
-          Typical vetting turnaround is <strong>1–3 business days</strong>. You'll receive an
+          Typical vetting turnaround is <strong>1–3 business days</strong>. You will receive an
           email when the decision is made. If your package is rejected, the reason is included and
           you can fix and re-upload.
         </P>
         <Warning>
-          Custom agent packages that include <Code>adapter.py</Code>, <Code>Dockerfile</Code>,
-          or any shadowed system module (<Code>os.py</Code>, <Code>json.py</Code>, etc.) are
-          auto-rejected without review.
+          Packages that include <Code>adapter.py</Code>, <Code>Dockerfile</Code>, any shadowed
+          system module (<Code>os.py</Code>, <Code>json.py</Code>, etc.), or dangerous patterns
+          like <Code>eval()</Code> or <Code>import subprocess</Code> are auto-rejected without review.
         </Warning>
       </Step>
 
@@ -606,53 +483,11 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
       <Table
         headers={["Bump", "When to use", "Example"]}
         rows={[
-          ["Patch (x.x.1)", "Bug fixes, wording corrections, small prompt tweaks", "1.0.0 → 1.0.1"],
-          ["Minor (x.1.0)", "New skills, additional capabilities, behaviour improvements", "1.0.0 → 1.1.0"],
+          ["Patch (x.x.1)", "Bug fixes, wording corrections, small logic tweaks", "1.0.0 → 1.0.1"],
+          ["Minor (x.1.0)", "New capabilities, improved logic, additional integrations", "1.0.0 → 1.1.0"],
           ["Major (2.0.0)", "Breaking changes to onboarding questions or memory structure", "1.0.0 → 2.0.0"],
         ]}
       />
-
-      {/* Heartbeat */}
-      <H2 id="heartbeat">Heartbeat Feature</H2>
-      <P>
-        Heartbeat is an optional feature that wakes your agent on a schedule for proactive
-        maintenance — even when no email has arrived. Without heartbeat, the agent only runs
-        when it receives a message. With heartbeat, it periodically:
-      </P>
-      <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1 ml-2">
-        <li>Distills session notes into <Code>MEMORY.md</Code></li>
-        <li>Reviews the approval history and updates trust assessments</li>
-        <li>Promotes workflow drafts into permanent skills</li>
-        <li>Sends the weekly digest (Monday mornings)</li>
-        <li>Processes any tasks queued in <Code>HEARTBEAT.md</Code> by the operator</li>
-      </ul>
-
-      <H3>Opting in</H3>
-      <P>Add the <Code>heartbeat</Code> block to your <Code>marketplace.json</Code>:</P>
-      <Pre>{`{
-  "heartbeat": {
-    "intervalHours": 6
-  }
-}`}</Pre>
-      <P>
-        Valid values for <Code>intervalHours</Code>: 1–24. We recommend 6 for most agents.
-        The platform creates a cron job (<Code>0 */6 * * *</Code>) and a{" "}
-        <Code>/hooks/heartbeat</Code> endpoint for on-demand triggering.
-      </P>
-
-      <H3>HEARTBEAT.md</H3>
-      <P>
-        Include a <Code>HEARTBEAT.md</Code> file in your package so the hiring manager
-        has a place to queue tasks between email sessions. The agent checks this file on
-        every heartbeat and clears completed items. Without this file, heartbeats still
-        run but the agent has no operator-queued tasks to process.
-      </P>
-      <P>
-        Make sure your <Code>AGENTS.md</Code> includes a <strong>Heartbeats</strong> section
-        telling the agent exactly what to do when it wakes up. If the section is absent,
-        the agent will receive the heartbeat message but won't know what proactive work
-        to perform.
-      </P>
 
       {/* Revenue */}
       <H2 id="payouts">Revenue & Payouts</H2>
@@ -677,7 +512,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
       <H3>Connecting Stripe</H3>
       <P>
         Navigate to <strong>Creator → Settings → Payouts</strong> and click{" "}
-        <strong>Connect Stripe</strong>. You'll be redirected to Stripe's Express onboarding
+        <strong>Connect Stripe</strong>. You will be redirected to Stripe's Express onboarding
         flow. Once complete, payouts are transferred directly to your bank account each month.
         You can track payout history at <strong>Creator → Payouts</strong>.
       </P>
@@ -692,7 +527,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
       <ul className="space-y-3 text-gray-600">
         <li className="flex gap-3">
           <span className="text-green-500 font-bold shrink-0">✓</span>
-          <span><strong>Write AGENTS.md for a non-technical reader.</strong> The LLM reads it verbatim. Ambiguous instructions produce ambiguous behaviour. Be explicit about what to do, what not to do, and when to stop and ask.</span>
+          <span><strong>Keep run_agent focused and fast.</strong> The adapter has a hard timeout. Long-running operations should be broken into checkpoints. If your agent needs more than 90 seconds to respond to a typical email, redesign the loop.</span>
         </li>
         <li className="flex gap-3">
           <span className="text-green-500 font-bold shrink-0">✓</span>
@@ -700,15 +535,11 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
         </li>
         <li className="flex gap-3">
           <span className="text-green-500 font-bold shrink-0">✓</span>
-          <span><strong>Use template variables in SOUL.md and MEMORY_TEMPLATE.md.</strong> Hardcoding a company name or agent email makes your package non-reusable across deployments.</span>
-        </li>
-        <li className="flex gap-3">
-          <span className="text-green-500 font-bold shrink-0">✓</span>
           <span><strong>Define a clear approval policy default.</strong> Set <Code>autonomyDefaults</Code> to match the sensitivity of your agent's domain. A finance agent should default to <Code>queue_if_stakes_gt_5</Code>; a scheduling agent can use <Code>auto_execute</Code>.</span>
         </li>
         <li className="flex gap-3">
           <span className="text-green-500 font-bold shrink-0">✓</span>
-          <span><strong>Enable heartbeat for memory-heavy agents.</strong> Agents that accumulate a lot of context (daily logs, approval histories, contact notes) benefit enormously from periodic memory distillation. Without it, MEMORY.md grows unstructured over time.</span>
+          <span><strong>Add tests/tests.json.</strong> It's the fastest way through vetting. Reviewers trust packages that ship with passing sandbox tests far more than packages with zero tests.</span>
         </li>
         <li className="flex gap-3">
           <span className="text-red-500 font-bold shrink-0">✗</span>
@@ -716,7 +547,11 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
         </li>
         <li className="flex gap-3">
           <span className="text-red-500 font-bold shrink-0">✗</span>
-          <span><strong>Don't instruct your agent to bypass the approval system.</strong> The platform enforces approval policies at the adapter level for Custom agents and via prompt injection for OpenClaw agents. Instructions to skip approval are ignored, but they will flag your package during review.</span>
+          <span><strong>Don't instruct your agent to bypass the approval system.</strong> The platform enforces approval policies at the adapter level. Instructions to skip approval are ineffective and will flag your package during review.</span>
+        </li>
+        <li className="flex gap-3">
+          <span className="text-red-500 font-bold shrink-0">✗</span>
+          <span><strong>Don't use dangerous imports.</strong> <Code>subprocess</Code>, <Code>eval</Code>, <Code>exec</Code>, <Code>socket</Code>, <Code>ctypes</Code>, and similar patterns are auto-rejected. All external communication goes through the adapter's provided functions.</span>
         </li>
       </ul>
     </article>

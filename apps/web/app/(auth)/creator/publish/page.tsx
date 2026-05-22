@@ -38,9 +38,7 @@ interface ValidationResult {
 
 const REQUIRED_FILES = [
   "marketplace.json",
-  "SOUL.md",
-  "AGENTS.md",
-  "TOOLS.md",
+  "agent.py",
 ];
 
 export default function PublishPage() {
@@ -304,7 +302,7 @@ export default function PublishPage() {
                   <span className="text-muted-foreground">Model Tier</span>
                   <span>{manifest.modelTier}</span>
                   <span className="text-muted-foreground">Runtime</span>
-                  <span>{manifest.runtime || "openclaw"}</span>
+                  <span>{manifest.runtime || "custom"}</span>
                   <span className="text-muted-foreground">Capabilities</span>
                   <span>{manifest.capabilities.length} defined</span>
                 </div>
@@ -383,11 +381,7 @@ export default function PublishPage() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Runtime</span>
-                  <span>
-                    {(manifest.runtime || "openclaw") === "custom"
-                      ? "Custom (Docker)"
-                      : "OpenClaw (Managed)"}
-                  </span>
+                  <span>Custom</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Price</span>

@@ -359,13 +359,7 @@ export default function SettingsPage() {
             </p>
           </div>
 
-          {settings.runtime === "OPENCLAW" && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
-              This agent runs on the OpenClaw runtime. Your policy is injected
-              into its instructions at startup, so changes take effect after
-              the next container restart (not on save).
-            </div>
-          )}
+
         </CardContent>
       </Card>
 

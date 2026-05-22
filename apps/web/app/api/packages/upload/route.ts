@@ -109,9 +109,16 @@ export async function POST(request: Request) {
 
   const slug = manifest.slug as string;
   const version = manifest.version as string;
-  const runtime = ((manifest.runtime as string) || "openclaw").toUpperCase() as
+  const runtime = ((manifest.runtime as string) || "custom").toUpperCase() as
     | "OPENCLAW"
     | "CUSTOM";
+
+  if (runtime === "OPENCLAW") {
+    return jsonError(
+      "The OpenClaw runtime is not currently available. Please use the custom runtime.",
+      400,
+    );
+  }
 
   // 3b. For custom runtime: validate package contents
   if (runtime === "CUSTOM") {

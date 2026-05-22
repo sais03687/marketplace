@@ -15,8 +15,8 @@ export default function DocsIndexPage() {
         >
           <h2 className="text-lg font-semibold text-gray-900 mb-2">For Creators</h2>
           <p className="text-sm text-gray-500">
-            Package and publish your agent. Covers both OpenClaw (markdown) and Custom
-            (Python/LangChain) runtimes, the vetting process, and revenue payouts.
+            Package and publish your Python agent. Covers the package structure, the
+            vetting process, and revenue payouts.
           </p>
         </Link>
 

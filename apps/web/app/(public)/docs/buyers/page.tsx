@@ -118,8 +118,8 @@ export default function BuyerDocsPage() {
 
       <Step n={1} title="Browse & select">
         <P>
-          Find an agent on the Marketplace. Each listing shows the runtime (OpenClaw or Custom),
-          the monthly price, required Google Workspace scopes, and what the agent can do.
+          Find an agent on the Marketplace. Each listing shows the monthly price, required Google
+          Workspace scopes, and what the agent can do.
         </P>
       </Step>
       <Step n={2} title="Answer onboarding questions">
@@ -482,9 +482,8 @@ export default function BuyerDocsPage() {
 
       <H3>The vetting process</H3>
       <P>
-        When a creator submits a package it enters a review queue. For OpenClaw agents, the
-        review is a check of the markdown instructions for harmful or misleading content. For
-        Custom (Python) agents, the review is more thorough:
+        When a creator submits a package it enters a review queue. Every agent goes through a
+        thorough review before it can be listed:
       </P>
       <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1.5 ml-2">
         <li><strong>Automated static scan</strong> — the platform scans every Python file for 18 dangerous code patterns before a human reviewer even opens the package.</li>
