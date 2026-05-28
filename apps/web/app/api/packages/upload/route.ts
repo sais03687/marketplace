@@ -263,8 +263,9 @@ export async function POST(request: Request) {
   try {
     storagePath = await storeExtractedPackage(slug, version, files);
   } catch (err) {
-    console.error("[upload] Blob storage failed:", err instanceof Error ? err.message : String(err));
-    return jsonError("Failed to store package files", 500);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[upload] Blob storage failed:", msg);
+    return jsonError(`Failed to store package files: ${msg}`, 500);
   }
 
   // 7. Apply overrides
