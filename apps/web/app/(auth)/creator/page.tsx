@@ -24,6 +24,10 @@ export default async function CreatorDashboardPage() {
           _count: {
             select: { deployments: true },
           },
+          versions: {
+            where: { vetStatus: "PENDING" },
+            select: { id: true },
+          },
         },
       },
     },
@@ -123,12 +127,19 @@ export default async function CreatorDashboardPage() {
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
                     <h3 className="font-semibold">{agent.name}</h3>
-                    <Badge
-                      variant={agent.status === "LIVE" ? "success" : "secondary"}
-                      className="text-[10px]"
-                    >
-                      {agent.status}
-                    </Badge>
+                    <div className="flex gap-1 flex-wrap justify-end">
+                      <Badge
+                        variant={agent.status === "LIVE" ? "success" : "secondary"}
+                        className="text-[10px]"
+                      >
+                        {agent.status}
+                      </Badge>
+                      {agent.versions.length > 0 && (
+                        <Badge variant="warning" className="text-[10px]">
+                          version in review
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground line-clamp-2">
                     {agent.tagline}
