@@ -135,6 +135,19 @@ export async function POST(
       data: updateData,
     });
 
+    // Mark all other PENDING versions of this agent as superseded
+    await prisma.agentVersion.updateMany({
+      where: {
+        agentId: version.agentId,
+        vetStatus: "PENDING",
+        id: { not: version.id },
+      },
+      data: {
+        vetStatus: "FAILED",
+        vetNotes: "Superseded by approved version",
+      },
+    });
+
     const queue = getProvisioningQueue();
     const stripe = getStripe();
 

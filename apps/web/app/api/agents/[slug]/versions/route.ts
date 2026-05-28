@@ -159,8 +159,8 @@ export async function POST(
   const versionModelTier = (manifest.modelTier as string || "").toUpperCase();
   const MIN_PRICE_CENTS: Record<string, number> = {
     HAIKU: 2900,
-    SONNET: 9900,
-    OPUS: 29900,
+    SONNET: 5900,
+    OPUS: 14900,
   };
   const versionPrice = manifest.pricePerMonth as number | undefined;
   if (versionPrice !== undefined && versionModelTier) {

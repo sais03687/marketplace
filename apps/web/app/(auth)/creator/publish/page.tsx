@@ -53,6 +53,7 @@ export default function PublishPage() {
   const [submitted, setSubmitted] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [stripeOnboarded, setStripeOnboarded] = useState<boolean | null>(null);
+  const [submittedSlug, setSubmittedSlug] = useState<string | null>(null);
   const [connectingStripe, setConnectingStripe] = useState(false);
 
   // Check Stripe Connect status when reaching step 3
@@ -183,6 +184,8 @@ export default function PublishPage() {
       });
 
       if (res.ok) {
+        const data = await res.json().catch(() => null);
+        setSubmittedSlug(data?.agent?.slug ?? null);
         setSubmitted(true);
       } else {
         const data = await res.json().catch(() => null);
@@ -203,9 +206,16 @@ export default function PublishPage() {
         <p className="mt-2 text-muted-foreground">
           Your agent is under review. Once approved by an admin it will be listed on the marketplace.
         </p>
-        <Button className="mt-6" onClick={() => window.location.href = "/creator"}>
-          Back to Dashboard
-        </Button>
+        <div className="mt-6 flex gap-3">
+          {submittedSlug && (
+            <Button onClick={() => window.location.href = `/creator/agents/${submittedSlug}/versions`}>
+              Manage Versions
+            </Button>
+          )}
+          <Button variant="outline" onClick={() => window.location.href = "/creator"}>
+            Back to Dashboard
+          </Button>
+        </div>
       </div>
     );
   }
