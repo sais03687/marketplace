@@ -23,6 +23,7 @@ export async function storeExtractedPackage(
       return put(`${prefix}/${normalizedPath}`, content, {
         access: "public",
         addRandomSuffix: false,
+        allowOverwrite: true,
       });
     }),
   );
