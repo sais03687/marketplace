@@ -298,8 +298,10 @@ export async function POST(request: Request) {
             runtime,
             onboardingQuestions: onboardingQuestions ?? undefined,
             memoryTemplate: memoryTemplate ?? undefined,
-            // Do NOT update currentVersion or status — the new version must be
-            // approved before it becomes the active version.
+            // If the agent was suspended (deleted by creator), revive it to IN_REVIEW.
+            // For LIVE/IN_REVIEW agents keep the current status — the new version must
+            // be approved before it becomes the active version.
+            ...(existingAgent.status === "SUSPENDED" ? { status: "IN_REVIEW" } : {}),
           },
         })
       : await tx.agent.create({
@@ -347,6 +349,6 @@ export async function POST(request: Request) {
     return { agent, version: agentVersion };
   });
 
-  console.log(`[up]uid=${userId.slice(-6)},crid=${result.agent.creatorId.slice(-6)},new=${!existingAgent},slug=${result.agent.slug}`);
+  console.log("[upload] agent:", result.agent.slug, "status:", result.agent.status);
   return jsonSuccess(result, 201);
 }
