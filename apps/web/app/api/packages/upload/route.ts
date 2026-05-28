@@ -347,6 +347,6 @@ export async function POST(request: Request) {
     return { agent, version: agentVersion };
   });
 
-  console.log("[upload] created agent:", result.agent.slug, "status:", result.agent.status, "creatorId:", result.agent.creatorId);
+  console.log(`[up]slug=${result.agent.slug},status=${result.agent.status},crid=${result.agent.creatorId},new=${!existingAgent}`);
   return jsonSuccess(result, 201);
 }
