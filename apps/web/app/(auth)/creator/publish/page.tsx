@@ -199,9 +199,9 @@ export default function PublishPage() {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Check className="h-12 w-12 text-emerald-500" />
-        <h2 className="mt-4 text-xl font-semibold">Agent Live!</h2>
+        <h2 className="mt-4 text-xl font-semibold">Agent Submitted for Review</h2>
         <p className="mt-2 text-muted-foreground">
-          Your agent is now listed on the marketplace and available for hire.
+          Your agent is under review. Once approved by an admin it will be listed on the marketplace.
         </p>
         <Button className="mt-6" onClick={() => window.location.href = "/creator"}>
           Back to Dashboard

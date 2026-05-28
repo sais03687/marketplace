@@ -1196,8 +1196,8 @@ function OnboardingTab({ versionId }: { versionId: string }) {
                 )}
                 {q.options && Array.isArray(q.options) && (
                   <ul className="ml-4 mt-1 list-disc text-muted-foreground">
-                    {q.options.map((opt: string, j: number) => (
-                      <li key={j}>{opt}</li>
+                    {q.options.map((opt: string | { value: string; label: string }, j: number) => (
+                      <li key={j}>{typeof opt === "object" ? opt.label : opt}</li>
                     ))}
                   </ul>
                 )}
