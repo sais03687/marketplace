@@ -347,6 +347,6 @@ export async function POST(request: Request) {
     return { agent, version: agentVersion };
   });
 
-  console.log(`[up]slug=${result.agent.slug},status=${result.agent.status},crid=${result.agent.creatorId},new=${!existingAgent}`);
+  console.log(`[up]uid=${userId.slice(-6)},crid=${result.agent.creatorId.slice(-6)},new=${!existingAgent},slug=${result.agent.slug}`);
   return jsonSuccess(result, 201);
 }
