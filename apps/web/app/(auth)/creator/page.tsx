@@ -17,23 +17,7 @@ export default async function CreatorDashboardPage() {
 
   const creator = await prisma.creator.findUnique({
     where: { clerkUserId: userId },
-    include: {
-      agents: {
-        where: { status: { in: ["DRAFT", "IN_REVIEW", "LIVE"] } },
-        include: {
-          _count: {
-            select: { deployments: true },
-          },
-          versions: {
-            where: { vetStatus: "PENDING" },
-            select: { id: true },
-          },
-        },
-      },
-    },
   });
-
-  console.log("[creator-dashboard] userId:", userId, "creator:", creator?.id ?? "NOT FOUND", "agents:", creator?.agents.map(a => `${a.slug}(${a.status})`).join(", ") ?? "none");
 
   if (!creator) {
     return (
@@ -52,7 +36,24 @@ export default async function CreatorDashboardPage() {
     );
   }
 
-  const totalDeployments = creator.agents.reduce(
+  const agents = await prisma.agent.findMany({
+    where: {
+      creatorId: creator.id,
+      status: { not: "SUSPENDED" },
+    },
+    include: {
+      _count: {
+        select: { deployments: true },
+      },
+      versions: {
+        where: { vetStatus: "PENDING" },
+        select: { id: true },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const totalDeployments = agents.reduce(
     (sum, a) => sum + a._count.deployments,
     0,
   );
@@ -90,7 +91,7 @@ export default async function CreatorDashboardPage() {
         <Card>
           <CardContent className="p-4">
             <p className="text-sm text-muted-foreground">Published Agents</p>
-            <p className="text-2xl font-bold">{creator.agents.length}</p>
+            <p className="text-2xl font-bold">{agents.length}</p>
           </CardContent>
         </Card>
         <Card>
@@ -120,11 +121,11 @@ export default async function CreatorDashboardPage() {
 
       <div className="mt-8">
         <h2 className="text-lg font-semibold mb-4">Your Agents</h2>
-        {creator.agents.length === 0 ? (
+        {agents.length === 0 ? (
           <p className="text-muted-foreground">No agents published yet.</p>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {creator.agents.map((agent) => (
+            {agents.map((agent) => (
               <Card key={agent.id}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between">
