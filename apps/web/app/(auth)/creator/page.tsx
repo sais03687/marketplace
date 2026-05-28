@@ -36,12 +36,9 @@ export default async function CreatorDashboardPage() {
     );
   }
 
-  console.log(`[dash]uid=${userId.slice(-6)},crid=${creator.id.slice(-6)}`);
-
   const agents = await prisma.agent.findMany({
     where: {
       creatorId: creator.id,
-      status: { not: "SUSPENDED" },
     },
     include: {
       _count: {
@@ -55,7 +52,7 @@ export default async function CreatorDashboardPage() {
     orderBy: { createdAt: "desc" },
   });
 
-  console.log(`[dash]n=${agents.length},slugs=${agents.map(a=>a.slug).join(",")}`);
+  console.log(`[D]c=${creator.id.slice(-4)},n=${agents.length},s=${agents.map(a=>a.slug.slice(0,6)).join(",")}`);
 
   const totalDeployments = agents.reduce(
     (sum, a) => sum + a._count.deployments,
