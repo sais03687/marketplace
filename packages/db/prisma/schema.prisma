@@ -18,6 +18,18 @@ model Creator {
   updatedAt       DateTime @updatedAt
   agents          Agent[]
   payouts         Payout[]
+  apiKeys         CreatorApiKey[]
+}
+
+model CreatorApiKey {
+  id          String    @id @default(cuid())
+  creatorId   String
+  creator     Creator   @relation(fields: [creatorId], references: [id])
+  name        String
+  keyHash     String    @unique
+  keyPrefix   String
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
 }
 
 model Agent {
@@ -116,6 +128,10 @@ model Deployment {
   deploymentServiceAccountKey   String?
   deploymentServiceAccountSetup Boolean                 @default(false)
   portalToken                   String?                 @unique @default(cuid())
+  workspaceProvider             WorkspaceProvider       @default(NONE)
+  workspaceEmail                String?
+  workspaceUserId               String?
+  msGraphSubId                  String?
   approvals                     Approval[]
   agent                         Agent                   @relation(fields: [agentId], references: [id])
   company                       Company                 @relation(fields: [companyId], references: [id])
@@ -357,4 +373,10 @@ enum PayoutStatus {
   PENDING
   PAID
   FAILED
+}
+
+enum WorkspaceProvider {
+  GOOGLE
+  MICROSOFT
+  NONE
 }

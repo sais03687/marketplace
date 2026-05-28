@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { validateApiKey } from "@/lib/api-key-auth";
 import { validateManifest } from "@marketplace/agent-package-schema";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
@@ -55,9 +56,20 @@ async function scanPythonFiles(
 }
 
 export async function POST(request: Request) {
-  const authResult = await requireAuth();
-  if ("error" in authResult) return authResult.error;
-  const { userId } = authResult;
+  // Accept either Clerk session (browser) or API key (GitHub Actions / CLI)
+  let userId: string;
+  let creatorFromApiKey = null;
+
+  const authHeader = request.headers.get("authorization");
+  if (authHeader?.startsWith("Bearer mkt_")) {
+    creatorFromApiKey = await validateApiKey(authHeader);
+    if (!creatorFromApiKey) return jsonError("Invalid API key", 401);
+    userId = creatorFromApiKey.clerkUserId;
+  } else {
+    const authResult = await requireAuth();
+    if ("error" in authResult) return authResult.error;
+    userId = authResult.userId;
+  }
 
   const formData = await request.formData();
   const packageFile = formData.get("package") as File | null;
@@ -208,8 +220,8 @@ export async function POST(request: Request) {
     where: { slug },
   });
 
-  // Ensure creator exists
-  let creator = await prisma.creator.findUnique({
+  // Ensure creator exists (skip lookup if already resolved via API key)
+  let creator = creatorFromApiKey ?? await prisma.creator.findUnique({
     where: { clerkUserId: userId },
   });
 

@@ -1,0 +1,68 @@
+# Copy this file to .github/workflows/upload.yml in your agent repo.
+#
+# Setup:
+#   1. Go to https://www.agentstore.it.com/creator/settings
+#   2. Generate a new API key, name it after this repo
+#   3. In your GitHub repo: Settings → Secrets → Actions → New secret
+#      Name: MARKETPLACE_API_KEY
+#      Value: (paste your key)
+#   4. Push to main — the action uploads automatically
+
+name: Upload to Agentstore
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate marketplace.json
+        run: |
+          if [ ! -f marketplace.json ]; then
+            echo "Error: marketplace.json not found"
+            exit 1
+          fi
+          if [ ! -f agent.py ]; then
+            echo "Error: agent.py not found"
+            exit 1
+          fi
+          VERSION=$(jq -r '.version' marketplace.json)
+          SLUG=$(jq -r '.slug' marketplace.json)
+          echo "Agent: $SLUG v$VERSION"
+
+      - name: Package agent
+        run: |
+          zip -r agent-package.zip . \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "**/__pycache__/*" \
+            --exclude "**/*.pyc" \
+            --exclude ".env*" \
+            --exclude "*.zip" \
+            --exclude ".DS_Store"
+
+      - name: Upload to Agentstore
+        env:
+          MARKETPLACE_API_KEY: ${{ secrets.MARKETPLACE_API_KEY }}
+        run: |
+          RESPONSE=$(curl -sf -X POST "https://www.agentstore.it.com/api/packages/upload" \
+            -H "Authorization: Bearer $MARKETPLACE_API_KEY" \
+            -F "package=@agent-package.zip" \
+            -w "\n%{http_code}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+
+          if [ "$HTTP_CODE" -ne 201 ]; then
+            echo "Upload failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+          echo "Uploaded successfully — pending admin review"

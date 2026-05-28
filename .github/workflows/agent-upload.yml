@@ -1,0 +1,78 @@
+# Agent Upload — Agentstore Marketplace
+#
+# Zips your agent directory and uploads it to the marketplace on every push to main.
+#
+# Required secrets (set in your repo → Settings → Secrets → Actions):
+#   MARKETPLACE_API_KEY  — generate at https://agentstore.it.com/creator/settings
+#
+# Optional: set MARKETPLACE_URL if you're self-hosting (defaults to agentstore.it.com).
+#
+# The agent directory must contain:
+#   marketplace.json  — manifest (name, slug, version, pricePerMonth, modelTier, etc.)
+#   agent.py          — your agent implementation
+#
+# On pull requests: uploads as a draft/preview (same endpoint, no auto-publish).
+# On push to main:  uploads and creates a new version pending admin review.
+
+name: Upload Agent to Marketplace
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # allow manual runs
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from marketplace.json
+        id: manifest
+        run: |
+          VERSION=$(jq -r '.version' marketplace.json)
+          SLUG=$(jq -r '.slug' marketplace.json)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "slug=$SLUG" >> $GITHUB_OUTPUT
+
+      - name: Zip agent package
+        run: |
+          zip -r agent-package.zip . \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "*.pyc" \
+            --exclude "__pycache__/*" \
+            --exclude ".env*" \
+            --exclude "*.zip" \
+            --exclude "node_modules/*" \
+            --exclude ".DS_Store" \
+            --exclude "tests/*" \
+            --exclude "*.md" \
+            --include "marketplace.json" \
+            --include "agent.py" \
+            --include "requirements.txt" \
+            --include "onboarding/*"
+
+      - name: Upload to Marketplace
+        env:
+          MARKETPLACE_API_KEY: ${{ secrets.MARKETPLACE_API_KEY }}
+          MARKETPLACE_URL: ${{ vars.MARKETPLACE_URL || 'https://www.agentstore.it.com' }}
+        run: |
+          RESPONSE=$(curl -sf -X POST "$MARKETPLACE_URL/api/packages/upload" \
+            -H "Authorization: Bearer $MARKETPLACE_API_KEY" \
+            -F "package=@agent-package.zip" \
+            -w "\n%{http_code}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP $HTTP_CODE"
+          echo "$BODY" | jq . 2>/dev/null || echo "$BODY"
+
+          if [ "$HTTP_CODE" -ne 201 ]; then
+            echo "Upload failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+
+          echo "✓ Uploaded ${{ steps.manifest.outputs.slug }} v${{ steps.manifest.outputs.version }}"
+          echo "  Status: pending admin review"
