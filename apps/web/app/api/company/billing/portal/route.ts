@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   const stripe = getStripe();
   if (!stripe) return jsonError("Stripe is not configured", 503);
 
-  const origin = request.headers.get("origin") ?? "https://marketplace-web-gamma-two.vercel.app";
+  const origin = request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3002";
 
   const session = await stripe.billingPortal.sessions.create({
     customer: company.stripeCustomerId,

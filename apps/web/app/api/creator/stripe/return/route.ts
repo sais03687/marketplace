@@ -13,12 +13,12 @@ export async function GET(request: NextRequest) {
   const accountId = request.nextUrl.searchParams.get("accountId");
 
   if (!accountId) {
-    return NextResponse.redirect(`${APP_URL}/creator/dashboard?stripe=error`);
+    return NextResponse.redirect(`${APP_URL}/creator?stripe=error`);
   }
 
   const stripe = getStripe();
   if (!stripe) {
-    return NextResponse.redirect(`${APP_URL}/creator/dashboard?stripe=error`);
+    return NextResponse.redirect(`${APP_URL}/creator?stripe=error`);
   }
 
   try {
@@ -34,8 +34,8 @@ export async function GET(request: NextRequest) {
     }
 
     const status = onboarded ? "success" : "incomplete";
-    return NextResponse.redirect(`${APP_URL}/creator/dashboard?stripe=${status}`);
+    return NextResponse.redirect(`${APP_URL}/creator?stripe=${status}`);
   } catch {
-    return NextResponse.redirect(`${APP_URL}/creator/dashboard?stripe=error`);
+    return NextResponse.redirect(`${APP_URL}/creator?stripe=error`);
   }
 }

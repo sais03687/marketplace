@@ -70,9 +70,13 @@ export default function PublishPage() {
     try {
       const res = await fetch("/api/creator/stripe/connect", { method: "POST" });
       const data = await res.json();
-      if (data.url) window.location.href = data.url;
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        alert(data.error || "Failed to start Stripe onboarding. Please try again.");
+      }
     } catch {
-      // ignore
+      alert("Network error — please try again.");
     }
     setConnectingStripe(false);
   };

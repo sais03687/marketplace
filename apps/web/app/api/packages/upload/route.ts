@@ -259,7 +259,13 @@ export async function POST(request: Request) {
     }
   }
 
-  const storagePath = await storeExtractedPackage(slug, version, files);
+  let storagePath: string;
+  try {
+    storagePath = await storeExtractedPackage(slug, version, files);
+  } catch (err) {
+    console.error("[upload] Blob storage failed:", err instanceof Error ? err.message : String(err));
+    return jsonError("Failed to store package files", 500);
+  }
 
   // 7. Apply overrides
   const agentName = manifest.name as string;

@@ -15,12 +15,16 @@ export async function storeExtractedPackage(
   const prefix = `${PREFIX}/${slug}/${version}`;
 
   await Promise.all(
-    Array.from(files.entries()).map(([relativePath, content]) =>
-      put(`${prefix}/${relativePath}`, content, {
+    Array.from(files.entries()).map(([relativePath, content]) => {
+      // Normalize Windows-style backslash separators to forward slashes so
+      // blob keys are always consistent regardless of the OS that created
+      // the zip archive.
+      const normalizedPath = relativePath.replace(/\\/g, "/");
+      return put(`${prefix}/${normalizedPath}`, content, {
         access: "public",
         addRandomSuffix: false,
-      }),
-    ),
+      });
+    }),
   );
 
   return `${prefix}/`;
@@ -47,8 +51,10 @@ export async function readPackageFile(
   filename: string,
 ): Promise<Buffer | null> {
   try {
+    // Normalize separators — zips created on Windows use backslashes
+    const normalizedFilename = filename.replace(/\\/g, "/");
     // Verify the blob exists first
-    const blobInfo = await head(`${storagePath}${filename}`);
+    const blobInfo = await head(`${storagePath}${normalizedFilename}`);
     if (!blobInfo) return null;
 
     const res = await fetch(blobInfo.url);
