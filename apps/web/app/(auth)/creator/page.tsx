@@ -19,7 +19,7 @@ export default async function CreatorDashboardPage() {
     where: { clerkUserId: userId },
     include: {
       agents: {
-        where: { status: { not: "SUSPENDED" } },
+        where: { status: { in: ["DRAFT", "IN_REVIEW", "LIVE"] } },
         include: {
           _count: {
             select: { deployments: true },
