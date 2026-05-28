@@ -21,6 +21,7 @@ export default async function VettingPage() {
     },
     orderBy: { createdAt: "desc" },
   });
+  console.log("[vetting] versions found:", versions.length, versions.map(v => `${v.agent.slug}@${v.version} vetStatus=${v.vetStatus}`));
 
   // Serialize for client component
   const serialized = versions.map((v) => ({
