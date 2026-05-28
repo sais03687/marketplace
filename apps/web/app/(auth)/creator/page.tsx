@@ -33,6 +33,8 @@ export default async function CreatorDashboardPage() {
     },
   });
 
+  console.log("[creator-dashboard] userId:", userId, "creator:", creator?.id ?? "NOT FOUND", "agents:", creator?.agents.map(a => `${a.slug}(${a.status})`).join(", ") ?? "none");
+
   if (!creator) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
