@@ -57,12 +57,17 @@ export function startProxyServer() {
     // Microsoft Graph change notification webhook — no Bearer auth (Graph uses clientState validation)
     // GET: validation handshake during subscription creation
     if (req.method === "GET" && req.url?.startsWith("/webhooks/microsoft")) {
-      const url = new URL(req.url, "http://localhost");
-      const validationToken = url.searchParams.get("validationToken");
-      if (validationToken) {
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end(validationToken);
-        return;
+      // Graph sends the validationToken URL-encoded and expects the raw value echoed back.
+      // Using url.searchParams.get() would decode it, causing a mismatch.
+      const qIndex = req.url.indexOf("?");
+      if (qIndex !== -1) {
+        const rawQuery = req.url.slice(qIndex + 1);
+        const match = rawQuery.match(/(?:^|&)validationToken=([^&]*)/);
+        if (match) {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end(match[1]);
+          return;
+        }
       }
     }
     // POST: incoming change notification (new email arrived at workspace address)
