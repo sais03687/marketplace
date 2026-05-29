@@ -54,7 +54,54 @@ async function proxyContainer(
 
 export function startProxyServer() {
   const server = http.createServer(async (req, res) => {
-    // Auth
+    // Microsoft Graph change notification webhook — no Bearer auth (Graph uses clientState validation)
+    // GET: validation handshake during subscription creation
+    if (req.method === "GET" && req.url?.startsWith("/webhooks/microsoft")) {
+      const url = new URL(req.url, "http://localhost");
+      const validationToken = url.searchParams.get("validationToken");
+      if (validationToken) {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(validationToken);
+        return;
+      }
+    }
+    // POST: incoming change notification (new email arrived at workspace address)
+    if (req.method === "POST" && req.url?.startsWith("/webhooks/microsoft")) {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const payload = JSON.parse(body) as {
+            value?: Array<{ clientState?: string; resourceData?: unknown }>;
+          };
+          const notifications = payload.value ?? [];
+          for (const notification of notifications) {
+            const deploymentId = notification.clientState;
+            if (!deploymentId) continue;
+            const deployment = await prisma.deployment.findUnique({
+              where: { id: deploymentId },
+              select: { containerName: true },
+            });
+            if (!deployment?.containerName) continue;
+            const containerUrl = deployment.containerName.startsWith("http")
+              ? deployment.containerName
+              : `http://localhost:${deployment.containerName}`;
+            // Forward to agent container's agentmail hook (same pipeline as Agentmail)
+            fetch(`${containerUrl}/hooks/agentmail`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ source: "microsoft", notification }),
+            }).catch(() => {});
+          }
+          send(res, 202, { accepted: true });
+        } catch {
+          send(res, 202, { accepted: true }); // always 202 to Graph
+        }
+      });
+      return;
+    }
+
+    // Auth for proxy endpoints
     const auth = req.headers["authorization"] ?? "";
     if (SECRET && auth !== `Bearer ${SECRET}`) {
       return send(res, 401, { error: "Unauthorized" });

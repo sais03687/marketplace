@@ -105,7 +105,10 @@ def _get_client() -> httpx.AsyncClient:
 # The full SA key and all Google logic lives in the agent package (google_tools.py).
 # The adapter only surfaces the SA email so the agent can tell users what to share.
 
-GOOGLE_SA_EMAIL = os.environ.get("GOOGLE_SERVICE_ACCOUNT_EMAIL", "")
+WORKSPACE_EMAIL = os.environ.get("WORKSPACE_EMAIL", "") or os.environ.get("GOOGLE_SERVICE_ACCOUNT_EMAIL", "")
+WORKSPACE_PROVIDER = os.environ.get("WORKSPACE_PROVIDER", "NONE")
+# Legacy alias kept for any adapter code that still references GOOGLE_SA_EMAIL
+GOOGLE_SA_EMAIL = WORKSPACE_EMAIL
 
 # ─── Markdown → HTML rendering ───────────────────────────────────────────────
 
@@ -1059,6 +1062,8 @@ async def _handle_message(message: str, context: dict):
         context = {
             **context,
             "google_sa_email": GOOGLE_SA_EMAIL,
+            "workspace_email": WORKSPACE_EMAIL,
+            "workspace_provider": WORKSPACE_PROVIDER,
         }
 
         print(f"[adapter] Running agent graph...", flush=True)

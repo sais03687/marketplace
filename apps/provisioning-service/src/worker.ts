@@ -1,10 +1,11 @@
-import { Worker, type Job } from "bullmq";
+import { Worker, Queue, type Job } from "bullmq";
 import { config } from "./config.js";
 import type { ProvisionJobData } from "./queue.js";
 import { provisionJob } from "./jobs/provision.js";
 import { deprovisionJob } from "./jobs/deprovision.js";
 import { updateJob } from "./jobs/update.js";
 import { pauseJob, resumeJob } from "./jobs/pause.js";
+import { renewMicrosoftWebhooksJob } from "./jobs/renew-microsoft-webhooks.js";
 
 async function processJob(job: Job<ProvisionJobData>): Promise<void> {
   console.log(`[worker] Processing ${job.data.type} job`);
@@ -33,6 +34,9 @@ async function processJob(job: Job<ProvisionJobData>): Promise<void> {
       });
       break;
     }
+    case "renew_ms_webhooks":
+      await renewMicrosoftWebhooksJob();
+      break;
     default:
       throw new Error(`Unknown job type: ${(job.data as any).type}`);
   }
@@ -53,6 +57,18 @@ export function startWorker(): Worker<ProvisionJobData> {
 
   worker.on("failed", (job, err) => {
     console.error(`[worker] Job ${job?.id} (${job?.data.type}) failed:`, err.message);
+  });
+
+  // Schedule Microsoft webhook renewal — runs every 24h to keep Graph subscriptions alive
+  const queue = new Queue<ProvisionJobData>("provisioning", {
+    connection: { url: config.redisUrl },
+  });
+  queue.add(
+    "renew_ms_webhooks",
+    { type: "renew_ms_webhooks" },
+    { repeat: { every: 24 * 60 * 60 * 1000 }, jobId: "renew_ms_webhooks_repeatable" },
+  ).catch((err) => {
+    console.warn("[worker] Failed to schedule renew_ms_webhooks repeatable job:", err.message);
   });
 
   console.log("[worker] Provisioning worker started");

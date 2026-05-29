@@ -33,6 +33,19 @@ except (ImportError, ValueError):
         _gt = None  # type: ignore
         _GOOGLE_AVAILABLE = False
 
+try:
+    from . import microsoft_tools as _mt  # type: ignore
+    _MICROSOFT_AVAILABLE = _mt.AVAILABLE
+except (ImportError, ValueError):
+    try:
+        import microsoft_tools as _mt  # type: ignore
+        _MICROSOFT_AVAILABLE = _mt.AVAILABLE
+    except ImportError:
+        _mt = None  # type: ignore
+        _MICROSOFT_AVAILABLE = False
+
+_WORKSPACE_PROVIDER = os.environ.get("WORKSPACE_PROVIDER", "NONE")
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 # Platform sets these env vars at provision time — no hardcoded defaults
@@ -293,16 +306,24 @@ async def analyze_task(state: AgentState) -> AgentState:
         "combined": _clamp(risk.get("combined", 8.0)),
     }
 
-    # ── Google read-request second pass ──────────────────────────────────────
+    # ── Workspace read-request second pass ───────────────────────────────────
     # If the LLM wants more data (drive_search, calendar_list, etc.), fetch it
     # and re-invoke once so it can give an informed response.
     google_read_requests = analysis.get("google_read_requests") or []
-    if google_read_requests and _GOOGLE_AVAILABLE and _gt:
+    workspace_module = None
+    workspace_label = "workspace"
+    if _WORKSPACE_PROVIDER == "MICROSOFT" and _MICROSOFT_AVAILABLE and _mt:
+        workspace_module = _mt
+        workspace_label = "microsoft"
+    elif _GOOGLE_AVAILABLE and _gt:
+        workspace_module = _gt
+        workspace_label = "google"
+    if google_read_requests and workspace_module:
         try:
-            read_data = await _gt.execute_reads(google_read_requests)
+            read_data = await workspace_module.execute_reads(google_read_requests)
             if read_data:
-                print(f"[google] Second pass: fetched {len(google_read_requests)} read request(s)", flush=True)
-                enriched2 = message_content + f"\n\n[Google Data]\n{read_data}"
+                print(f"[{workspace_label}] Second pass: fetched {len(google_read_requests)} read request(s)", flush=True)
+                enriched2 = message_content + f"\n\n[Workspace Data]\n{read_data}"
                 prompt2 = ANALYSIS_PROMPT.format(
                     agent_name=ctx.get("agent_name", "Agent"),
                     company_name=ctx.get("company_name", ""),
@@ -420,17 +441,22 @@ async def format_response(state: AgentState) -> AgentState:
 async def execute_google_ops(state: AgentState) -> AgentState:
     """Execute any google_writes the LLM included in its response.
 
-    Runs after the email is prepared (before maybe_contribute).
-    Non-fatal: write errors are logged but don't abort the response.
+    Dispatches to Google or Microsoft tools based on the deployment's
+    WORKSPACE_PROVIDER env var. Non-fatal: write errors are logged but
+    don't abort the response.
     """
     writes = state.analysis.get("google_writes") or []
-    if not writes or not _GOOGLE_AVAILABLE or not _gt:
+    if not writes:
         return state
     try:
-        results = await _gt.execute_writes(writes)
-        print(f"[google] Executed {len(writes)} write(s): {results}", flush=True)
+        if _WORKSPACE_PROVIDER == "MICROSOFT" and _MICROSOFT_AVAILABLE and _mt:
+            results = await _mt.execute_writes(writes)
+            print(f"[microsoft] Executed {len(writes)} write(s): {results}", flush=True)
+        elif _GOOGLE_AVAILABLE and _gt:
+            results = await _gt.execute_writes(writes)
+            print(f"[google] Executed {len(writes)} write(s): {results}", flush=True)
     except Exception as exc:
-        print(f"[google] execute_writes failed (non-fatal): {exc}", flush=True)
+        print(f"[workspace] execute_writes failed (non-fatal): {exc}", flush=True)
     return state
 
 

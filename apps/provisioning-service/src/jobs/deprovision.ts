@@ -4,6 +4,8 @@ import { deleteInbox } from "../clients/agentmail.js";
 import { stopContainer } from "../clients/docker.js";
 import { stopLocalAgent } from "./local-runner.js";
 import { deleteDeploymentServiceAccount } from "../clients/google-iam.js";
+import { deleteGoogleWorkspaceUser } from "../clients/google-workspace.js";
+import { deleteMicrosoftUser } from "../clients/microsoft-workspace.js";
 
 export async function deprovisionJob(deploymentId: string): Promise<void> {
   const deployment = await prisma.deployment.findUnique({
@@ -64,18 +66,38 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
     }
   }
 
-  // 3. Delete per-deployment Google service account (best-effort)
-  const iamKey = config.gcpIamKey || config.googleServiceAccountKey;
-  if ((deployment as any).deploymentServiceAccountEmail && config.gcpProjectId && iamKey) {
+  // 3. Delete workspace identity or legacy GCP service account (best-effort)
+  const workspaceProvider = (deployment as any).workspaceProvider as string | undefined;
+  const workspaceUserId = (deployment as any).workspaceUserId as string | undefined;
+
+  if (workspaceProvider === "GOOGLE" && workspaceUserId) {
     try {
-      await deleteDeploymentServiceAccount(
-        (deployment as any).deploymentServiceAccountEmail,
-        config.gcpProjectId,
-        iamKey,
-      );
-      console.log(`[deprovision] Deleted service account: ${(deployment as any).deploymentServiceAccountEmail}`);
+      await deleteGoogleWorkspaceUser(workspaceUserId);
+      console.log(`[deprovision] Deleted Google Workspace user: ${workspaceUserId}`);
     } catch (err: any) {
-      console.warn(`[deprovision] Failed to delete service account: ${err.message}`);
+      console.warn(`[deprovision] Failed to delete Google Workspace user: ${err.message}`);
+    }
+  } else if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
+    try {
+      await deleteMicrosoftUser(workspaceUserId);
+      console.log(`[deprovision] Deleted Microsoft 365 user: ${workspaceUserId}`);
+    } catch (err: any) {
+      console.warn(`[deprovision] Failed to delete Microsoft 365 user: ${err.message}`);
+    }
+  } else {
+    // Legacy path: delete per-deployment GCP IAM service account
+    const iamKey = config.gcpIamKey || config.googleServiceAccountKey;
+    if ((deployment as any).deploymentServiceAccountEmail && config.gcpProjectId && iamKey) {
+      try {
+        await deleteDeploymentServiceAccount(
+          (deployment as any).deploymentServiceAccountEmail,
+          config.gcpProjectId,
+          iamKey,
+        );
+        console.log(`[deprovision] Deleted legacy service account: ${(deployment as any).deploymentServiceAccountEmail}`);
+      } catch (err: any) {
+        console.warn(`[deprovision] Failed to delete service account: ${err.message}`);
+      }
     }
   }
 

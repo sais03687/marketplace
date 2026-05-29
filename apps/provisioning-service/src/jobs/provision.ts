@@ -10,6 +10,8 @@ import {
 import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
 import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
+import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
+import { createMicrosoftUser, setupMicrosoftInboxWebhook } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
@@ -167,53 +169,85 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     companyDomain,
   );
 
-  // 2a. Create a per-deployment Google service account (if GCP is configured).
-  // This gives each company's agent its own identity in Google Workspace.
-  // After provisioning, the hiring manager sees a one-time DWD setup link in the portal.
-  let deploymentServiceAccountEmail: string | undefined;
-  let deploymentServiceAccountKey: string | undefined;
-  let deploymentServiceAccountClientId: string | undefined;
+  // 2a. Provision workspace identity (Google Workspace or Microsoft 365).
+  // The platform owns a single org/tenant; users are created programmatically here.
+  // Buyer selects Google or Microsoft during hire — no manual setup required.
+  const workspaceProvider = (deployment as any).workspaceProvider as string ?? "NONE";
+  const agentSlug = deployment.agent.slug;
+  const companySlug = companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+  const usernameSuffix = deploymentId.slice(-8);
+  let workspaceEmail: string | undefined;
+  let workspaceUserId: string | undefined;
 
-  // Use dedicated IAM provisioner key if set; fall back to agent identity key
-  // for legacy single-SA setups. GCP_IAM_KEY is preferred (least privilege).
-  const iamKey = config.gcpIamKey || config.googleServiceAccountKey;
-  if (config.gcpProjectId && iamKey) {
+  if (workspaceProvider === "GOOGLE" && config.googleWorkspaceSaKey) {
     try {
-      const sa = await withRetry(
-        () => createDeploymentServiceAccount(
-          deploymentId,
-          deployment.agent.slug,
-          config.gcpProjectId,
-          iamKey,
-        ),
-        { step: "create_service_account", deploymentId },
+      const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
+      const user = await withRetry(
+        () => createGoogleWorkspaceUser(username, agentName),
+        { step: "create_workspace_user_google", deploymentId },
       );
-      deploymentServiceAccountEmail = sa.email;
-      deploymentServiceAccountKey = sa.privateKeyJson;
-      deploymentServiceAccountClientId = sa.clientId;
-
-      // Persist credentials on the deployment so the DWD setup link can be shown
-      // in the portal and so the container can be re-provisioned with the same SA.
+      workspaceEmail = user.email;
+      workspaceUserId = user.id;
       await prisma.deployment.update({
         where: { id: deploymentId },
-        data: {
-          deploymentServiceAccountEmail: sa.email,
-          deploymentServiceAccountKey: sa.privateKeyJson,
-        },
+        data: { workspaceEmail: user.email, workspaceUserId: user.id },
       });
-
-      console.log(`[provision] Service account created: ${sa.email} (clientId: ${sa.clientId})`);
+      console.log(`[provision] Google Workspace user created: ${user.email}`);
     } catch (err: any) {
-      // Non-fatal: fall back to platform-level service account.
-      // Log clearly so ops can investigate.
-      console.warn(`[provision] Service account creation failed, using platform SA: ${err.message}`);
+      console.warn(`[provision] Google Workspace user creation failed: ${err.message}`);
+    }
+  } else if (workspaceProvider === "MICROSOFT" && config.microsoftTenantId) {
+    try {
+      const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
+      const user = await withRetry(
+        () => createMicrosoftUser(username, agentName),
+        { step: "create_workspace_user_microsoft", deploymentId },
+      );
+      workspaceEmail = user.email;
+      workspaceUserId = user.id;
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: { workspaceEmail: user.email, workspaceUserId: user.id },
+      });
+      console.log(`[provision] Microsoft 365 user created: ${user.email}`);
+    } catch (err: any) {
+      console.warn(`[provision] Microsoft 365 user creation failed: ${err.message}`);
+    }
+  } else if (workspaceProvider === "NONE" || !workspaceProvider) {
+    // Legacy path: use per-deployment GCP IAM SA if configured
+    const iamKey = config.gcpIamKey || config.googleServiceAccountKey;
+    if (config.gcpProjectId && iamKey) {
+      try {
+        const sa = await withRetry(
+          () => createDeploymentServiceAccount(
+            deploymentId,
+            deployment.agent.slug,
+            config.gcpProjectId,
+            iamKey,
+          ),
+          { step: "create_service_account", deploymentId },
+        );
+        await prisma.deployment.update({
+          where: { id: deploymentId },
+          data: {
+            deploymentServiceAccountEmail: sa.email,
+            deploymentServiceAccountKey: sa.privateKeyJson,
+          },
+        });
+        console.log(`[provision] Legacy service account created: ${sa.email}`);
+      } catch (err: any) {
+        console.warn(`[provision] Service account creation failed, using platform SA: ${err.message}`);
+      }
     }
   }
 
-  // Resolve which Google SA credentials to inject into the container.
-  // Per-deployment SA takes precedence over the platform-level shared SA.
-  const effectiveGoogleSAEmail = deploymentServiceAccountEmail || config.googleServiceAccountEmail;
-  const effectiveGoogleSAKey = deploymentServiceAccountKey || config.googleServiceAccountKey;
+  // Re-fetch deployment to get updated SA fields for legacy path env var resolution
+  const deploymentRefreshed = await prisma.deployment.findUnique({
+    where: { id: deploymentId },
+    select: { deploymentServiceAccountEmail: true, deploymentServiceAccountKey: true },
+  });
+  const effectiveGoogleSAEmail = deploymentRefreshed?.deploymentServiceAccountEmail || config.googleServiceAccountEmail;
+  const effectiveGoogleSAKey = deploymentRefreshed?.deploymentServiceAccountKey || config.googleServiceAccountKey;
 
   let agentEmail: string;
   let inboxId: string | undefined;
@@ -239,6 +273,20 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       data: { status: "ERROR" },
     });
     throw err;
+  }
+
+  // 2b. Set up Gmail forwarding from workspace address → Agentmail inbox (Google path only)
+  if (workspaceProvider === "GOOGLE" && workspaceEmail && inboxId) {
+    try {
+      await withRetry(
+        () => setupGmailForwarding(workspaceEmail!, agentEmail, inboxId!),
+        { step: "setup_gmail_forwarding", deploymentId },
+      );
+      console.log(`[provision] Gmail forwarding set up: ${workspaceEmail} → ${agentEmail}`);
+    } catch (err: any) {
+      // Non-fatal: agent can still receive email via Agentmail directly
+      console.warn(`[provision] Gmail forwarding setup failed: ${err.message}`);
+    }
   }
 
   // 3. Create container or local process
@@ -275,10 +323,25 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     ...(heartbeatIntervalHours !== undefined
       ? { HEARTBEAT_INTERVAL_HOURS: String(heartbeatIntervalHours) }
       : {}),
-    ...(effectiveGoogleSAEmail
+    // New workspace identity vars (Google Workspace or Microsoft 365)
+    ...(workspaceProvider !== "NONE" && workspaceEmail
+      ? { WORKSPACE_PROVIDER: workspaceProvider, WORKSPACE_EMAIL: workspaceEmail }
+      : {}),
+    ...(workspaceProvider === "GOOGLE" && config.googleWorkspaceSaKey
+      ? { GOOGLE_WORKSPACE_SA_KEY: config.googleWorkspaceSaKey }
+      : {}),
+    ...(workspaceProvider === "MICROSOFT"
+      ? {
+          MICROSOFT_TENANT_ID: config.microsoftTenantId,
+          MICROSOFT_CLIENT_ID: config.microsoftClientId,
+          MICROSOFT_CLIENT_SECRET: config.microsoftClientSecret,
+        }
+      : {}),
+    // Legacy Google SA vars — only injected for NONE/legacy deployments that have old SA fields
+    ...(workspaceProvider === "NONE" && effectiveGoogleSAEmail
       ? { GOOGLE_SERVICE_ACCOUNT_EMAIL: effectiveGoogleSAEmail }
       : {}),
-    ...(effectiveGoogleSAKey
+    ...(workspaceProvider === "NONE" && effectiveGoogleSAKey
       ? { GOOGLE_SERVICE_ACCOUNT_KEY: effectiveGoogleSAKey }
       : {}),
   };
@@ -376,6 +439,27 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     );
   }
 
+  // 4b. Set up Microsoft Graph inbox webhook (Microsoft path only)
+  if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
+    try {
+      const sub = await withRetry(
+        () => setupMicrosoftInboxWebhook(
+          workspaceUserId!,
+          deploymentId,
+          `${config.approvalWebhookUrl}/webhooks/microsoft`,
+        ),
+        { step: "setup_microsoft_webhook", deploymentId },
+      );
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: { msGraphSubId: sub.subscriptionId },
+      });
+      console.log(`[provision] Microsoft Graph webhook registered: ${sub.subscriptionId}`);
+    } catch (err: any) {
+      console.warn(`[provision] Microsoft Graph webhook setup failed: ${err.message}`);
+    }
+  }
+
   // 5. Set AgentMail webhook so inbound emails reach the agent container
   if (inboxId) {
     const containerUrl = containerName?.startsWith("http")
@@ -443,12 +527,19 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     `You are ${agentName}, an AI employee at ${companyName}.`,
     `Your email address is ${agentEmail}.`,
     `The hiring manager's email is ${managerEmail}.`,
-    ...(effectiveGoogleSAEmail
+    ...(workspaceEmail
       ? [
-          `\nYou also have a Google Workspace identity for file access: ${effectiveGoogleSAEmail}`,
-          `Team members can share Google Drive files, Sheets, and Docs with that address so you can read and edit them.`,
+          `\nYou have your own workspace identity: ${workspaceEmail}.`,
+          workspaceProvider === "GOOGLE"
+            ? `Team members can share Google Drive files, Sheets, and Docs with that address, and send you calendar invites.`
+            : `Team members can share OneDrive files and Excel workbooks with that address, and send you calendar invites.`,
         ]
-      : []),
+      : effectiveGoogleSAEmail
+        ? [
+            `\nYou also have a Google Workspace identity for file access: ${effectiveGoogleSAEmail}`,
+            `Team members can share Google Drive files, Sheets, and Docs with that address so you can read and edit them.`,
+          ]
+        : []),
     answersSection,
     `\nAn introduction email will be sent to the hiring manager shortly. Once they reply, assist them with whatever they need.`,
   ].join("\n");

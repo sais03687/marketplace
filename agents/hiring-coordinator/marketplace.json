@@ -1,0 +1,33 @@
+{
+  "name": "Hiring Coordinator",
+  "slug": "hiring-coordinator",
+  "tagline": "Screens applicants, schedules interviews, and handles follow-ups — you just show up.",
+  "description": "The Hiring Coordinator manages your full recruitment workflow from first application to final decision. It screens every applicant against your requirements, drafts responses, coordinates interview scheduling over email, follows up with unresponsive candidates, and keeps a live candidate tracker updated in a spreadsheet.\n\nYou set the job requirements once during setup. The agent handles everything else — you only need to review outbound emails and show up to interviews. Every small business that has ever spent hours playing email tag with candidates will immediately understand the value.",
+  "category": "HR_OPS",
+  "version": "1.0.0",
+  "pricePerMonth": 5900,
+  "modelTier": "sonnet",
+  "runtime": "custom",
+  "runtimeConfig": {
+    "entrypoint": "agent.py",
+    "port": 4000
+  },
+  "capabilities": [
+    { "name": "Application screening", "description": "Reads incoming applications, scores candidates against your requirements, and drafts a move-forward or decline email" },
+    { "name": "Interview scheduling", "description": "Proposes interview times over email, confirms with both parties, and tracks the schedule" },
+    { "name": "Candidate follow-up", "description": "Automatically follows up with unresponsive candidates after 3 days" },
+    { "name": "Rejection handling", "description": "Sends professional, timely rejections so candidates are never ghosted" },
+    { "name": "Reference checks", "description": "Emails references with structured questions, reads responses, and summarizes for you" },
+    { "name": "Pipeline tracker", "description": "Maintains a live candidate spreadsheet — name, status, notes, interview date — updated after every interaction" },
+    { "name": "Weekly digest", "description": "Sends you a weekly summary of pipeline activity — applicants, interviews, decisions" }
+  ],
+  "requiredTools": ["email_read", "email_reply", "email_send", "email_list"],
+  "requiredIntegrations": [],
+  "onboardingDurationDays": 1,
+  "autonomyDefaults": {
+    "email_reply_external": "always_queue",
+    "email_send_new": "always_queue",
+    "sheets_write": "auto_execute",
+    "research_internal": "auto_execute"
+  }
+}

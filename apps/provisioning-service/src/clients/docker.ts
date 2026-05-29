@@ -42,10 +42,19 @@ export interface ContainerEnv {
   HEARTBEAT_INTERVAL_HOURS?: string;
   // Heartbeat: interval in minutes — overrides HOURS, used for dev/testing.
   HEARTBEAT_INTERVAL_MINUTES?: string;
-  // Google Workspace service account (Drive/Sheets/Docs). Both agents share the
-  // same SA; files must be shared with this email address for the agent to access them.
+  // Legacy Google Workspace service account (Drive/Sheets/Docs) — kept for backward
+  // compat with existing deployments using the old per-deployment SA model.
   GOOGLE_SERVICE_ACCOUNT_EMAIL?: string;
   GOOGLE_SERVICE_ACCOUNT_KEY?: string;
+  // New workspace identity — platform-owned Google Workspace or Microsoft 365 user.
+  // Set when the buyer selects a workspace provider during hire. The agent gets
+  // its own calendar, Drive/OneDrive, and file access under this identity.
+  WORKSPACE_PROVIDER?: string;      // "GOOGLE" | "MICROSOFT" | "NONE"
+  WORKSPACE_EMAIL?: string;         // e.g., alex@agents.[platform-domain].com
+  GOOGLE_WORKSPACE_SA_KEY?: string; // Platform SA JSON with DWD (same for all Google deployments)
+  MICROSOFT_TENANT_ID?: string;
+  MICROSOFT_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_SECRET?: string;
 }
 
 function envToArray(env: ContainerEnv): string[] {

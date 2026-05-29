@@ -48,6 +48,17 @@ export const config = {
   // Falls back to GOOGLE_SERVICE_ACCOUNT_KEY if not set (legacy / single-SA setups).
   gcpIamKey: process.env.GCP_IAM_KEY || "",
 
+  // Platform-owned Google Workspace org (agents.[platform-domain].com)
+  // One-time infrastructure bootstrap — credentials stored as platform secrets on Hetzner
+  googleWorkspaceDomain: process.env.GOOGLE_WORKSPACE_DOMAIN || "",
+  googleWorkspaceAdminEmail: process.env.GOOGLE_WORKSPACE_ADMIN_EMAIL || "",
+  googleWorkspaceSaKey: process.env.GOOGLE_WORKSPACE_SA_KEY || "",
+
+  // Platform-owned Microsoft 365 tenant (agents.[platform-domain].com)
+  microsoftTenantId: process.env.MICROSOFT_TENANT_ID || "",
+  microsoftClientId: process.env.MICROSOFT_CLIENT_ID || "",
+  microsoftClientSecret: process.env.MICROSOFT_CLIENT_SECRET || "",
+
   // Vercel Blob — needed to list and download creator packages
   blobReadWriteToken: process.env.BLOB_READ_WRITE_TOKEN || "",
   blobBaseUrl: process.env.BLOB_BASE_URL || "",
