@@ -208,7 +208,8 @@ export async function POST(request: Request) {
     OPUS: 14900,   // $149/mo
   };
   const minPrice = MIN_PRICE_CENTS[modelTierRaw] || 2900;
-  if (priceCheck < minPrice) {
+  // Allow $0 for internal test agents (bypasses Stripe in the hire flow)
+  if (priceCheck !== 0 && priceCheck < minPrice) {
     return jsonError(
       `Minimum price for ${modelTierRaw.toLowerCase()} tier is $${(minPrice / 100).toFixed(0)}/month`,
       400,

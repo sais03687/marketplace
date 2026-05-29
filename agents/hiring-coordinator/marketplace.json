@@ -5,7 +5,7 @@
   "description": "The Hiring Coordinator manages your full recruitment workflow from first application to final decision. It screens every applicant against your requirements, drafts responses, coordinates interview scheduling over email, follows up with unresponsive candidates, and keeps a live candidate tracker updated in a spreadsheet.\n\nYou set the job requirements once during setup. The agent handles everything else — you only need to review outbound emails and show up to interviews. Every small business that has ever spent hours playing email tag with candidates will immediately understand the value.",
   "category": "HR_OPS",
   "version": "1.0.0",
-  "pricePerMonth": 5900,
+  "pricePerMonth": 0,
   "modelTier": "sonnet",
   "runtime": "custom",
   "runtimeConfig": {
