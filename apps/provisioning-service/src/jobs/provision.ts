@@ -441,12 +441,14 @@ export async function provisionJob(deploymentId: string): Promise<void> {
 
   // 4b. Set up Microsoft Graph inbox webhook (Microsoft path only)
   if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
+    const webhookUrl = `${config.approvalWebhookUrl}/webhooks/microsoft`;
+    console.log(`[provision] Registering Microsoft Graph webhook at: ${webhookUrl}`);
     try {
       const sub = await withRetry(
         () => setupMicrosoftInboxWebhook(
           workspaceUserId!,
           deploymentId,
-          `${config.approvalWebhookUrl}/webhooks/microsoft`,
+          webhookUrl,
         ),
         { step: "setup_microsoft_webhook", deploymentId },
       );
