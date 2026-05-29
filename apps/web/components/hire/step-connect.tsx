@@ -3,10 +3,20 @@
 import { Button } from "@/components/ui/button";
 import { useHire } from "@/lib/hire-context";
 import { Badge } from "@/components/ui/badge";
-import { MessageSquare, Calendar, HardDrive, Info } from "lucide-react";
+import { MessageSquare, Info } from "lucide-react";
+
+const WORKSPACE_OPTIONS: Array<{
+  value: "GOOGLE" | "MICROSOFT" | "NONE";
+  label: string;
+  desc: string;
+}> = [
+  { value: "GOOGLE", label: "Google Workspace", desc: "Calendar, Drive, Docs, Sheets" },
+  { value: "MICROSOFT", label: "Microsoft 365", desc: "Outlook Calendar, OneDrive, Excel, Word" },
+  { value: "NONE", label: "Neither", desc: "Email only via Agentmail" },
+];
 
 export function StepConnect() {
-  const { state, setStep } = useHire();
+  const { state, updateState, setStep } = useHire();
 
   return (
     <div className="space-y-6">
@@ -29,47 +39,63 @@ export function StepConnect() {
           <Badge variant="secondary">Coming soon</Badge>
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border p-4">
-          <div className="flex items-center gap-3">
-            <Calendar className="h-5 w-5 text-[#4285f4]" />
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Workspace</p>
+          <p className="text-xs text-muted-foreground">
+            Give {state.hireName} their own calendar and file access as a member
+            of your team. Provisioned automatically — no setup required.
+          </p>
+          {WORKSPACE_OPTIONS.map(({ value, label, desc }) => (
+            <label
+              key={value}
+              className={`flex items-center gap-3 cursor-pointer rounded-lg border p-4 transition-colors hover:border-primary/50 ${
+                state.workspaceProvider === value
+                  ? "border-primary bg-primary/5"
+                  : ""
+              }`}
+            >
+              <input
+                type="radio"
+                name="workspaceProvider"
+                value={value}
+                checked={state.workspaceProvider === value}
+                onChange={() => updateState({ workspaceProvider: value })}
+                className="shrink-0"
+              />
+              <div>
+                <p className="text-sm font-medium">{label}</p>
+                <p className="text-xs text-muted-foreground">{desc}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {state.workspaceProvider !== "NONE" && (
+        <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800">
+          <div className="flex items-start gap-2">
+            <Info className="mt-0.5 h-3 w-3 shrink-0" />
             <div>
-              <p className="font-medium text-sm">Google Calendar</p>
-              <p className="text-xs text-muted-foreground">
-                Meeting prep and scheduling
+              <p className="font-medium mb-1">
+                How{" "}
+                {state.workspaceProvider === "GOOGLE"
+                  ? "Google Workspace"
+                  : "Microsoft 365"}{" "}
+                works
+              </p>
+              <p>
+                {state.hireName} will get their own{" "}
+                {state.workspaceProvider === "GOOGLE"
+                  ? "Google account with Calendar, Drive, Docs, and Sheets"
+                  : "Microsoft 365 account with Outlook Calendar, OneDrive, Excel, and Word"}
+                . Share files and send calendar invites to their workspace
+                address like you would with any colleague. Set up fully
+                automatically — no admin steps required.
               </p>
             </div>
           </div>
-          <Badge variant="success">Auto-configured</Badge>
         </div>
-
-        <div className="flex items-center justify-between rounded-lg border border-dashed p-4">
-          <div className="flex items-center gap-3">
-            <HardDrive className="h-5 w-5 text-[#0F9D58]" />
-            <div>
-              <p className="font-medium text-sm">Google Drive / Sheets / Docs</p>
-              <p className="text-xs text-muted-foreground">
-                Share files with your agent&apos;s Google identity after hiring.
-              </p>
-            </div>
-          </div>
-          <Badge variant="success">Auto-configured</Badge>
-        </div>
-      </div>
-
-      <div className="rounded-lg bg-blue-50 p-3 text-xs text-blue-800">
-        <div className="flex items-start gap-2">
-          <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          <div>
-            <p className="font-medium mb-1">How integrations work</p>
-            <p>
-              Google Calendar and Drive are connected automatically during setup.
-              Your agent will share its Google service account email in its
-              introduction — share files with that address like you would with a
-              colleague. Slack integration is coming soon.
-            </p>
-          </div>
-        </div>
-      </div>
+      )}
 
       <div className="flex gap-2">
         <Button variant="outline" onClick={() => setStep(2)}>

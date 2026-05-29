@@ -16,7 +16,7 @@ export interface HireState {
   roleTitle: string;
   // Step 3
   slackConnected: boolean;
-  googleCalendarConnected: boolean;
+  workspaceProvider: "GOOGLE" | "MICROSOFT" | "NONE";
   // Step 4
   approvalManagerEmail: string;
   weeklyDigestEmail: string;
@@ -55,7 +55,7 @@ export function HireProvider({
     hireName: agentName.split("—")[0].trim(),
     roleTitle: "AI Operations Assistant",
     slackConnected: false,
-    googleCalendarConnected: false,
+    workspaceProvider: "NONE",
     approvalManagerEmail: "",
     weeklyDigestEmail: "",
     onboardingAnswers: {},

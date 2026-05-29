@@ -19,6 +19,7 @@ const createDeploymentSchema = z.object({
   slackAppToken: z.string().optional(),
   // Onboarding answers collected during the hire wizard (skips INTERVIEW stage)
   onboardingAnswers: z.record(z.string()).optional(),
+  workspaceProvider: z.enum(["GOOGLE", "MICROSOFT", "NONE"]).optional().default("NONE"),
 });
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
@@ -128,6 +129,7 @@ export async function POST(request: Request) {
       slackBotToken: data.slackBotToken,
       slackAppToken: data.slackAppToken,
       autonomyConfig: autonomyConfig as any,
+      workspaceProvider: data.workspaceProvider,
       onboardingState,
       ...(data.onboardingAnswers && Object.keys(data.onboardingAnswers).length > 0
         ? { onboardingData: data.onboardingAnswers as any }

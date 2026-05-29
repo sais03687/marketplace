@@ -34,6 +34,7 @@ export function StepConfirmation() {
           roleTitle: state.roleTitle,
           weeklyDigestEmail: state.weeklyDigestEmail || undefined,
           approvalManagerEmail: state.approvalManagerEmail || undefined,
+          workspaceProvider: state.workspaceProvider,
           onboardingAnswers: Object.keys(state.onboardingAnswers).length > 0
             ? state.onboardingAnswers
             : undefined,
@@ -151,9 +152,13 @@ export function StepConfirmation() {
           <span>{state.slackConnected ? "Connected" : "Not connected"}</span>
         </div>
         <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Calendar</span>
+          <span className="text-muted-foreground">Workspace</span>
           <span>
-            {state.googleCalendarConnected ? "Connected" : "Not connected"}
+            {state.workspaceProvider === "GOOGLE"
+              ? "Google Workspace"
+              : state.workspaceProvider === "MICROSOFT"
+              ? "Microsoft 365"
+              : "None"}
           </span>
         </div>
         {state.approvalManagerEmail && (

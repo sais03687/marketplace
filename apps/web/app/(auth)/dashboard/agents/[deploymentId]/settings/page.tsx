@@ -36,6 +36,8 @@ interface DeploymentSettings {
   autoUpdate: boolean;
   autonomyConfig: AutonomyConfig;
   runtime: string;
+  workspaceProvider?: string | null;
+  workspaceEmail?: string | null;
 }
 
 interface AllowlistState {
@@ -93,6 +95,8 @@ export default function SettingsPage() {
           autoUpdate: data.autoUpdate,
           autonomyConfig: data.autonomyConfig || {},
           runtime: data.agent?.runtime || "CUSTOM",
+          workspaceProvider: data.workspaceProvider,
+          workspaceEmail: data.workspaceEmail,
         });
       });
     fetch(`/api/deployments/${deploymentId}/allowlist`)
@@ -234,6 +238,34 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {settings.workspaceEmail && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Workspace Identity</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Provider</span>
+              <span>
+                {settings.workspaceProvider === "GOOGLE"
+                  ? "Google Workspace"
+                  : settings.workspaceProvider === "MICROSOFT"
+                  ? "Microsoft 365"
+                  : settings.workspaceProvider}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Identity</span>
+              <span className="font-mono text-xs">{settings.workspaceEmail}</span>
+            </div>
+            <p className="text-xs text-muted-foreground pt-1">
+              Share files and send calendar invites to this address to collaborate
+              with your agent.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
