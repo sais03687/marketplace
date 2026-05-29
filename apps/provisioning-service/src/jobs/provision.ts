@@ -443,6 +443,8 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
     const webhookUrl = `${config.approvalWebhookUrl}/webhooks/microsoft`;
     console.log(`[provision] Registering Microsoft Graph webhook at: ${webhookUrl}`);
+    // Wait for M365 user to propagate across Microsoft's directory before subscribing
+    await new Promise((r) => setTimeout(r, 20_000));
     try {
       const sub = await withRetry(
         () => setupMicrosoftInboxWebhook(
