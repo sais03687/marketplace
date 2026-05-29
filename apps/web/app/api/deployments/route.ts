@@ -136,13 +136,14 @@ export async function POST(request: Request) {
         : {}),
       // Stay PENDING_PAYMENT until Stripe confirms — avoids showing ghost deployments
       // in the dashboard for abandoned checkouts. Webhook moves this to PROVISIONING.
-      status: getStripe() ? "PENDING_PAYMENT" : "PROVISIONING",
+      // $0 agents bypass Stripe entirely and go straight to provisioning.
+      status: getStripe() && agent.pricePerMonth > 0 ? "PENDING_PAYMENT" : "PROVISIONING",
     },
   });
 
   const stripe = getStripe();
 
-  if (stripe) {
+  if (stripe && agent.pricePerMonth > 0) {
     // Ensure the company has a Stripe customer
     let stripeCustomerId = company.stripeCustomerId;
     if (!stripeCustomerId) {
