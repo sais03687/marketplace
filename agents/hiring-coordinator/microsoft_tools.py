@@ -257,7 +257,10 @@ async def excel_append(item_id: str, sheet: str, values: list[list]) -> dict:
 
 
 async def execute_reads(requests: list[dict]) -> dict:
-    """Execute a list of read operations and return combined results."""
+    """Execute a list of read operations and return combined results.
+    Accepts both Microsoft-native op names and Google-style aliases so the
+    LLM prompt format works transparently regardless of workspace provider.
+    """
     results: dict[str, Any] = {}
     for req in requests:
         op = req.get("type", "")
@@ -266,39 +269,72 @@ async def execute_reads(requests: list[dict]) -> dict:
                 results["calendar_events"] = await calendar_list(**{k: v for k, v in req.items() if k != "type"})
             elif op == "drive_search":
                 results["drive_files"] = await drive_search(**{k: v for k, v in req.items() if k != "type"})
-            elif op == "excel_read":
-                results[f"excel_{req.get('sheet', 'sheet')}"] = await excel_read(**{k: v for k, v in req.items() if k != "type"})
+            elif op in ("excel_read", "sheets_read"):
+                # sheets_read alias: map Google's file_id param to item_id
+                params = {k: v for k, v in req.items() if k != "type"}
+                if "file_id" in params and "item_id" not in params:
+                    params["item_id"] = params.pop("file_id")
+                results[f"excel_{req.get('sheet', 'sheet')}"] = await excel_read(**params)
         except Exception as e:
             results[f"error_{op}"] = str(e)
     return results
 
 
 async def execute_writes(writes: list[dict]) -> list[dict]:
-    """Execute a list of write operations and return results."""
+    """Execute a list of write operations and return results.
+    Accepts both Microsoft-native op names and Google-style aliases so the
+    LLM prompt format works transparently regardless of workspace provider.
+    """
     results = []
     for write in writes:
         op = write.get("type", "")
+        # Remap Google-style params: file_id → item_id
+        params = {k: v for k, v in write.items() if k != "type"}
+        if "file_id" in params and "item_id" not in params:
+            params["item_id"] = params.pop("file_id")
         try:
             if op == "calendar_create":
-                result = await calendar_create(**{k: v for k, v in write.items() if k != "type"})
+                result = await calendar_create(**params)
                 results.append({"type": op, "status": "ok", "result": result})
             elif op == "calendar_update":
-                result = await calendar_update(**{k: v for k, v in write.items() if k != "type"})
+                result = await calendar_update(**params)
                 results.append({"type": op, "status": "ok", "result": result})
             elif op == "calendar_delete":
-                await calendar_delete(write["event_id"])
+                await calendar_delete(params["event_id"])
                 results.append({"type": op, "status": "ok"})
-            elif op == "excel_write":
-                await excel_write(**{k: v for k, v in write.items() if k != "type"})
+            elif op in ("excel_write", "sheets_write"):
+                await excel_write(**params)
                 results.append({"type": op, "status": "ok"})
-            elif op == "excel_append":
-                result = await excel_append(**{k: v for k, v in write.items() if k != "type"})
+            elif op in ("excel_append", "sheets_append"):
+                result = await excel_append(**params)
                 results.append({"type": op, "status": "ok", "result": result})
             else:
                 results.append({"type": op, "status": "skipped", "reason": "unknown op"})
         except Exception as e:
             results.append({"type": op, "status": "error", "error": str(e)})
     return results
+
+
+# ─── Message enrichment ───────────────────────────────────────────────────────
+
+
+async def enrich_message(content: str) -> str:
+    """Enrich message with upcoming Outlook calendar events as context."""
+    if not AVAILABLE:
+        return content
+    try:
+        events = await calendar_list(days_ahead=7)
+        if not events:
+            return content
+        lines = []
+        for e in events[:5]:
+            start = e.get("start", {}).get("dateTime", "")[:16].replace("T", " ")
+            subject = e.get("subject", "Event")
+            lines.append(f"- {subject}: {start}")
+        context = "\n\n[Your Outlook Calendar — Next 7 days]\n" + "\n".join(lines)
+        return content + context
+    except Exception:
+        return content
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
