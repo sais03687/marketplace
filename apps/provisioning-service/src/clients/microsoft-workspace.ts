@@ -116,6 +116,14 @@ export async function createMicrosoftUser(
     usageLocation: "US",
   }) as { id: string; userPrincipalName: string };
 
+  // Assign M365 Business Basic license so the user gets an Exchange Online mailbox.
+  // Without this the user is unlicensed and Graph inbox webhooks will fail.
+  // SKU: O365_BUSINESS_ESSENTIALS (3b555118-da6a-4418-894f-7df1e2096870)
+  await graphRequest("POST", `/users/${user.id}/assignLicense`, {
+    addLicenses: [{ skuId: "3b555118-da6a-4418-894f-7df1e2096870" }],
+    removeLicenses: [],
+  });
+
   return { email: user.userPrincipalName, id: user.id };
 }
 
