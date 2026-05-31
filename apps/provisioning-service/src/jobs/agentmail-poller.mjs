@@ -229,11 +229,10 @@ function extractEmail(from) {
  *
  * Rules (in order):
  *  1. Manager email is always allowed (set at hire time)
- *  2. Exact email match in allowedEmails list
- *  3. Domain wildcard match (@domain.com) in allowedEmails list
- *  4. If none of the above match → deny
- *
- * An empty allowedEmails list means only the manager email is allowed.
+ *  2. If allowedEmails is empty → allow everyone (no restriction)
+ *  3. Exact email match in allowedEmails list
+ *  4. Domain wildcard match (@domain.com) in allowedEmails list
+ *  5. If none of the above match → deny
  */
 function isSenderAllowed(fromHeader) {
   const { allowedEmails, managerEmail } = allowlistCache;
@@ -244,8 +243,11 @@ function isSenderAllowed(fromHeader) {
   // Manager email is always allowed
   if (managerEmail && email === managerEmail.toLowerCase()) return true;
 
+  // Empty allowlist = allow everyone (no restriction configured)
+  if (!allowedEmails || allowedEmails.length === 0) return true;
+
   // Check explicit allowlist entries
-  for (const entry of (allowedEmails || [])) {
+  for (const entry of allowedEmails) {
     if (entry.startsWith("@")) {
       // Domain wildcard: @partner.com
       if (email.endsWith(entry)) return true;
