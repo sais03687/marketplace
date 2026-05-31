@@ -316,7 +316,7 @@ async def analyze_task(state: AgentState) -> AgentState:
             state.analysis = {"action": "none", "needs_approval": False, "reasoning": text, "google_writes": []}
 
     state.task_type = state.analysis.get("task_type", "")
-    state.original_draft = (state.analysis.get("draft") or {}).get("text", "")
+    state.original_draft = (state.analysis.get("draft") or {}).get("text") or ""
 
     # Second pass: fetch tracker data if requested
     google_read_requests = state.analysis.get("google_read_requests") or []
@@ -355,7 +355,7 @@ async def analyze_task(state: AgentState) -> AgentState:
                         cleaned2 = cleaned2.split("\n", 1)[1].rsplit("```", 1)[0]
                     state.analysis = json.loads(cleaned2)
                     state.task_type = state.analysis.get("task_type", "")
-                    state.original_draft = (state.analysis.get("draft") or {}).get("text", "")
+                    state.original_draft = (state.analysis.get("draft") or {}).get("text") or ""
                 except Exception:
                     pass  # Keep first-pass analysis
         except Exception as exc:
