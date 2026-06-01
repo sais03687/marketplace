@@ -128,6 +128,13 @@ function assembleBuildContext(
     if (existsSync(p)) rmSync(p);
   }
 
+  // 5. Copy MEMORY_TEMPLATE as MEMORY.md if it doesn't exist yet
+  const memoryPath = join(creatorDir, "MEMORY.md");
+  const templatePath = join(creatorDir, "onboarding", "MEMORY_TEMPLATE.md");
+  if (!existsSync(memoryPath) && existsSync(templatePath)) {
+    cpSync(templatePath, memoryPath);
+  }
+
   return tempDir;
 }
 
