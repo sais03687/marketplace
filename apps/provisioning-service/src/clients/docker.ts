@@ -3,6 +3,50 @@ import { config } from "../config.js";
 
 const docker = new Dockerode();
 
+// ─── Per-Deployment Network Isolation ───────────────────────────────────────
+
+/**
+ * Create an isolated Docker bridge network for a deployment.
+ * The agent container and its MCP sidecars all attach to this network,
+ * preventing lateral movement between deployments.
+ */
+export async function createAgentNetwork(deploymentId: string): Promise<string> {
+  const name = `agent-net-${deploymentId.slice(0, 8)}`;
+  try {
+    await docker.createNetwork({
+      Name: name,
+      Driver: "bridge",
+      Internal: false, // agent needs external access (Graph API, AgentMail, etc.)
+      Labels: { "marketplace.deployment": deploymentId },
+    });
+    console.log(`[docker] Created network ${name}`);
+  } catch (err: any) {
+    // Network already exists (e.g., retry after partial failure)
+    if (err.statusCode === 409) {
+      console.log(`[docker] Network ${name} already exists`);
+    } else {
+      throw err;
+    }
+  }
+  return name;
+}
+
+/**
+ * Remove the isolated network for a deployment. Safe to call if network
+ * doesn't exist or still has connected containers (they must be stopped first).
+ */
+export async function removeAgentNetwork(deploymentId: string): Promise<void> {
+  const name = `agent-net-${deploymentId.slice(0, 8)}`;
+  try {
+    const network = docker.getNetwork(name);
+    await network.remove();
+    console.log(`[docker] Removed network ${name}`);
+  } catch (err: any) {
+    if (err.statusCode === 404) return; // already gone
+    console.warn(`[docker] Failed to remove network ${name}: ${err.message}`);
+  }
+}
+
 export interface ContainerEnv {
   DEPLOYMENT_ID: string;
   AGENT_ID: string;
@@ -65,6 +109,7 @@ export async function createAndStartContainer(
   name: string,
   env: ContainerEnv,
   volumeBinds?: string[],  // optional extra bind mounts (e.g. creator package)
+  networkName?: string,     // optional isolated network (created by createAgentNetwork)
 ): Promise<{ containerId: string; containerName: string }> {
   const container = await docker.createContainer({
     Image: config.openclawImage,
@@ -83,6 +128,18 @@ export async function createAndStartContainer(
       NanoCpus: 1_000_000_000,           // 1 CPU core
       PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
       SecurityOpt: ["no-new-privileges"],
+      // Security: drop all Linux capabilities — agent containers don't need any
+      CapDrop: ["ALL"],
+      // Security: read-only root filesystem with tmpfs for writable paths
+      ReadonlyRootfs: true,
+      Tmpfs: {
+        "/tmp": "rw,noexec,nosuid,size=64m",
+        "/agent/workspace": "rw,nosuid,size=128m",
+      },
+      // Security: attach to isolated per-deployment network if provided
+      ...(networkName ? { NetworkMode: networkName } : {}),
+      // TODO: Egress proxy — allowlist graph.microsoft.com, api.agentmail.to, etc.
+      // For now, network isolation between deployments is the priority.
     },
   });
 

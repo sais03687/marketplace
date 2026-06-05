@@ -40,7 +40,16 @@ _secrets: dict[str, str] = {}
 for _key in _SECRETS_TO_SCRUB:
     _secrets[_key] = os.environ.pop(_key, "")
 
-# NOW safe to import creator code — secrets are no longer in os.environ
+# ─── MCP Sidecar Discovery ─────────────────────────────────────────────────
+# Read MCP_*_URL env vars, scrub them, then discover tools at startup.
+
+_mcp_servers: dict[str, str] = {}  # integration_type → URL
+for _env_key in list(os.environ):
+    if _env_key.startswith("MCP_") and _env_key.endswith("_URL"):
+        _integration = _env_key[4:-4].lower().replace("_", "-")  # MCP_PYTHON_SANDBOX_URL → python-sandbox
+        _mcp_servers[_integration] = os.environ.pop(_env_key)
+
+# NOW safe to import creator code — secrets and MCP URLs are no longer in os.environ
 from creator.agent import run_agent
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -83,7 +92,104 @@ WORKSPACE_DIR = Path("/agent/creator")
 RESOLUTIONS_DIR = DATA_DIR / "resolutions"
 RESOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+# ─── MCP Client ─────────────────────────────────────────────────────────────
+
+_mcp_tools: dict[str, list[dict]] = {}  # integration_type → list of tool defs
+
+
+async def _discover_mcp_tools() -> None:
+    """Fetch tool lists from all MCP sidecar servers. Called once at startup."""
+    if not _mcp_servers:
+        return
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for integration, url in _mcp_servers.items():
+            for attempt in range(5):
+                try:
+                    resp = await client.post(f"{url}/mcp/tools/list")
+                    resp.raise_for_status()
+                    tools = resp.json().get("tools", [])
+                    _mcp_tools[integration] = tools
+                    print(f"[mcp] Discovered {len(tools)} tool(s) from {integration}: "
+                          f"{[t['name'] for t in tools]}", flush=True)
+                    break
+                except Exception as e:
+                    if attempt < 4:
+                        import asyncio as _aio
+                        await _aio.sleep(2)
+                    else:
+                        print(f"[mcp] Failed to discover tools from {integration}: {e}", flush=True)
+
+
+async def call_mcp_tool(server_type: str, tool_name: str, arguments: dict) -> dict:
+    """Call a tool on an MCP sidecar server.
+
+    Args:
+        server_type: Integration type (e.g., "python-sandbox")
+        tool_name: Tool name (e.g., "execute_python")
+        arguments: Tool arguments dict
+
+    Returns:
+        Result dict from the MCP server, or error dict on failure.
+    """
+    url = _mcp_servers.get(server_type)
+    if not url:
+        return {"error": f"MCP server '{server_type}' not available"}
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{url}/mcp/tools/call",
+                json={"name": tool_name, "arguments": arguments},
+            )
+            resp.raise_for_status()
+            return resp.json().get("result", resp.json())
+    except httpx.TimeoutException:
+        return {"error": f"MCP tool {tool_name} timed out"}
+    except Exception as e:
+        return {"error": f"MCP tool {tool_name} failed: {str(e)}"}
+
+
+def _write_mcp_tools_doc() -> None:
+    """Write a dynamic MCP_TOOLS.md to the creator directory so the LLM knows
+    which MCP tools are available and how to call them."""
+    if not _mcp_tools:
+        return
+
+    lines = ["# Available MCP Tools\n",
+             "These tools are available through the `mcp_fn` function passed to `run_agent()`.\n",
+             "Call them like: `result = await mcp_fn(server_type, tool_name, arguments)`\n"]
+
+    for integration, tools in _mcp_tools.items():
+        lines.append(f"\n## {integration}\n")
+        for tool in tools:
+            lines.append(f"### `{tool['name']}`\n")
+            lines.append(f"{tool.get('description', '')}\n")
+            schema = tool.get("inputSchema", {})
+            props = schema.get("properties", {})
+            required = schema.get("required", [])
+            if props:
+                lines.append("\n**Parameters:**\n")
+                for pname, pinfo in props.items():
+                    req = " (required)" if pname in required else ""
+                    lines.append(f"- `{pname}`: {pinfo.get('description', pinfo.get('type', ''))}{req}\n")
+
+    doc_path = WORKSPACE_DIR / "MCP_TOOLS.md"
+    try:
+        doc_path.write_text("".join(lines), encoding="utf-8")
+        print(f"[mcp] Wrote MCP_TOOLS.md with {sum(len(t) for t in _mcp_tools.values())} tool(s)", flush=True)
+    except Exception as e:
+        print(f"[mcp] Failed to write MCP_TOOLS.md: {e}", flush=True)
+
+
 app = FastAPI(title=f"{AGENT_NAME} Adapter", version="1.0.0")
+
+
+@app.on_event("startup")
+async def _startup():
+    """Discover MCP tools from sidecars and write dynamic tool docs."""
+    await _discover_mcp_tools()
+    _write_mcp_tools_doc()
+
 
 # ─── AgentMail Helpers ───────────────────────────────────────────────────────
 
@@ -518,6 +624,9 @@ over guessing.
 
 ### Rules
 
+- NEVER include ANY content, names, emails, or references from PRIVATE.md
+  in contributions. PRIVATE.md contains team rosters, internal URLs, and
+  sensitive company details — none of it may appear in AgentMind.
 - Never include PII, company names, individual names, or confidential data
   in contributions. Keep them general and reusable.
 - Keep titles concise (under 80 chars). Keep content under 2000 chars.
@@ -777,6 +886,82 @@ async def _tracked_resolve(approval_id: str, **kwargs) -> dict:
     if result.get("status") in ("APPROVED", "EDITED"):
         _approved_actions[approval_id] = result
     return result
+
+
+# ─── Decision Request — agent asks manager for high-level input ─────────────
+
+async def request_decision(
+    question: str,
+    context: str = "",
+    options: list[str] | None = None,
+    urgency: str = "normal",
+) -> dict:
+    """Ask the manager a question and wait for their response.
+
+    Unlike email approvals (which show a draft to approve/reject), decision
+    requests present a question with optional choices. The manager's answer
+    comes back as the resolution.
+
+    Args:
+        question: The question to ask the manager.
+        context: Background context to help the manager decide.
+        options: Optional list of suggested answers (manager can also free-text).
+        urgency: "low", "normal", or "high" — affects notification phrasing.
+
+    Returns:
+        Dict with:
+          - status: "APPROVED" (manager answered), "REJECTED" (manager declined), "EXPIRED"
+          - answer: The manager's response text (from resolutionAction field)
+    """
+    # Build a readable draft that shows the question + context in the portal
+    draft_parts = [f"**Question:** {question}"]
+    if context:
+        draft_parts.append(f"\n**Context:** {context}")
+    if options:
+        draft_parts.append("\n**Suggested options:**")
+        for i, opt in enumerate(options, 1):
+            draft_parts.append(f"  {i}. {opt}")
+    draft_parts.append(f"\n*Urgency: {urgency}*")
+    draft = "\n".join(draft_parts)
+
+    # Map urgency to risk scores so the portal shows appropriate priority
+    urgency_scores = {
+        "low": (2.0, 2.0, 2.0),
+        "normal": (5.0, 5.0, 5.0),
+        "high": (8.0, 8.0, 3.0),
+    }
+    stakes, ambiguity, reversibility = urgency_scores.get(urgency, (5.0, 5.0, 5.0))
+
+    try:
+        approval_id = await _tracked_queue(
+            task_type="decision_request",
+            channel="decision",
+            draft=draft,
+            reasoning=f"Agent needs manager input: {question[:100]}",
+            stakes=stakes,
+            ambiguity=ambiguity,
+            reversibility=reversibility,
+            original_request=question,
+        )
+        print(f"[adapter] Decision request queued: {approval_id}", flush=True)
+
+        resolution = await _tracked_resolve(approval_id)
+        status = resolution.get("status", "EXPIRED")
+        answer = resolution.get("resolutionAction", "")
+
+        if status == "APPROVED":
+            # Manager approved without editing — means "yes" or "proceed"
+            return {"status": "APPROVED", "answer": answer or "Approved — proceed as planned."}
+        elif status == "EDITED":
+            # Manager provided specific guidance
+            return {"status": "APPROVED", "answer": answer}
+        elif status == "REJECTED":
+            return {"status": "REJECTED", "answer": resolution.get("rejectionReason", "Request declined.")}
+        else:
+            return {"status": "EXPIRED", "answer": "No response received within the timeout period."}
+    except Exception as e:
+        print(f"[adapter] Decision request failed: {e}", flush=True)
+        return {"status": "ERROR", "answer": f"Failed to submit question: {str(e)}"}
 
 
 # ─── Fix 6: Per-Deployment Usage Caps ────────────────────────────────────────
@@ -1075,6 +1260,8 @@ async def _handle_message(message: str, context: dict):
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
             use_fn=report_usage,
+            request_decision_fn=request_decision,
+            **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
         )
 
         if not isinstance(result, dict):
@@ -1267,6 +1454,8 @@ async def _handle_message(message: str, context: dict):
                     contribute_fn=contribute_knowledge,
                     search_fn=search_knowledge,
                     use_fn=report_usage,
+                    request_decision_fn=request_decision,
+                    **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
                 )
                 retry_action = retry_result.get("action", "none")
                 print(f"[adapter] Retry returned action={retry_action}", flush=True)

@@ -135,6 +135,13 @@ function assembleBuildContext(
     cpSync(templatePath, memoryPath);
   }
 
+  // 5b. Copy PRIVATE_TEMPLATE as PRIVATE.md if it doesn't exist yet
+  const privatePath = join(creatorDir, "PRIVATE.md");
+  const privateTemplatePath = join(creatorDir, "onboarding", "PRIVATE_TEMPLATE.md");
+  if (!existsSync(privatePath) && existsSync(privateTemplatePath)) {
+    cpSync(privateTemplatePath, privatePath);
+  }
+
   return tempDir;
 }
 

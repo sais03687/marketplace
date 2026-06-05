@@ -1,0 +1,58 @@
+[
+  {
+    "id": "team_roster",
+    "order": 1,
+    "question": "Who are the team members you work with? Please list their names, email addresses, and roles (e.g., 'Sarah Chen, sarah@company.com, Finance Manager'). This helps me know who to reach out to when I need specific information.",
+    "memoryKey": "private.team_roster",
+    "required": true
+  },
+  {
+    "id": "data_sources",
+    "order": 2,
+    "question": "What data sources does your team work with most often? (e.g., Excel files on SharePoint, CSV exports from Salesforce, PDF reports from finance, etc.)",
+    "memoryKey": "working_knowledge.data_sources",
+    "required": true
+  },
+  {
+    "id": "report_recipients",
+    "order": 3,
+    "question": "Who typically receives your analysis reports and in what format? (e.g., 'CEO gets a 1-page summary, Finance team gets the full Excel workbook')",
+    "memoryKey": "working_knowledge.report_recipients",
+    "required": true
+  },
+  {
+    "id": "common_analyses",
+    "order": 4,
+    "question": "What analyses does your team perform most often? (e.g., monthly revenue breakdown, customer churn analysis, quarterly budget review, inventory forecasting)",
+    "memoryKey": "working_knowledge.common_analyses",
+    "required": true
+  },
+  {
+    "id": "sharepoint_structure",
+    "order": 5,
+    "question": "How is your SharePoint organized? Are there specific folders for reports, raw data, or templates?",
+    "memoryKey": "working_knowledge.sharepoint_structure",
+    "required": false
+  },
+  {
+    "id": "preferred_tools",
+    "order": 6,
+    "question": "Are there specific chart styles, Excel templates, or reporting formats your team prefers? Any branding guidelines for reports?",
+    "memoryKey": "working_knowledge.preferred_tools",
+    "required": false
+  },
+  {
+    "id": "approval_instructions",
+    "order": 7,
+    "question": "When should I check with you before acting? For example: 'Always ask before sharing financial data externally', 'Check with me before emailing the CEO', 'Get my approval before starting analyses that take more than a day'. List any situations where you want me to stop and ask first.",
+    "memoryKey": "private.approval_instructions",
+    "required": false
+  },
+  {
+    "id": "off_limits",
+    "order": 8,
+    "question": "Is there anything I should never do? For example: 'Never email clients directly', 'Don't modify the Q4 forecast spreadsheet', 'Don't share anything from the HR folder'. List any hard boundaries.",
+    "memoryKey": "private.off_limits",
+    "required": false
+  }
+]

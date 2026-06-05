@@ -1,4 +1,5 @@
 import type { AgentCategory, MarketplaceManifest } from "./types.js";
+import { VALID_INTEGRATIONS } from "./types.js";
 
 export interface ValidationError {
   field: string;
@@ -82,6 +83,19 @@ export function validateManifest(m: unknown): ValidationError[] {
   for (const field of ["requiredTools", "requiredIntegrations"] as const) {
     if (!Array.isArray(manifest[field])) {
       errors.push({ field, message: `${field} must be an array` });
+    }
+  }
+
+  // Validate integration types against known platform integrations
+  if (Array.isArray(manifest.requiredIntegrations)) {
+    for (let i = 0; i < manifest.requiredIntegrations.length; i++) {
+      const integration = manifest.requiredIntegrations[i] as string;
+      if (!VALID_INTEGRATIONS.has(integration)) {
+        errors.push({
+          field: `requiredIntegrations[${i}]`,
+          message: `Unknown integration "${integration}". Valid integrations: ${[...VALID_INTEGRATIONS].join(", ")}`,
+        });
+      }
     }
   }
 

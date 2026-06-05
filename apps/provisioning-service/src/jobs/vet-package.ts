@@ -45,6 +45,23 @@ const DANGEROUS_PATTERNS: { re: RegExp; label: string }[] = [
   { re: /\bimport\s+multiprocessing\b/,     label: "import multiprocessing" },
   { re: /\bfrom\s+multiprocessing\b/,       label: "from multiprocessing" },
   { re: /\bimport\s+socket\b|\bfrom\s+socket\b/, label: "import socket" },
+  // Network libraries — agents must use platform-provided MCP tools, not direct HTTP
+  { re: /\bimport\s+requests\b/,            label: "import requests (use platform MCP tools for external access)" },
+  { re: /\bfrom\s+requests\b/,              label: "from requests (use platform MCP tools for external access)" },
+  { re: /\bimport\s+urllib\b/,              label: "import urllib (use platform MCP tools for external access)" },
+  { re: /\bfrom\s+urllib\b/,                label: "from urllib (use platform MCP tools for external access)" },
+  { re: /\bimport\s+aiohttp\b/,             label: "import aiohttp (use platform MCP tools for external access)" },
+  { re: /\bfrom\s+aiohttp\b/,               label: "from aiohttp (use platform MCP tools for external access)" },
+  // Note: httpx is allowed — microsoft_tools.py and google_tools.py use it for Graph API.
+  // Those are platform-provided files, not creator code. Vetting only scans creator files.
+  // WebSocket access
+  { re: /\bimport\s+websocket\b/,            label: "import websocket (direct WebSocket access not allowed)" },
+  { re: /\bimport\s+websockets\b/,           label: "import websockets (direct WebSocket access not allowed)" },
+  { re: /\bfrom\s+websocket\b/,              label: "from websocket (direct WebSocket access not allowed)" },
+  { re: /\bfrom\s+websockets\b/,             label: "from websockets (direct WebSocket access not allowed)" },
+  // Docker-in-Docker
+  { re: /\bimport\s+docker\b/,               label: "import docker (container access not allowed)" },
+  { re: /\bfrom\s+docker\b/,                 label: "from docker (container access not allowed)" },
 ];
 
 const SECRET_PATTERNS: { re: RegExp; label: string }[] = [

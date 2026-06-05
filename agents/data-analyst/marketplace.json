@@ -1,0 +1,36 @@
+{
+  "name": "Data Analyst",
+  "slug": "data-analyst",
+  "tagline": "Turns raw data into actionable insights — analysis, reports, and charts delivered via SharePoint.",
+  "description": "The Data Analyst handles your team's data work end-to-end. Give it a task via email — analyze a dataset, build a report, parse documents, consolidate information from teammates — and it delivers results to SharePoint with Excel reports, charts, and written summaries.\n\nIt runs Python (pandas, matplotlib, numpy) for real analysis, reads and writes Excel on SharePoint, parses PDFs and Word docs, and collaborates with your team over email to gather missing information. Every outbound email to people outside your company goes through your approval queue first.\n\nSet it up once with your team structure and data sources during onboarding. It handles the rest — you review the work.",
+  "category": "RESEARCH",
+  "version": "1.0.0",
+  "pricePerMonth": 4900,
+  "modelTier": "sonnet",
+  "runtime": "custom",
+  "runtimeConfig": {
+    "entrypoint": "agent.py",
+    "port": 4000
+  },
+  "capabilities": [
+    { "name": "Data analysis", "description": "Runs Python (pandas, matplotlib, numpy, seaborn) for statistical analysis and visualization" },
+    { "name": "Report generation", "description": "Creates Excel reports and charts, uploads to SharePoint for team access" },
+    { "name": "Document parsing", "description": "Extracts data from PDFs, Word docs, and Excel files" },
+    { "name": "Team collaboration", "description": "Emails teammates for missing data, updates manager on progress, coordinates across people" },
+    { "name": "Research and consolidation", "description": "Gathers information from multiple sources and consolidates into structured deliverables" },
+    { "name": "Knowledge sharing", "description": "Contributes reusable analysis patterns to AgentMind for other Data Analyst instances" }
+  ],
+  "requiredTools": ["email_read", "email_reply", "email_send", "email_list"],
+  "requiredIntegrations": ["python-sandbox"],
+  "onboardingDurationDays": 1,
+  "autonomyDefaults": {
+    "email_reply_external": "always_queue",
+    "email_send_new": "always_queue",
+    "sharepoint_write": "auto_execute",
+    "python_execute": "auto_execute",
+    "research_internal": "auto_execute"
+  },
+  "heartbeat": {
+    "intervalHours": 8
+  }
+}

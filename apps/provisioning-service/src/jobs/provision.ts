@@ -3,10 +3,13 @@ import { config } from "../config.js";
 import { createInbox, setInboxWebhook } from "../clients/agentmail.js";
 import {
   createAndStartContainer,
+  createAgentNetwork,
+  removeAgentNetwork,
   getContainerPort,
   stopContainer,
   type ContainerEnv,
 } from "../clients/docker.js";
+import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
 import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
@@ -352,6 +355,12 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   // Hoisted so both the catch block and the post-try cleanup can access them.
   let resolvedPkgPath: string | null = null;
   let tempPkgDir: string | null = null;
+  let agentNetworkName: string | null = null;
+
+  // Check if the agent needs MCP sidecars
+  const requiredIntegrations: string[] = Array.isArray((manifest as any)?.requiredIntegrations)
+    ? (manifest as any).requiredIntegrations
+    : [];
 
   try {
     // Resolve the agent package path — either from blob storage or local disk.
@@ -364,6 +373,23 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       } else {
         const { resolve } = await import("node:path");
         resolvedPkgPath = resolve(config.webAppRoot, agentVersion.storagePath);
+      }
+    }
+
+    // Create isolated Docker network for this deployment (agent + sidecars)
+    if (config.runnerMode === "docker") {
+      agentNetworkName = await createAgentNetwork(deploymentId);
+    }
+
+    // Spawn MCP sidecars if the agent needs them
+    if (requiredIntegrations.length > 0 && agentNetworkName) {
+      console.log(`[provision] Spawning MCP sidecars: ${requiredIntegrations.join(", ")}`);
+      const mcpSidecars = await spawnMcpSidecars(deploymentId, agentNetworkName, requiredIntegrations);
+      // Inject MCP sidecar URLs into the container env
+      for (const [integrationType, info] of mcpSidecars) {
+        const envKey = `MCP_${integrationType.toUpperCase().replace(/-/g, "_")}_URL`;
+        (containerEnv as any)[envKey] = info.internalUrl;
+        console.log(`[provision] MCP env: ${envKey}=${info.internalUrl}`);
       }
     }
 
@@ -387,7 +413,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
         : [];
 
       const result = await withRetry(
-        () => createAndStartContainer(cName, containerEnv, volumeBinds),
+        () => createAndStartContainer(cName, containerEnv, volumeBinds, agentNetworkName ?? undefined),
         { step: "create_container", deploymentId },
       );
       containerName = result.containerName;
@@ -416,6 +442,21 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       try {
         await deleteMicrosoftUser(workspaceUserId);
         console.log(`[provision] Cleaned up orphaned M365 user ${workspaceUserId}`);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    // Clean up MCP sidecars and network on failure
+    if (requiredIntegrations.length > 0) {
+      try {
+        await stopMcpSidecars(deploymentId);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    if (agentNetworkName) {
+      try {
+        await removeAgentNetwork(deploymentId);
       } catch {
         // best-effort cleanup
       }

@@ -2,6 +2,17 @@
 
 export type AgentRuntime = "openclaw" | "custom";
 
+// ─── Platform-Hosted Integrations ───────────────────────────────────────────
+// These are MCP sidecar containers managed by the platform. Developers declare
+// which integrations they need in their manifest; the platform spawns the
+// corresponding sidecars and injects connection URLs as env vars.
+
+export type PlatformIntegration = "python-sandbox";
+
+export const VALID_INTEGRATIONS: Set<string> = new Set<string>([
+  "python-sandbox",
+]);
+
 // ─── Agent Categories ────────────────────────────────────────────────────────
 
 export type AgentCategory =

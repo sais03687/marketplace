@@ -1,11 +1,12 @@
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { deleteInbox } from "../clients/agentmail.js";
-import { stopContainer } from "../clients/docker.js";
+import { stopContainer, removeAgentNetwork } from "../clients/docker.js";
 import { stopLocalAgent } from "./local-runner.js";
 import { deleteDeploymentServiceAccount } from "../clients/google-iam.js";
 import { deleteGoogleWorkspaceUser } from "../clients/google-workspace.js";
 import { deleteMicrosoftUser } from "../clients/microsoft-workspace.js";
+import { stopMcpSidecars } from "../mcp/sidecar-manager.js";
 
 export async function deprovisionJob(deploymentId: string): Promise<void> {
   const deployment = await prisma.deployment.findUnique({
@@ -99,6 +100,18 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
         console.warn(`[deprovision] Failed to delete service account: ${err.message}`);
       }
     }
+  }
+
+  // 3b. Clean up MCP sidecars and isolated network
+  try {
+    await stopMcpSidecars(deploymentId);
+  } catch (err: any) {
+    console.warn(`[deprovision] MCP sidecar cleanup failed: ${err.message}`);
+  }
+  try {
+    await removeAgentNetwork(deploymentId);
+  } catch (err: any) {
+    console.warn(`[deprovision] Network cleanup failed: ${err.message}`);
   }
 
   // 4. Update deployment status
