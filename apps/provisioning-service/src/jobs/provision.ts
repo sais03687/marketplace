@@ -11,7 +11,7 @@ import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
 import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
-import { createMicrosoftUser, setupMicrosoftInboxWebhook } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
@@ -335,6 +335,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
           MICROSOFT_TENANT_ID: config.microsoftTenantId,
           MICROSOFT_CLIENT_ID: config.microsoftClientId,
           MICROSOFT_CLIENT_SECRET: config.microsoftClientSecret,
+          SHAREPOINT_FOLDER: agentSlug,
         }
       : {}),
     // Legacy Google SA vars — only injected for NONE/legacy deployments that have old SA fields
@@ -410,6 +411,15 @@ export async function provisionJob(deploymentId: string): Promise<void> {
         // best-effort cleanup
       }
     }
+    // Clean up M365 user on failure (prevents orphaned licensed users)
+    if (workspaceUserId && workspaceProvider === "MICROSOFT") {
+      try {
+        await deleteMicrosoftUser(workspaceUserId);
+        console.log(`[provision] Cleaned up orphaned M365 user ${workspaceUserId}`);
+      } catch {
+        // best-effort cleanup
+      }
+    }
     // Clean up temp package dir on failure
     if (tempPkgDir) {
       try {
@@ -439,12 +449,20 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     );
   }
 
-  // 4b. Set up Microsoft Graph inbox webhook (Microsoft path only)
+  // 4b. Set up Microsoft Graph inbox webhook + SharePoint folder (Microsoft path only)
   if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
     const webhookUrl = `${config.approvalWebhookUrl}/webhooks/microsoft`;
     console.log(`[provision] Registering Microsoft Graph webhook at: ${webhookUrl}`);
     // Wait for M365 user to propagate across Microsoft's directory before subscribing
     await new Promise((r) => setTimeout(r, 20_000));
+
+    // Create per-agent SharePoint folder for file storage (Excel tracker, docs, etc.)
+    try {
+      await createSharePointFolder(agentSlug);
+    } catch (err: any) {
+      console.warn(`[provision] SharePoint folder creation failed: ${err.message}`);
+    }
+
     try {
       const sub = await withRetry(
         () => setupMicrosoftInboxWebhook(
@@ -536,7 +554,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
           `\nYou have your own workspace identity: ${workspaceEmail}.`,
           workspaceProvider === "GOOGLE"
             ? `Team members can share Google Drive files, Sheets, and Docs with that address, and send you calendar invites.`
-            : `Team members can share OneDrive files and Excel workbooks with that address, and send you calendar invites.`,
+            : `You have a SharePoint folder for file storage (Excel trackers, documents). Team members can send you calendar invites at that address.`,
         ]
       : effectiveGoogleSAEmail
         ? [

@@ -171,6 +171,25 @@ export async function renewMicrosoftWebhook(subscriptionId: string): Promise<Dat
 }
 
 /**
+ * Create a folder on the SharePoint root site drive for agent file isolation.
+ * Each agent gets its own subfolder (named by slug). Idempotent — ignores 409.
+ */
+export async function createSharePointFolder(folderName: string): Promise<void> {
+  try {
+    await graphRequest("POST", "/sites/root/drive/root/children", {
+      name: folderName,
+      folder: {},
+      "@microsoft.graph.conflictBehavior": "fail",
+    });
+    console.log(`[microsoft] SharePoint folder created: ${folderName}`);
+  } catch (err: any) {
+    // 409 = folder already exists, that's fine
+    if (err.message?.includes("409")) return;
+    throw err;
+  }
+}
+
+/**
  * Delete a user from the platform-owned Microsoft 365 tenant.
  * Called during deprovisioning. Non-fatal if the user doesn't exist.
  */

@@ -6,6 +6,7 @@ import { deprovisionJob } from "./jobs/deprovision.js";
 import { updateJob } from "./jobs/update.js";
 import { pauseJob, resumeJob } from "./jobs/pause.js";
 import { renewMicrosoftWebhooksJob } from "./jobs/renew-microsoft-webhooks.js";
+import { cleanupMicrosoftUsersJob } from "./jobs/cleanup-microsoft-users.js";
 
 async function processJob(job: Job<ProvisionJobData>): Promise<void> {
   console.log(`[worker] Processing ${job.data.type} job`);
@@ -36,6 +37,9 @@ async function processJob(job: Job<ProvisionJobData>): Promise<void> {
     }
     case "renew_ms_webhooks":
       await renewMicrosoftWebhooksJob();
+      break;
+    case "cleanup_ms_users":
+      await cleanupMicrosoftUsersJob();
       break;
     default:
       throw new Error(`Unknown job type: ${(job.data as any).type}`);
@@ -69,6 +73,15 @@ export function startWorker(): Worker<ProvisionJobData> {
     { repeat: { every: 24 * 60 * 60 * 1000 }, jobId: "renew_ms_webhooks_repeatable" },
   ).catch((err) => {
     console.warn("[worker] Failed to schedule renew_ms_webhooks repeatable job:", err.message);
+  });
+
+  // Schedule Microsoft orphan cleanup — runs daily to delete M365 users from failed/fired deployments
+  queue.add(
+    "cleanup_ms_users",
+    { type: "cleanup_ms_users" },
+    { repeat: { every: 24 * 60 * 60 * 1000 }, jobId: "cleanup_ms_users_repeatable" },
+  ).catch((err) => {
+    console.warn("[worker] Failed to schedule cleanup_ms_users repeatable job:", err.message);
   });
 
   console.log("[worker] Provisioning worker started");

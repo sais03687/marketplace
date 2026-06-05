@@ -17,7 +17,8 @@ export interface CustomTest {
 export type ProvisionJobData =
   | { type: "provision" | "deprovision" | "update" | "pause" | "resume"; deploymentId: string }
   | { type: "vet_package"; versionId: string; customTests?: CustomTest[]; skipDefaultTests?: boolean }
-  | { type: "renew_ms_webhooks" };
+  | { type: "renew_ms_webhooks" }
+  | { type: "cleanup_ms_users" };
 
 export async function enqueueProvision(deploymentId: string): Promise<string> {
   const job = await provisioningQueue.add("provision", {

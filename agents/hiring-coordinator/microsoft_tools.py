@@ -1,15 +1,23 @@
 """
 Microsoft 365 tools for the LangGraph agent.
 
-Uses the Microsoft Graph API with app-only client credentials scoped to the
-agent's own workspace identity (WORKSPACE_EMAIL). All Graph calls go through
-/users/{WORKSPACE_EMAIL}/... so the agent only sees its own data.
+Uses the Microsoft Graph API with app-only client credentials.
+
+- Calendar + email are scoped to the agent's workspace identity via
+  /users/{WORKSPACE_EMAIL}/...
+- File storage (Excel, documents) uses the shared SharePoint site drive via
+  /sites/root/drive/... with per-agent folders for isolation.
+
+OneDrive personal sites never auto-provision for programmatic users (permanent
+404), so all file operations go through SharePoint instead — same Graph API,
+works instantly.
 
 Credentials injected at provision time:
   WORKSPACE_EMAIL         — the agent's M365 UPN (e.g. alex-acme@agents.platform.com)
   MICROSOFT_TENANT_ID     — platform Azure AD tenant ID
   MICROSOFT_CLIENT_ID     — platform Azure app client ID
   MICROSOFT_CLIENT_SECRET — platform Azure app client secret
+  SHAREPOINT_FOLDER       — per-agent subfolder on SharePoint site drive
 
 No new pip packages — uses only httpx (already in requirements.txt).
 """
@@ -26,6 +34,7 @@ _TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID", "")
 _CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "")
 _CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
 _WORKSPACE_EMAIL = os.environ.get("WORKSPACE_EMAIL", "")
+_SP_FOLDER = os.environ.get("SHAREPOINT_FOLDER", "default")
 
 AVAILABLE = bool(_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET and _WORKSPACE_EMAIL)
 
@@ -71,8 +80,14 @@ def _auth_headers(token: str) -> dict[str, str]:
 
 
 def _user_url(path: str) -> str:
-    """Scope a Graph path to the agent's own workspace identity."""
+    """Scope a Graph path to the agent's own workspace identity (calendar, email)."""
     return f"{GRAPH}/users/{_WORKSPACE_EMAIL}/{path}"
+
+
+def _drive_url(path: str = "") -> str:
+    """Build a SharePoint site drive URL. All file ops use this instead of OneDrive."""
+    base = f"{GRAPH}/sites/root/drive"
+    return f"{base}/{path}" if path else base
 
 
 # ─── Calendar ─────────────────────────────────────────────────────────────────
@@ -154,15 +169,67 @@ async def calendar_delete(event_id: str) -> None:
             resp.raise_for_status()
 
 
-# ─── OneDrive ─────────────────────────────────────────────────────────────────
+# ─── SharePoint File Storage ─────────────────────────────────────────────────
+
+
+async def drive_ensure_folder() -> dict:
+    """Create the agent's folder on SharePoint if it doesn't exist. Returns folder metadata."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _drive_url("root/children"),
+            headers=_auth_headers(token),
+            json={
+                "name": _SP_FOLDER,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "fail",
+            },
+        )
+        if resp.status_code == 409:
+            # Already exists — fetch metadata
+            resp2 = await client.get(
+                _drive_url(f"root:/{_SP_FOLDER}"),
+                headers=_auth_headers(token),
+            )
+            resp2.raise_for_status()
+            return resp2.json()
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def drive_upload(filename: str, content: bytes, content_type: str = "application/octet-stream") -> dict:
+    """Upload a file to the agent's SharePoint folder. Overwrites if exists."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.put(
+            _drive_url(f"root:/{_SP_FOLDER}/{filename}:/content"),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
+            content=content,
+        )
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def drive_list(subfolder: str = "") -> list[dict]:
+    """List files in the agent's SharePoint folder (or a subfolder)."""
+    token = await _get_access_token()
+    path = f"{_SP_FOLDER}/{subfolder}".rstrip("/")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            _drive_url(f"root:/{path}:/children"),
+            headers=_auth_headers(token),
+            params={"$select": "id,name,webUrl,size,lastModifiedDateTime,file,folder"},
+        )
+        resp.raise_for_status()
+    return resp.json().get("value", [])
 
 
 async def drive_search(query: str, limit: int = 10) -> list[dict]:
-    """Search OneDrive for files matching a query string."""
+    """Search SharePoint site drive for files matching a query string."""
     token = await _get_access_token()
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(
-            _user_url("drive/root/search(q='{}')".format(query.replace("'", "''"))),
+            _drive_url("root/search(q='{}')".format(query.replace("'", "''"))),
             headers=_auth_headers(token),
             params={
                 "$select": "id,name,webUrl,size,lastModifiedDateTime,file",
@@ -174,11 +241,11 @@ async def drive_search(query: str, limit: int = 10) -> list[dict]:
 
 
 async def drive_get_file(item_id: str) -> dict:
-    """Get metadata for a specific OneDrive item."""
+    """Get metadata for a specific SharePoint drive item."""
     token = await _get_access_token()
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(
-            _user_url(f"drive/items/{item_id}"),
+            _drive_url(f"items/{item_id}"),
             headers=_auth_headers(token),
         )
         resp.raise_for_status()
@@ -186,11 +253,11 @@ async def drive_get_file(item_id: str) -> dict:
 
 
 async def drive_read_text(item_id: str) -> str:
-    """Download and return the text content of a OneDrive file."""
+    """Download and return the text content of a SharePoint file."""
     token = await _get_access_token()
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         resp = await client.get(
-            _user_url(f"drive/items/{item_id}/content"),
+            _drive_url(f"items/{item_id}/content"),
             headers={"Authorization": f"Bearer {token}"},
         )
         resp.raise_for_status()
@@ -201,11 +268,11 @@ async def drive_read_text(item_id: str) -> str:
 
 
 async def excel_read(item_id: str, sheet: str, range_addr: str = "A1:Z100") -> list[list]:
-    """Read a range from an Excel workbook in OneDrive."""
+    """Read a range from an Excel workbook on SharePoint."""
     token = await _get_access_token()
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(
-            _user_url(f"drive/items/{item_id}/workbook/worksheets/{sheet}/range(address='{range_addr}')"),
+            _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/range(address='{range_addr}')"),
             headers=_auth_headers(token),
             params={"$select": "values"},
         )
@@ -214,11 +281,11 @@ async def excel_read(item_id: str, sheet: str, range_addr: str = "A1:Z100") -> l
 
 
 async def excel_write(item_id: str, sheet: str, range_addr: str, values: list[list]) -> None:
-    """Write values to a range in an Excel workbook."""
+    """Write values to a range in an Excel workbook on SharePoint."""
     token = await _get_access_token()
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.patch(
-            _user_url(f"drive/items/{item_id}/workbook/worksheets/{sheet}/range(address='{range_addr}')"),
+            _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/range(address='{range_addr}')"),
             headers=_auth_headers(token),
             json={"values": values},
         )
@@ -226,31 +293,31 @@ async def excel_write(item_id: str, sheet: str, range_addr: str, values: list[li
 
 
 async def excel_append(item_id: str, sheet: str, values: list[list]) -> dict:
-    """Append rows to a used range in an Excel worksheet."""
+    """Append rows to a used range in an Excel worksheet on SharePoint."""
     token = await _get_access_token()
-    # Get the used range address first
     async with httpx.AsyncClient(timeout=20.0) as client:
+        # Get used range to find next empty row
         ur_resp = await client.get(
-            _user_url(f"drive/items/{item_id}/workbook/worksheets/{sheet}/usedRange"),
+            _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/usedRange"),
             headers=_auth_headers(token),
-            params={"$select": "address"},
+            params={"$select": "address,rowCount"},
         )
         ur_resp.raise_for_status()
-        address = ur_resp.json().get("address", "A1")
-        # Insert rows after used range using the table insertRows API (simplest approach)
-        resp = await client.post(
-            _user_url(f"drive/items/{item_id}/workbook/worksheets/{sheet}/usedRange/insert"),
-            headers=_auth_headers(token),
-            json={"shift": "Down"},
-        )
-        # Fallback: just write at the determined position
-        _ = address
-        resp2 = await client.post(
-            _user_url(f"drive/items/{item_id}/workbook/worksheets/{sheet}/tables/{{0}}/rows"),
+        ur_data = ur_resp.json()
+        row_count = ur_data.get("rowCount", 1)
+        # Build address for the next row after the used range
+        num_cols = len(values[0]) if values and values[0] else 1
+        col_letter = chr(ord("A") + num_cols - 1) if num_cols <= 26 else "Z"
+        next_row = row_count + 1
+        end_row = next_row + len(values) - 1
+        write_addr = f"A{next_row}:{col_letter}{end_row}"
+        resp = await client.patch(
+            _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/range(address='{write_addr}')"),
             headers=_auth_headers(token),
             json={"values": values},
         )
-    return resp2.json() if resp2.status_code < 300 else {}
+        resp.raise_for_status()
+    return resp.json()
 
 
 # ─── Batch helpers (mirrors google_tools interface) ───────────────────────────
