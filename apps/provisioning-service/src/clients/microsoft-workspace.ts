@@ -20,14 +20,26 @@ import { config } from "../config.js";
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const TOKEN_URL = `https://login.microsoftonline.com/${config.microsoftTenantId}/oauth2/v2.0/token`;
 
-// Simple token cache — client credentials tokens are long-lived (3600s)
-let _cachedToken: { value: string; expiresAt: number } | null = null;
+// Per-tenant token cache — client credentials tokens are long-lived (3600s)
+const _tokenCache = new Map<string, { value: string; expiresAt: number }>();
 
 async function getMicrosoftToken(): Promise<string> {
-  if (_cachedToken && _cachedToken.expiresAt > Date.now() + 60_000) {
-    return _cachedToken.value;
+  const result = await mintTokenForTenant(config.microsoftTenantId);
+  return result.access_token;
+}
+
+/**
+ * Mint a Graph API access token for any tenant using client_credentials.
+ * Works for both the platform's own tenant and buyer tenants that have
+ * granted admin consent to the platform's multi-tenant app.
+ */
+export async function mintTokenForTenant(tenantId: string): Promise<{ access_token: string; expires_in: number }> {
+  const cached = _tokenCache.get(tenantId);
+  if (cached && cached.expiresAt > Date.now() + 60_000) {
+    return { access_token: cached.value, expires_in: Math.floor((cached.expiresAt - Date.now()) / 1000) };
   }
 
+  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: config.microsoftClientId,
@@ -35,22 +47,22 @@ async function getMicrosoftToken(): Promise<string> {
     scope: "https://graph.microsoft.com/.default",
   });
 
-  const resp = await fetch(TOKEN_URL, {
+  const resp = await fetch(tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
 
   if (!resp.ok) {
-    throw new Error(`Microsoft token request failed: ${resp.status} ${await resp.text()}`);
+    throw new Error(`Microsoft token request failed for tenant ${tenantId}: ${resp.status} ${await resp.text()}`);
   }
 
   const data = await resp.json() as { access_token: string; expires_in: number };
-  _cachedToken = {
+  _tokenCache.set(tenantId, {
     value: data.access_token,
     expiresAt: Date.now() + data.expires_in * 1000,
-  };
-  return _cachedToken.value;
+  });
+  return { access_token: data.access_token, expires_in: data.expires_in };
 }
 
 async function graphRequest(
@@ -104,17 +116,29 @@ export async function createMicrosoftUser(
   const domain = await getPlatformDomain();
   const userPrincipalName = `${username}@${domain}`;
 
-  const user = await graphRequest("POST", "/users", {
-    accountEnabled: true,
-    displayName,
-    mailNickname: username,
-    userPrincipalName,
-    passwordProfile: {
-      forceChangePasswordNextSignIn: false,
-      password: generatePassword(),
-    },
-    usageLocation: "US",
-  }) as { id: string; userPrincipalName: string };
+  let user: { id: string; userPrincipalName: string };
+
+  try {
+    user = await graphRequest("POST", "/users", {
+      accountEnabled: true,
+      displayName,
+      mailNickname: username,
+      userPrincipalName,
+      passwordProfile: {
+        forceChangePasswordNextSignIn: false,
+        password: generatePassword(),
+      },
+      usageLocation: "US",
+    }) as { id: string; userPrincipalName: string };
+  } catch (err: any) {
+    // User already exists (e.g. from a prior failed provisioning attempt) — reuse it
+    if (err.message?.includes("ObjectConflict") || err.message?.includes("already exists")) {
+      console.log(`[microsoft] User ${userPrincipalName} already exists, reusing`);
+      const existing = await graphRequest("GET", `/users/${userPrincipalName}?$select=id,userPrincipalName`) as { id: string; userPrincipalName: string };
+      return { email: existing.userPrincipalName, id: existing.id };
+    }
+    throw err;
+  }
 
   // Assign M365 Business Basic license so the user gets an Exchange Online mailbox.
   // Without this the user is unlicensed and Graph inbox webhooks will fail.

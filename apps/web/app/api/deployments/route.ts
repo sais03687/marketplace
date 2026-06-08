@@ -20,6 +20,8 @@ const createDeploymentSchema = z.object({
   // Onboarding answers collected during the hire wizard (skips INTERVIEW stage)
   onboardingAnswers: z.record(z.string()).optional(),
   workspaceProvider: z.enum(["GOOGLE", "MICROSOFT", "NONE"]).optional().default("NONE"),
+  // Buyer's Microsoft 365 tenant ID (from admin consent OAuth flow)
+  buyerMicrosoftTenantId: z.string().optional(),
 });
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
@@ -130,6 +132,7 @@ export async function POST(request: Request) {
       slackAppToken: data.slackAppToken,
       autonomyConfig: autonomyConfig as any,
       workspaceProvider: data.workspaceProvider,
+      buyerMicrosoftTenantId: data.buyerMicrosoftTenantId,
       onboardingState,
       ...(data.onboardingAnswers && Object.keys(data.onboardingAnswers).length > 0
         ? { onboardingData: data.onboardingAnswers as any }

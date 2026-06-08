@@ -35,6 +35,7 @@ export function StepConfirmation() {
           weeklyDigestEmail: state.weeklyDigestEmail || undefined,
           approvalManagerEmail: state.approvalManagerEmail || undefined,
           workspaceProvider: state.workspaceProvider,
+          buyerMicrosoftTenantId: state.buyerMicrosoftTenantId || undefined,
           onboardingAnswers: Object.keys(state.onboardingAnswers).length > 0
             ? state.onboardingAnswers
             : undefined,
@@ -48,6 +49,9 @@ export function StepConfirmation() {
 
       const data = await res.json();
       updateState({ deploymentId: data.deploymentId });
+
+      // Clear saved hire state — no longer needed after deployment creation
+      try { sessionStorage.removeItem(`hire-state-${state.agentSlug}`); } catch {}
 
       if (data.checkoutUrl) {
         // Store deploymentId so success page can reference it

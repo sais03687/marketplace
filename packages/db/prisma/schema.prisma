@@ -86,14 +86,14 @@ model Capability {
 }
 
 model Company {
-  id               String       @id @default(cuid())
-  clerkOrgId       String       @unique
+  id               String                  @id @default(cuid())
+  clerkOrgId       String                  @unique
   name             String
   domain           String
   stripeCustomerId String?
-  plan             CompanyPlan  @default(PAY_PER_AGENT)
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  plan             CompanyPlan             @default(PAY_PER_AGENT)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
   deployments      Deployment[]
 }
 
@@ -132,6 +132,8 @@ model Deployment {
   workspaceEmail                String?
   workspaceUserId               String?
   msGraphSubId                  String?
+  workspaceScope                String                  @default("platform")
+  buyerMicrosoftTenantId        String?
   approvals                     Approval[]
   agent                         Agent                   @relation(fields: [agentId], references: [id])
   company                       Company                 @relation(fields: [companyId], references: [id])

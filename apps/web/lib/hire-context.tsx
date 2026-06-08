@@ -3,6 +3,7 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useState,
   type ReactNode,
 } from "react";
@@ -17,6 +18,7 @@ export interface HireState {
   // Step 3
   slackConnected: boolean;
   workspaceProvider: "GOOGLE" | "MICROSOFT" | "NONE";
+  buyerMicrosoftTenantId: string | null;
   // Step 4
   approvalManagerEmail: string;
   weeklyDigestEmail: string;
@@ -47,21 +49,55 @@ export function HireProvider({
   agentName: string;
   agentSlug: string;
 }) {
-  const [step, setStep] = useState(1);
-  const [state, setState] = useState<HireState>({
-    agentId,
-    agentName,
-    agentSlug,
-    hireName: agentName.split("—")[0].trim(),
-    roleTitle: "AI Operations Assistant",
-    slackConnected: false,
-    workspaceProvider: "NONE",
-    approvalManagerEmail: "",
-    weeklyDigestEmail: "",
-    onboardingAnswers: {},
-    deploymentId: null,
-    deploymentStatus: null,
+  const STORAGE_KEY = `hire-state-${agentSlug}`;
+
+  // Restore state from sessionStorage if returning from OAuth redirect
+  const [step, setStepRaw] = useState(() => {
+    if (typeof window === "undefined") return 1;
+    try {
+      const saved = sessionStorage.getItem(STORAGE_KEY);
+      if (saved) return JSON.parse(saved).step || 1;
+    } catch {}
+    return 1;
   });
+
+  const [state, setState] = useState<HireState>(() => {
+    const defaults: HireState = {
+      agentId,
+      agentName,
+      agentSlug,
+      hireName: agentName.split("—")[0].trim(),
+      roleTitle: "AI Operations Assistant",
+      slackConnected: false,
+      workspaceProvider: "NONE",
+      buyerMicrosoftTenantId: null,
+      approvalManagerEmail: "",
+      weeklyDigestEmail: "",
+      onboardingAnswers: {},
+      deploymentId: null,
+      deploymentStatus: null,
+    };
+    if (typeof window === "undefined") return defaults;
+    try {
+      const saved = sessionStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return { ...defaults, ...parsed.state };
+      }
+    } catch {}
+    return defaults;
+  });
+
+  // Persist to sessionStorage on every change (survives OAuth redirects)
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ step, state }));
+    } catch {}
+  }, [step, state, STORAGE_KEY]);
+
+  const setStep = (s: number) => {
+    setStepRaw(s);
+  };
 
   const updateState = (partial: Partial<HireState>) => {
     setState((prev) => ({ ...prev, ...partial }));

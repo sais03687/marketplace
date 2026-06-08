@@ -3,21 +3,17 @@ Microsoft 365 tools for the LangGraph agent.
 
 Uses the Microsoft Graph API with app-only client credentials.
 
+Supports two modes:
+  1. Platform-tenant mode (WORKSPACE_SCOPE=platform or unset):
+     Agent uses platform's own M365 tenant with direct client credentials.
+  2. Buyer-org mode (WORKSPACE_SCOPE=buyer_org):
+     Agent fetches tokens from the provisioning service's token proxy.
+     No Microsoft secrets in the container — only TOKEN_ENDPOINT_URL and DEPLOYMENT_ID.
+
 - Calendar + email are scoped to the agent's workspace identity via
   /users/{WORKSPACE_EMAIL}/...
 - File storage (Excel, documents) uses the shared SharePoint site drive via
   /sites/root/drive/... with per-agent folders for isolation.
-
-OneDrive personal sites never auto-provision for programmatic users (permanent
-404), so all file operations go through SharePoint instead — same Graph API,
-works instantly.
-
-Credentials injected at provision time:
-  WORKSPACE_EMAIL         — the agent's M365 UPN (e.g. alex-acme@agents.platform.com)
-  MICROSOFT_TENANT_ID     — platform Azure AD tenant ID
-  MICROSOFT_CLIENT_ID     — platform Azure app client ID
-  MICROSOFT_CLIENT_SECRET — platform Azure app client secret
-  SHAREPOINT_FOLDER       — per-agent subfolder on SharePoint site drive
 
 No new pip packages — uses only httpx (already in requirements.txt).
 """
@@ -35,8 +31,15 @@ _CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "")
 _CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
 _WORKSPACE_EMAIL = os.environ.get("WORKSPACE_EMAIL", "")
 _SP_FOLDER = os.environ.get("SHAREPOINT_FOLDER", "default")
+_WORKSPACE_SCOPE = os.environ.get("WORKSPACE_SCOPE", "platform")
+_TOKEN_ENDPOINT = os.environ.get("TOKEN_ENDPOINT_URL", "")
+_DEPLOYMENT_ID = os.environ.get("DEPLOYMENT_ID", "")
 
-AVAILABLE = bool(_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET and _WORKSPACE_EMAIL)
+# Available if either direct credentials OR token proxy is configured
+AVAILABLE = bool(
+    (_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET and _WORKSPACE_EMAIL)
+    or (_WORKSPACE_SCOPE == "buyer_org" and _TOKEN_ENDPOINT and _DEPLOYMENT_ID)
+)
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 
@@ -46,15 +49,31 @@ _token_cache: dict[str, Any] = {}  # {"token": str, "expires_at": float}
 
 
 async def _get_access_token() -> str:
-    """Return a valid app-only Graph API access token, refreshing when needed."""
-    if not AVAILABLE:
-        raise RuntimeError(
-            "Microsoft 365 not configured for this deployment. "
-            "Set MICROSOFT_TENANT_ID, MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, and WORKSPACE_EMAIL."
-        )
+    """Return a valid Graph API access token, fetching from proxy or direct."""
     cached = _token_cache.get("ms")
     if cached and cached["expires_at"] > time.time() + 60:
         return cached["token"]
+
+    # Buyer-org mode: fetch token from provisioning service
+    if _WORKSPACE_SCOPE == "buyer_org" and _TOKEN_ENDPOINT:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                _TOKEN_ENDPOINT,
+                json={"deploymentId": _DEPLOYMENT_ID},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        token = data["access_token"]
+        expires_in = data.get("expires_in", 3600)
+        _token_cache["ms"] = {"token": token, "expires_at": time.time() + expires_in}
+        return token
+
+    # Platform-tenant mode: direct client_credentials
+    if not (_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET):
+        raise RuntimeError(
+            "Microsoft 365 not configured. Need either TOKEN_ENDPOINT_URL (buyer_org) "
+            "or MICROSOFT_TENANT_ID/CLIENT_ID/CLIENT_SECRET (platform)."
+        )
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
@@ -265,6 +284,19 @@ async def drive_read_text(item_id: str) -> str:
 
 
 # ─── Excel ────────────────────────────────────────────────────────────────────
+
+
+async def excel_list_sheets(item_id: str) -> list[str]:
+    """List all worksheet names in an Excel workbook on SharePoint."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            _drive_url(f"items/{item_id}/workbook/worksheets"),
+            headers=_auth_headers(token),
+            params={"$select": "name"},
+        )
+        resp.raise_for_status()
+    return [ws["name"] for ws in resp.json().get("value", [])]
 
 
 async def excel_read(item_id: str, sheet: str, range_addr: str = "A1:Z100") -> list[list]:

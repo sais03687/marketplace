@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import { AgentCard } from "@/components/marketplace/agent-card";
 import { HireModal } from "@/components/hire/hire-modal";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,27 @@ export default function BrowsePage() {
   const [category, setCategory] = useState("");
   const [sort, setSort] = useState("popular");
   const [hireAgent, setHireAgent] = useState<Agent | null>(null);
+  const searchParams = useSearchParams();
+
+  // Auto-open hire modal when returning from Microsoft OAuth callback
+  useEffect(() => {
+    if (searchParams.get("microsoft") === "connected" && agents.length > 0) {
+      // Restore the agent from sessionStorage if possible
+      const savedSlug = (() => {
+        try {
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i);
+            if (key?.startsWith("hire-state-")) return key.replace("hire-state-", "");
+          }
+        } catch {}
+        return null;
+      })();
+      if (savedSlug) {
+        const agent = agents.find((a) => a.slug === savedSlug);
+        if (agent) setHireAgent(agent);
+      }
+    }
+  }, [searchParams, agents]);
 
   const fetchAgents = useCallback(async () => {
     setLoading(true);

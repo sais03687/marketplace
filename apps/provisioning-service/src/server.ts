@@ -11,6 +11,7 @@
  */
 import http from "node:http";
 import { prisma } from "@marketplace/db";
+import { mintTokenForTenant } from "./clients/microsoft-workspace.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -101,6 +102,37 @@ export function startProxyServer() {
           send(res, 202, { accepted: true });
         } catch {
           send(res, 202, { accepted: true }); // always 202 to Graph
+        }
+      });
+      return;
+    }
+
+    // Internal token endpoint — agent containers request Graph API tokens here
+    // instead of holding Microsoft secrets directly.
+    if (req.method === "POST" && req.url === "/internal/microsoft-token") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { deploymentId } = JSON.parse(body) as { deploymentId?: string };
+          if (!deploymentId) return send(res, 400, { error: "deploymentId required" });
+
+          const deployment = await prisma.deployment.findUnique({
+            where: { id: deploymentId },
+            select: { id: true, buyerMicrosoftTenantId: true },
+          });
+
+          if (!deployment) return send(res, 404, { error: "Deployment not found" });
+
+          if (!deployment.buyerMicrosoftTenantId) {
+            return send(res, 404, { error: "No Microsoft org connected for this deployment" });
+          }
+
+          const tokenData = await mintTokenForTenant(deployment.buyerMicrosoftTenantId);
+          send(res, 200, tokenData);
+        } catch (err: any) {
+          console.error("[microsoft-token] Error:", err.message);
+          send(res, 500, { error: "Failed to mint token" });
         }
       });
       return;

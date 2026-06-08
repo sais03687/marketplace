@@ -334,12 +334,21 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       ? { GOOGLE_WORKSPACE_SA_KEY: config.googleWorkspaceSaKey }
       : {}),
     ...(workspaceProvider === "MICROSOFT"
-      ? {
-          MICROSOFT_TENANT_ID: config.microsoftTenantId,
-          MICROSOFT_CLIENT_ID: config.microsoftClientId,
-          MICROSOFT_CLIENT_SECRET: config.microsoftClientSecret,
-          SHAREPOINT_FOLDER: agentSlug,
-        }
+      ? deployment.buyerMicrosoftTenantId
+        ? {
+            // Buyer-org mode: agent fetches tokens from provisioning service
+            WORKSPACE_SCOPE: "buyer_org",
+            TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
+            DEPLOYMENT_ID: deploymentId,
+            SHAREPOINT_FOLDER: agentSlug,
+          }
+        : {
+            // Platform-tenant mode: inject secrets directly
+            MICROSOFT_TENANT_ID: config.microsoftTenantId,
+            MICROSOFT_CLIENT_ID: config.microsoftClientId,
+            MICROSOFT_CLIENT_SECRET: config.microsoftClientSecret,
+            SHAREPOINT_FOLDER: agentSlug,
+          }
       : {}),
     // Legacy Google SA vars — only injected for NONE/legacy deployments that have old SA fields
     ...(workspaceProvider === "NONE" && effectiveGoogleSAEmail
