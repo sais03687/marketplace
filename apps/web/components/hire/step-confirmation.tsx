@@ -36,6 +36,7 @@ export function StepConfirmation() {
           approvalManagerEmail: state.approvalManagerEmail || undefined,
           workspaceProvider: state.workspaceProvider,
           buyerMicrosoftTenantId: state.buyerMicrosoftTenantId || undefined,
+          mailboxLocation: state.mailboxLocation,
           onboardingAnswers: Object.keys(state.onboardingAnswers).length > 0
             ? state.onboardingAnswers
             : undefined,
@@ -165,6 +166,12 @@ export function StepConfirmation() {
               : "None"}
           </span>
         </div>
+        {state.workspaceProvider === "MICROSOFT" && state.buyerMicrosoftTenantId && (
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Data location</span>
+            <span>Your Microsoft 365 tenant</span>
+          </div>
+        )}
         {state.approvalManagerEmail && (
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Approvals</span>

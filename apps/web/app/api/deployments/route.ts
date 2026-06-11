@@ -22,6 +22,8 @@ const createDeploymentSchema = z.object({
   workspaceProvider: z.enum(["GOOGLE", "MICROSOFT", "NONE"]).optional().default("NONE"),
   // Buyer's Microsoft 365 tenant ID (from admin consent OAuth flow)
   buyerMicrosoftTenantId: z.string().optional(),
+  // Where the agent's mailbox lives: platform (default) or buyer's org
+  mailboxLocation: z.enum(["platform", "buyer_org"]).optional().default("platform"),
 });
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
@@ -133,6 +135,7 @@ export async function POST(request: Request) {
       autonomyConfig: autonomyConfig as any,
       workspaceProvider: data.workspaceProvider,
       buyerMicrosoftTenantId: data.buyerMicrosoftTenantId,
+      mailboxLocation: data.mailboxLocation,
       onboardingState,
       ...(data.onboardingAnswers && Object.keys(data.onboardingAnswers).length > 0
         ? { onboardingData: data.onboardingAnswers as any }

@@ -19,6 +19,7 @@ export interface HireState {
   slackConnected: boolean;
   workspaceProvider: "GOOGLE" | "MICROSOFT" | "NONE";
   buyerMicrosoftTenantId: string | null;
+  mailboxLocation: "platform" | "buyer_org";
   // Step 4
   approvalManagerEmail: string;
   weeklyDigestEmail: string;
@@ -71,6 +72,7 @@ export function HireProvider({
       slackConnected: false,
       workspaceProvider: "NONE",
       buyerMicrosoftTenantId: null,
+      mailboxLocation: "buyer_org",
       approvalManagerEmail: "",
       weeklyDigestEmail: "",
       onboardingAnswers: {},

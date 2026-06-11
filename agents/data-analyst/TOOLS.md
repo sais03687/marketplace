@@ -23,6 +23,23 @@ These are available directly in your code via `microsoft_tools.py`:
 - `calendar_update(event_id, ...)` — Update calendar events
 - `calendar_delete(event_id)` — Delete calendar events
 
+### OneDrive (agent's personal storage)
+- `my_drive_list(folder)` — List files in agent's OneDrive root or folder
+- `my_drive_upload(filename, content, folder)` — Upload a file to OneDrive
+- `my_drive_read_text(item_id)` — Download and read a file's text content
+- `my_drive_search(query)` — Search agent's OneDrive
+- `my_drive_ensure_folder(folder_name)` — Create a folder in OneDrive
+- `my_drive_delete(item_id)` — Delete a file/folder from OneDrive
+
+### Email (Outlook — when Microsoft workspace is connected)
+- `inbox_list(limit, unread_only)` — List inbox messages (newest first)
+- `inbox_read(message_id)` — Read a full email with attachments
+- `inbox_search(query, limit)` — Search inbox by keyword
+- `email_send(to, subject, body, cc, body_type)` — Send a new email
+- `email_reply(message_id, body, body_type)` — Reply to a message
+- `email_forward(message_id, to, comment)` — Forward a message
+- `email_mark_read(message_id)` — Mark a message as read
+
 ### Batch operations
 - `execute_reads(requests)` — Execute multiple read operations at once
 - `execute_writes(writes)` — Execute multiple write operations at once
@@ -61,7 +78,11 @@ These are available through `mcp_fn(server_type, tool_name, arguments)`:
 | Create a chart | `mcp_fn("python-sandbox", "execute_python", ...)` → `drive_upload(...)` |
 | Parse a PDF report | `mcp_fn("python-sandbox", "parse_pdf", ...)` |
 | Build an Excel report | `mcp_fn("python-sandbox", "execute_python", ...)` → `drive_upload(...)` |
-| Ask teammate for data | `send_email` (goes through approval queue if external) |
+| Ask teammate for data | `email_send` (Outlook) or `send_email` (AgentMail, goes through approval queue if external) |
+| Check recent emails | `inbox_list(unread_only=True)` |
+| Reply to an email | `email_reply(message_id, body)` |
+| Forward a file to someone | `email_forward(message_id, to, comment)` |
+| Save a file to personal storage | `my_drive_upload(filename, content)` |
 | Update task tracker | `excel_append(...)` or `excel_write(...)` |
 | Schedule a meeting | `calendar_create(...)` |
 | Ask manager for a decision | `request_decision` — question + context + options |

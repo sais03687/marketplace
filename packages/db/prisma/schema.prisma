@@ -90,6 +90,7 @@ model Company {
   clerkOrgId       String                  @unique
   name             String
   domain           String
+  timezone         String                  @default("America/New_York")
   stripeCustomerId String?
   plan             CompanyPlan             @default(PAY_PER_AGENT)
   createdAt        DateTime                @default(now())
@@ -134,6 +135,8 @@ model Deployment {
   msGraphSubId                  String?
   workspaceScope                String                  @default("platform")
   buyerMicrosoftTenantId        String?
+  mailboxLocation               String                  @default("platform")
+  buyerMailboxAddress            String?
   approvals                     Approval[]
   agent                         Agent                   @relation(fields: [agentId], references: [id])
   company                       Company                 @relation(fields: [companyId], references: [id])

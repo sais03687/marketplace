@@ -76,6 +76,10 @@ PORTAL_TOKEN = (
 AGENT_ID = os.environ.get("AGENT_ID", "")
 PORT = int(os.environ.get("PORT", "4000"))
 
+# Email mode: "outlook" sends via Graph API proxy, "agentmail" (default) uses AgentMail API
+EMAIL_MODE = os.environ.get("EMAIL_MODE", "agentmail").strip().lower()
+OUTLOOK_SEND_URL = os.environ.get("OUTLOOK_SEND_URL", "")
+
 # Approval policy (configurable per-deployment via autonomyConfig → env vars)
 APPROVAL_POLICY = os.environ.get("APPROVAL_POLICY", "external-only").strip().lower()
 try:
@@ -336,10 +340,26 @@ def render_markdown_email(text: str) -> str:
 
 
 async def send_email(to: str, subject: str, text: str, thread_id: str | None = None) -> dict:
-    """Send an email via the AgentMail API with both text + HTML bodies."""
-    client = _get_client()
+    """Send an email via Outlook Graph proxy or AgentMail, depending on EMAIL_MODE."""
     clean_text = scrub_placeholders(text)
     clean_subject = scrub_placeholders(subject)
+
+    if EMAIL_MODE == "outlook" and OUTLOOK_SEND_URL:
+        async with httpx.AsyncClient(timeout=30.0) as c:
+            payload = {
+                "deploymentId": DEPLOYMENT_ID,
+                "agentEmail": WORKSPACE_EMAIL or AGENT_EMAIL,
+                "to": to,
+                "subject": clean_subject,
+                "body": render_markdown_email(clean_text),
+                "bodyType": "html",
+            }
+            resp = await c.post(OUTLOOK_SEND_URL, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+    # Default: AgentMail
+    client = _get_client()
     payload: dict = {
         "to": to,
         "subject": clean_subject,
@@ -361,19 +381,38 @@ async def reply_email(
     fallback_subject: str | None = None,
     fallback_thread_id: str | None = None,
 ) -> dict:
-    """Reply to a specific inbound message via the AgentMail API.
+    """Reply to a specific inbound message.
 
-    AgentMail's reply endpoint is message-scoped:
-      POST /v0/inboxes/{inbox_id}/messages/{message_id}/reply
+    Outlook mode: POSTs to the Graph proxy with replyToMessageId.
+    AgentMail mode: uses the message-scoped reply endpoint.
 
-    If ``message_id`` is missing or the endpoint fails, falls back to
-    ``send_email`` with the original thread_id so the message still threads
-    correctly on the recipient's side.
+    Falls back to ``send_email`` if the reply endpoint fails.
     """
-    client = _get_client()
     clean_text = scrub_placeholders(text)
 
-    if message_id:
+    if EMAIL_MODE == "outlook" and OUTLOOK_SEND_URL and message_id:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                payload = {
+                    "deploymentId": DEPLOYMENT_ID,
+                    "agentEmail": WORKSPACE_EMAIL or AGENT_EMAIL,
+                    "to": fallback_to or "",
+                    "body": render_markdown_email(clean_text),
+                    "bodyType": "html",
+                    "replyToMessageId": message_id,
+                }
+                resp = await c.post(OUTLOOK_SEND_URL, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as exc:
+            print(
+                f"[adapter] Outlook reply to message {message_id} failed ({exc}); "
+                f"falling back to send_email",
+                flush=True,
+            )
+    elif message_id and EMAIL_MODE != "outlook":
+        # AgentMail reply
+        client = _get_client()
         try:
             resp = await client.post(
                 f"/inboxes/{AGENT_EMAIL}/messages/{message_id}/reply",

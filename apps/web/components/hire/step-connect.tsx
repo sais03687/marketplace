@@ -31,6 +31,7 @@ export function StepConnect() {
       updateState({
         buyerMicrosoftTenantId: tenantId,
         workspaceProvider: "MICROSOFT",
+        mailboxLocation: "buyer_org",
       });
       setMsConnected(true);
       // Clean the URL params without navigation
@@ -144,8 +145,11 @@ export function StepConnect() {
             <div>
               <p className="font-medium mb-1">Microsoft 365 connected</p>
               <p>
-                {state.hireName} will have access to your organization{"'"}s
-                SharePoint files and Outlook calendars.
+                {state.hireName} will operate entirely within your organization{"'"}s
+                Microsoft 365 — SharePoint files, Outlook calendar, and a shared
+                mailbox on your domain (e.g.{" "}
+                <span className="font-mono">{state.agentSlug}@yourcompany.com</span>
+                ). All data stays in your tenant.
               </p>
             </div>
           </div>

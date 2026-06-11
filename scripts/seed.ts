@@ -197,11 +197,13 @@ async function main() {
         version: lcManifest.version,
         vetStatus: "MANUALLY_APPROVED",
         publishedAt: new Date(),
+        storagePath: "/opt/marketplace/agents/langchain-starter",
       },
       create: {
         agentId: lcAgent.id,
         version: lcManifest.version,
         packageUrl: "local://agents/langchain-starter",
+        storagePath: "/opt/marketplace/agents/langchain-starter",
         vetStatus: "MANUALLY_APPROVED",
         publishedAt: new Date(),
       },
@@ -210,6 +212,97 @@ async function main() {
     console.log(`Version ${lcManifest.version} created for ${lcAgent.slug}`);
   } else {
     console.log("Skipping langchain-starter seed (marketplace.json not found)");
+  }
+
+  // ─── Seed Data Analyst (custom runtime + MCP) ──────────────────────────────
+
+  const daManifestPath = join(
+    __dirname,
+    "..",
+    "agents",
+    "data-analyst",
+    "marketplace.json",
+  );
+
+  if (existsSync(daManifestPath)) {
+    const daManifest = JSON.parse(readFileSync(daManifestPath, "utf-8"));
+
+    const daOnboardingDir = join(__dirname, "..", "agents", "data-analyst", "onboarding");
+    const daOnboardingQuestions = readOptionalJson(join(daOnboardingDir, "questions.json"));
+    const daMemoryTemplate = readOptionalFile(join(daOnboardingDir, "MEMORY_TEMPLATE.md"));
+
+    const daAgent = await prisma.agent.upsert({
+      where: { slug: daManifest.slug },
+      update: {
+        name: daManifest.name,
+        tagline: daManifest.tagline,
+        description: daManifest.description,
+        category: daManifest.category,
+        pricePerMonth: daManifest.pricePerMonth,
+        modelTier: daManifest.modelTier.toUpperCase(),
+        currentVersion: daManifest.version,
+        runtime: "CUSTOM",
+        status: "LIVE",
+        onboardingQuestions: daOnboardingQuestions ?? undefined,
+        memoryTemplate: daMemoryTemplate ?? undefined,
+      },
+      create: {
+        slug: daManifest.slug,
+        name: daManifest.name,
+        tagline: daManifest.tagline,
+        description: daManifest.description,
+        category: daManifest.category,
+        pricePerMonth: daManifest.pricePerMonth,
+        modelTier: daManifest.modelTier.toUpperCase(),
+        creatorId: creator.id,
+        currentVersion: daManifest.version,
+        runtime: "CUSTOM",
+        status: "LIVE",
+        onboardingQuestions: daOnboardingQuestions ?? undefined,
+        memoryTemplate: daMemoryTemplate ?? undefined,
+      },
+    });
+
+    console.log(`Agent: ${daAgent.name} (${daAgent.slug}) [custom runtime + MCP]`);
+
+    await prisma.capability.deleteMany({ where: { agentId: daAgent.id } });
+    for (const cap of daManifest.capabilities) {
+      await prisma.capability.create({
+        data: {
+          agentId: daAgent.id,
+          name: cap.name,
+          description: cap.description,
+        },
+      });
+    }
+
+    console.log(`Created ${daManifest.capabilities.length} capabilities for ${daAgent.slug}`);
+
+    await prisma.agentVersion.upsert({
+      where: {
+        id: `${daAgent.id}_${daManifest.version}`,
+      },
+      update: {
+        version: daManifest.version,
+        vetStatus: "MANUALLY_APPROVED",
+        publishedAt: new Date(),
+        storagePath: "/opt/marketplace/agents/data-analyst",
+        manifestData: daManifest as any,
+      },
+      create: {
+        agentId: daAgent.id,
+        version: daManifest.version,
+        packageUrl: "local://agents/data-analyst",
+        storagePath: "/opt/marketplace/agents/data-analyst",
+        manifestData: daManifest as any,
+        vetStatus: "MANUALLY_APPROVED",
+        publishedAt: new Date(),
+      },
+    });
+
+    console.log(`Version ${daManifest.version} created for ${daAgent.slug}`);
+  } else {
+    console.log("Skipping data-analyst seed (marketplace.json not found)");
   }
 
   console.log("Seed complete!");

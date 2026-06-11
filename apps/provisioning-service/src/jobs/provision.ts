@@ -14,7 +14,7 @@ import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
 import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
-import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
@@ -134,6 +134,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   const agentName = deployment.agentName;
   const companyName = deployment.company.name;
   const companyDomain = deployment.company.domain;
+  const companyTimezone = deployment.company.timezone || "America/New_York";
 
   // Optional heartbeat: read from the agent's manifest if the creator opted in.
   const manifest = agentVersion?.manifestData as Record<string, unknown> | null | undefined;
@@ -200,21 +201,72 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       console.warn(`[provision] Google Workspace user creation failed: ${err.message}`);
     }
   } else if (workspaceProvider === "MICROSOFT" && config.microsoftTenantId) {
-    try {
-      const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
-      const user = await withRetry(
-        () => createMicrosoftUser(username, agentName),
-        { step: "create_workspace_user_microsoft", deploymentId },
-      );
-      workspaceEmail = user.email;
-      workspaceUserId = user.id;
-      await prisma.deployment.update({
-        where: { id: deploymentId },
-        data: { workspaceEmail: user.email, workspaceUserId: user.id },
-      });
-      console.log(`[provision] Microsoft 365 user created: ${user.email}`);
-    } catch (err: any) {
-      console.warn(`[provision] Microsoft 365 user creation failed: ${err.message}`);
+    const buyerTenantId = (deployment as any).buyerMicrosoftTenantId as string | null;
+
+    if (buyerTenantId) {
+      // ── Buyer-org mode: create shared mailbox in buyer's tenant ──
+      try {
+        const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
+        const mailbox = await withRetry(
+          () => createSharedMailbox(buyerTenantId, `${agentName} (Agent)`, username),
+          { step: "create_shared_mailbox_buyer", deploymentId },
+        );
+        workspaceEmail = mailbox.email;
+        workspaceUserId = mailbox.id;
+        await prisma.deployment.update({
+          where: { id: deploymentId },
+          data: {
+            workspaceEmail: mailbox.email,
+            workspaceUserId: mailbox.id,
+            buyerMailboxAddress: mailbox.email,
+            workspaceScope: "buyer_org",
+          },
+        });
+        console.log(`[provision] Buyer-org shared mailbox created: ${mailbox.email}`);
+      } catch (err: any) {
+        console.warn(`[provision] Buyer-org shared mailbox creation failed: ${err.message}`);
+        // Fall back to platform user
+        console.log(`[provision] Falling back to platform Microsoft user...`);
+        try {
+          const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
+          const user = await withRetry(
+            () => createMicrosoftUser(username, agentName),
+            { step: "create_workspace_user_microsoft_fallback", deploymentId },
+          );
+          workspaceEmail = user.email;
+          workspaceUserId = user.id;
+          await prisma.deployment.update({
+            where: { id: deploymentId },
+            data: {
+              workspaceEmail: user.email,
+              workspaceUserId: user.id,
+              mailboxLocation: "platform",
+              workspaceScope: "platform",
+            },
+          });
+          console.log(`[provision] Fallback: platform Microsoft 365 user created: ${user.email}`);
+        } catch (fallbackErr: any) {
+          console.warn(`[provision] Fallback platform user creation also failed: ${fallbackErr.message}`);
+        }
+      }
+    } else {
+      // ── Platform mode: create user in platform tenant (existing behavior) ──
+      try {
+        const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
+        const user = await withRetry(
+          () => createMicrosoftUser(username, agentName),
+          { step: "create_workspace_user_microsoft", deploymentId },
+        );
+        workspaceEmail = user.email;
+        workspaceUserId = user.id;
+        await prisma.deployment.update({
+          where: { id: deploymentId },
+          data: { workspaceEmail: user.email, workspaceUserId: user.id },
+        });
+        console.log(`[provision] Microsoft 365 user created: ${user.email}`);
+      } catch (err: any) {
+        console.warn(`[provision] Microsoft 365 user creation failed: ${err.message}`);
+      }
     }
   } else if (workspaceProvider === "NONE" || !workspaceProvider) {
     // Legacy path: use per-deployment GCP IAM SA if configured
@@ -307,6 +359,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     AGENT_NAME: agentName,
     COMPANY_NAME: companyName,
     COMPANY_DOMAIN: companyDomain,
+    COMPANY_TIMEZONE: companyTimezone,
     MARKETPLACE_APPROVAL_WEBHOOK: config.approvalWebhookUrl.replace("localhost", "host.docker.internal"),
     MARKETPLACE_URL: config.approvalWebhookUrl.replace("localhost", "host.docker.internal"),
     APPROVAL_WEBHOOK_TOKEN: config.approvalWebhookToken,
@@ -339,8 +392,10 @@ export async function provisionJob(deploymentId: string): Promise<void> {
             // Buyer-org mode: agent fetches tokens from provisioning service
             WORKSPACE_SCOPE: "buyer_org",
             TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
-            DEPLOYMENT_ID: deploymentId,
             SHAREPOINT_FOLDER: agentSlug,
+            // Outlook email via Graph API
+            EMAIL_MODE: "outlook",
+            OUTLOOK_SEND_URL: "http://host.docker.internal:3003/internal/outlook-send",
           }
         : {
             // Platform-tenant mode: inject secrets directly
@@ -348,6 +403,9 @@ export async function provisionJob(deploymentId: string): Promise<void> {
             MICROSOFT_CLIENT_ID: config.microsoftClientId,
             MICROSOFT_CLIENT_SECRET: config.microsoftClientSecret,
             SHAREPOINT_FOLDER: agentSlug,
+            // Outlook email via Graph API
+            EMAIL_MODE: "outlook",
+            OUTLOOK_SEND_URL: "http://host.docker.internal:3003/internal/outlook-send",
           }
       : {}),
     // Legacy Google SA vars — only injected for NONE/legacy deployments that have old SA fields
@@ -386,7 +444,8 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     }
 
     // Create isolated Docker network for this deployment (agent + sidecars)
-    if (config.runnerMode === "docker") {
+    // Custom runtime also needs a network when MCP sidecars are required.
+    if (config.runnerMode === "docker" || (runtime === "CUSTOM" && requiredIntegrations.length > 0)) {
       agentNetworkName = await createAgentNetwork(deploymentId);
     }
 
@@ -408,7 +467,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       const pkgPath = resolvedPkgPath ?? resolve(config.customStarterPath);
 
       const result = await withRetry(
-        () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId),
+        () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId, agentNetworkName ?? undefined),
         { step: "spawn_custom_agent", deploymentId },
       );
       containerName = `http://localhost:${result.port}`;
@@ -560,6 +619,8 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       gatewayUrl: `http://127.0.0.1:${healthPort}`,
       hooksToken: config.openclawHooksToken,
       marketplaceUrl: config.approvalWebhookUrl,
+      emailMode: workspaceProvider === "MICROSOFT" ? "outlook" : "agentmail",
+      outlookEmail: workspaceProvider === "MICROSOFT" ? workspaceEmail : undefined,
     });
   }
 

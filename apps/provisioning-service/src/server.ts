@@ -5,6 +5,8 @@
  * Endpoints:
  *   GET /proxy/:deploymentId/memory
  *   GET /proxy/:deploymentId/skills
+ *   POST /internal/microsoft-token   — mint Graph API token for a deployment
+ *   POST /internal/outlook-send      — send email via Microsoft Graph on behalf of agent
  *
  * Secured with a Bearer token (PROVISIONING_SECRET env var).
  * Set PROVISIONING_PORT to override the default port (3003).
@@ -12,6 +14,7 @@
 import http from "node:http";
 import { prisma } from "@marketplace/db";
 import { mintTokenForTenant } from "./clients/microsoft-workspace.js";
+import { config } from "./config.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -124,15 +127,141 @@ export function startProxyServer() {
 
           if (!deployment) return send(res, 404, { error: "Deployment not found" });
 
-          if (!deployment.buyerMicrosoftTenantId) {
-            return send(res, 404, { error: "No Microsoft org connected for this deployment" });
+          const tenantId = deployment.buyerMicrosoftTenantId || config.microsoftTenantId;
+          if (!tenantId) {
+            return send(res, 404, { error: "No Microsoft tenant configured for this deployment" });
           }
 
-          const tokenData = await mintTokenForTenant(deployment.buyerMicrosoftTenantId);
+          const tokenData = await mintTokenForTenant(tenantId);
           send(res, 200, tokenData);
         } catch (err: any) {
           console.error("[microsoft-token] Error:", err.message);
           send(res, 500, { error: "Failed to mint token" });
+        }
+      });
+      return;
+    }
+
+    // Internal endpoint — agent containers send email via Microsoft Graph
+    if (req.method === "POST" && req.url === "/internal/outlook-send") {
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const {
+            deploymentId,
+            agentEmail,
+            to,
+            subject,
+            body: emailBody,
+            bodyType = "html",
+            replyToMessageId,
+            cc,
+            attachments,
+          } = JSON.parse(body) as {
+            deploymentId?: string;
+            agentEmail?: string;
+            to?: string | string[];
+            subject?: string;
+            body?: string;
+            bodyType?: "text" | "html";
+            replyToMessageId?: string;
+            cc?: string[];
+            attachments?: Array<{ name: string; content_base64: string; contentType: string }>;
+          };
+
+          if (!deploymentId) return send(res, 400, { error: "deploymentId required" });
+          if (!agentEmail) return send(res, 400, { error: "agentEmail required" });
+          if (!to) return send(res, 400, { error: "to required" });
+          if (!emailBody) return send(res, 400, { error: "body required" });
+
+          const deployment = await prisma.deployment.findUnique({
+            where: { id: deploymentId },
+            select: { id: true, buyerMicrosoftTenantId: true },
+          });
+
+          if (!deployment) return send(res, 404, { error: "Deployment not found" });
+
+          // Use buyer tenant if connected, otherwise fall back to platform tenant
+          const tenantId = deployment.buyerMicrosoftTenantId || config.microsoftTenantId;
+          if (!tenantId) return send(res, 500, { error: "No Microsoft tenant configured" });
+
+          const tokenData = await mintTokenForTenant(tenantId);
+          const accessToken = tokenData.access_token;
+
+          // Normalise recipients to array of Graph emailAddress objects
+          const toArray = Array.isArray(to) ? to : [to];
+          const toRecipients = toArray.map((addr) => ({ emailAddress: { address: addr } }));
+          const ccRecipients = (cc ?? []).map((addr) => ({ emailAddress: { address: addr } }));
+
+          const graphBase = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(agentEmail)}`;
+
+          if (replyToMessageId) {
+            // Reply to existing message thread
+            const replyPayload: Record<string, unknown> = {
+              message: {
+                toRecipients,
+                ...(ccRecipients.length > 0 ? { ccRecipients } : {}),
+                body: { contentType: bodyType, content: emailBody },
+              },
+            };
+
+            const replyResp = await fetch(
+              `${graphBase}/messages/${encodeURIComponent(replyToMessageId)}/reply`,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(replyPayload),
+              },
+            );
+
+            if (!replyResp.ok) {
+              const err = await replyResp.text();
+              console.error("[outlook-send] Reply failed:", replyResp.status, err);
+              return send(res, 502, { error: `Graph API error: ${replyResp.status}` });
+            }
+          } else {
+            // Send new email
+            if (!subject) return send(res, 400, { error: "subject required for new emails" });
+
+            const message: Record<string, unknown> = {
+              subject,
+              body: { contentType: bodyType, content: emailBody },
+              toRecipients,
+            };
+            if (ccRecipients.length > 0) message.ccRecipients = ccRecipients;
+            if (attachments && attachments.length > 0) {
+              message.attachments = attachments.map((a) => ({
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                name: a.name,
+                contentType: a.contentType,
+                contentBytes: a.content_base64,
+              }));
+            }
+
+            const sendResp = await fetch(`${graphBase}/sendMail`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ message }),
+            });
+
+            if (!sendResp.ok) {
+              const err = await sendResp.text();
+              console.error("[outlook-send] Send failed:", sendResp.status, err);
+              return send(res, 502, { error: `Graph API error: ${sendResp.status}` });
+            }
+          }
+
+          send(res, 200, { success: true });
+        } catch (err: any) {
+          console.error("[outlook-send] Error:", err.message);
+          send(res, 500, { error: "Failed to send email" });
         }
       });
       return;

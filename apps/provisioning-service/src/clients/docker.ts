@@ -56,6 +56,7 @@ export interface ContainerEnv {
   AGENT_NAME: string;
   COMPANY_NAME: string;
   COMPANY_DOMAIN: string;
+  COMPANY_TIMEZONE?: string;
   MARKETPLACE_APPROVAL_WEBHOOK: string;
   MARKETPLACE_URL?: string;
   APPROVAL_WEBHOOK_TOKEN: string;
@@ -99,6 +100,13 @@ export interface ContainerEnv {
   MICROSOFT_TENANT_ID?: string;
   MICROSOFT_CLIENT_ID?: string;
   MICROSOFT_CLIENT_SECRET?: string;
+  // Buyer-org Microsoft: agent fetches tokens via proxy instead of direct credentials
+  WORKSPACE_SCOPE?: string;           // "buyer_org" | "platform"
+  TOKEN_ENDPOINT_URL?: string;        // e.g., http://host.docker.internal:3003/internal/microsoft-token
+  SHAREPOINT_FOLDER?: string;         // agent slug used as SharePoint folder name
+  // Email mode: "outlook" uses Graph API via proxy, "agentmail" (default) uses AgentMail
+  EMAIL_MODE?: string;
+  OUTLOOK_SEND_URL?: string;          // e.g., http://host.docker.internal:3003/internal/outlook-send
 }
 
 function envToArray(env: ContainerEnv): string[] {

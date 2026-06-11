@@ -283,6 +283,230 @@ async def drive_read_text(item_id: str) -> str:
     return resp.text
 
 
+async def drive_delete(item_id: str) -> None:
+    """Delete a file or folder from the SharePoint site drive."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.delete(
+            _drive_url(f"items/{item_id}"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if resp.status_code not in (200, 204):
+            resp.raise_for_status()
+
+
+async def drive_share(item_id: str, recipients: list[str], role: str = "read", message: str = "") -> dict:
+    """Share a SharePoint file/folder with specific users.
+
+    Args:
+        item_id: The file or folder ID.
+        recipients: List of email addresses to share with.
+        role: "read" (view only) or "write" (can edit). Default "read".
+        message: Optional message included in the sharing invitation.
+
+    Returns:
+        dict with sharing details.
+    """
+    token = await _get_access_token()
+    payload: dict[str, Any] = {
+        "recipients": [{"email": r} for r in recipients],
+        "roles": ["write" if role == "write" else "read"],
+        "requireSignIn": True,
+        "sendInvitation": True,
+    }
+    if message:
+        payload["message"] = message
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _drive_url(f"items/{item_id}/invite"),
+            headers=_auth_headers(token),
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def drive_create_link(item_id: str, link_type: str = "view", scope: str = "organization") -> dict:
+    """Create a sharing link for a SharePoint file/folder.
+
+    Args:
+        item_id: The file or folder ID.
+        link_type: "view" (read-only) or "edit". Default "view".
+        scope: "organization" (anyone in the org) or "anonymous" (anyone with link). Default "organization".
+
+    Returns:
+        dict with the sharing link URL.
+    """
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _drive_url(f"items/{item_id}/createLink"),
+            headers=_auth_headers(token),
+            json={"type": link_type, "scope": scope},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {"link": data.get("link", {}).get("webUrl", ""), "id": data.get("id", ""), "type": link_type, "scope": scope}
+
+
+# ─── Agent OneDrive (personal storage) ────────────────────────────────────────
+
+
+def _my_drive_url(path: str = "") -> str:
+    """Build a Graph URL for the agent's own OneDrive."""
+    base = f"{GRAPH}/users/{_WORKSPACE_EMAIL}/drive"
+    return f"{base}/{path}" if path else base
+
+
+async def my_drive_list(subfolder: str = "") -> list[dict]:
+    """List files in the agent's own OneDrive (or a subfolder)."""
+    token = await _get_access_token()
+    if subfolder:
+        url = _my_drive_url(f"root:/{subfolder}:/children")
+    else:
+        url = _my_drive_url("root/children")
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            url,
+            headers=_auth_headers(token),
+            params={"$select": "id,name,webUrl,size,lastModifiedDateTime,file,folder"},
+        )
+        resp.raise_for_status()
+    return resp.json().get("value", [])
+
+
+async def my_drive_upload(filename: str, content: bytes, folder: str = "", content_type: str = "application/octet-stream") -> dict:
+    """Upload a file to the agent's own OneDrive. Overwrites if exists."""
+    token = await _get_access_token()
+    path = f"{folder}/{filename}" if folder else filename
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.put(
+            _my_drive_url(f"root:/{path}:/content"),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
+            content=content,
+        )
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def my_drive_read_text(item_id: str) -> str:
+    """Download and return the text content of a file from the agent's OneDrive."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        resp = await client.get(
+            _my_drive_url(f"items/{item_id}/content"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp.raise_for_status()
+    return resp.text
+
+
+async def my_drive_search(query: str, limit: int = 10) -> list[dict]:
+    """Search the agent's own OneDrive for files matching a query."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            _my_drive_url("root/search(q='{}')".format(query.replace("'", "''"))),
+            headers=_auth_headers(token),
+            params={
+                "$select": "id,name,webUrl,size,lastModifiedDateTime,file",
+                "$top": str(limit),
+            },
+        )
+        resp.raise_for_status()
+    return resp.json().get("value", [])
+
+
+async def my_drive_ensure_folder(folder_name: str) -> dict:
+    """Create a folder in the agent's OneDrive if it doesn't exist."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _my_drive_url("root/children"),
+            headers=_auth_headers(token),
+            json={
+                "name": folder_name,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "fail",
+            },
+        )
+        if resp.status_code == 409:
+            resp2 = await client.get(
+                _my_drive_url(f"root:/{folder_name}"),
+                headers=_auth_headers(token),
+            )
+            resp2.raise_for_status()
+            return resp2.json()
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def my_drive_delete(item_id: str) -> None:
+    """Delete a file or folder from the agent's OneDrive."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.delete(
+            _my_drive_url(f"items/{item_id}"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if resp.status_code not in (200, 204):
+            resp.raise_for_status()
+
+
+async def my_drive_share(item_id: str, recipients: list[str], role: str = "read", message: str = "") -> dict:
+    """Share an OneDrive file/folder with specific users.
+
+    Args:
+        item_id: The file or folder ID.
+        recipients: List of email addresses to share with.
+        role: "read" (view only) or "write" (can edit). Default "read".
+        message: Optional message included in the sharing invitation.
+
+    Returns:
+        dict with sharing details.
+    """
+    token = await _get_access_token()
+    payload: dict[str, Any] = {
+        "recipients": [{"email": r} for r in recipients],
+        "roles": ["write" if role == "write" else "read"],
+        "requireSignIn": False,
+        "sendInvitation": True,
+    }
+    if message:
+        payload["message"] = message
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _my_drive_url(f"items/{item_id}/invite"),
+            headers=_auth_headers(token),
+            json=payload,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def my_drive_create_link(item_id: str, link_type: str = "view", scope: str = "anonymous") -> dict:
+    """Create a sharing link for an OneDrive file/folder.
+
+    Args:
+        item_id: The file or folder ID.
+        link_type: "view" (read-only) or "edit". Default "view".
+        scope: "anonymous" (anyone with link) or "organization" (org only). Default "anonymous".
+
+    Returns:
+        dict with the sharing link URL.
+    """
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _my_drive_url(f"items/{item_id}/createLink"),
+            headers=_auth_headers(token),
+            json={"type": link_type, "scope": scope},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {"link": data.get("link", {}).get("webUrl", ""), "id": data.get("id", ""), "type": link_type, "scope": scope}
+
+
 # ─── Excel ────────────────────────────────────────────────────────────────────
 
 
@@ -412,6 +636,198 @@ async def execute_writes(writes: list[dict]) -> list[dict]:
         except Exception as e:
             results.append({"type": op, "status": "error", "error": str(e)})
     return results
+
+
+# ─── Outlook Email ────────────────────────────────────────────────────────────
+
+_OUTLOOK_SEND_URL = os.environ.get("OUTLOOK_SEND_URL", "")
+_EMAIL_MODE = os.environ.get("EMAIL_MODE", "agentmail")
+EMAIL_AVAILABLE = bool(_EMAIL_MODE == "outlook" and _OUTLOOK_SEND_URL and AVAILABLE)
+
+
+async def inbox_list(limit: int = 10, unread_only: bool = True) -> list[dict]:
+    """List recent messages in the agent's Outlook inbox."""
+    token = await _get_access_token()
+    params: dict[str, str] = {
+        "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,conversationId,hasAttachments,bodyPreview",
+        "$orderby": "receivedDateTime desc",
+        "$top": str(limit),
+    }
+    if unread_only:
+        params["$filter"] = "isRead eq false"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            _user_url("mailFolders/Inbox/messages"),
+            headers=_auth_headers(token),
+            params=params,
+        )
+        resp.raise_for_status()
+    messages = resp.json().get("value", [])
+    return [
+        {
+            "id": m.get("id"),
+            "subject": m.get("subject"),
+            "from": m.get("from", {}).get("emailAddress", {}).get("address"),
+            "from_name": m.get("from", {}).get("emailAddress", {}).get("name"),
+            "received": m.get("receivedDateTime"),
+            "preview": m.get("bodyPreview", "")[:200],
+            "isRead": m.get("isRead"),
+            "conversationId": m.get("conversationId"),
+            "hasAttachments": m.get("hasAttachments"),
+        }
+        for m in messages
+    ]
+
+
+async def inbox_read(message_id: str) -> dict:
+    """Read the full content of a specific email message."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            _user_url(f"messages/{message_id}"),
+            headers=_auth_headers(token),
+            params={
+                "$select": "id,subject,body,from,toRecipients,ccRecipients,receivedDateTime,conversationId,hasAttachments,internetMessageId",
+            },
+        )
+        resp.raise_for_status()
+    msg = resp.json()
+    result = {
+        "id": msg.get("id"),
+        "subject": msg.get("subject"),
+        "from": msg.get("from", {}).get("emailAddress", {}).get("address"),
+        "from_name": msg.get("from", {}).get("emailAddress", {}).get("name"),
+        "body": msg.get("body", {}).get("content", ""),
+        "bodyType": msg.get("body", {}).get("contentType", "text"),
+        "received": msg.get("receivedDateTime"),
+        "conversationId": msg.get("conversationId"),
+        "to": [r.get("emailAddress", {}).get("address") for r in msg.get("toRecipients", [])],
+        "cc": [r.get("emailAddress", {}).get("address") for r in msg.get("ccRecipients", [])],
+    }
+    # Fetch attachments if any
+    if msg.get("hasAttachments"):
+        att_resp = await client.get(
+            _user_url(f"messages/{message_id}/attachments"),
+            headers=_auth_headers(token),
+        )
+        if att_resp.status_code == 200:
+            result["attachments"] = [
+                {
+                    "name": a.get("name"),
+                    "contentType": a.get("contentType"),
+                    "size": a.get("size"),
+                }
+                for a in att_resp.json().get("value", [])
+            ]
+    return result
+
+
+async def inbox_search(query: str, limit: int = 10) -> list[dict]:
+    """Search the agent's Outlook mailbox by keyword, sender, or subject."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.get(
+            _user_url("messages"),
+            headers=_auth_headers(token),
+            params={
+                "$search": f'"{query}"',
+                "$select": "id,subject,from,receivedDateTime,bodyPreview,conversationId",
+                "$top": str(limit),
+            },
+        )
+        resp.raise_for_status()
+    return [
+        {
+            "id": m.get("id"),
+            "subject": m.get("subject"),
+            "from": m.get("from", {}).get("emailAddress", {}).get("address"),
+            "received": m.get("receivedDateTime"),
+            "preview": m.get("bodyPreview", "")[:200],
+            "conversationId": m.get("conversationId"),
+        }
+        for m in resp.json().get("value", [])
+    ]
+
+
+async def email_send(
+    to: str | list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    body_type: str = "html",
+) -> dict:
+    """Send a new email from the agent's Outlook mailbox via the send proxy."""
+    if not _OUTLOOK_SEND_URL:
+        raise RuntimeError("OUTLOOK_SEND_URL not configured — cannot send via Outlook")
+    recipients = [to] if isinstance(to, str) else to
+    payload: dict[str, Any] = {
+        "deploymentId": _DEPLOYMENT_ID,
+        "agentEmail": _WORKSPACE_EMAIL,
+        "to": recipients,
+        "subject": subject,
+        "body": body,
+        "bodyType": body_type,
+    }
+    if cc:
+        payload["cc"] = cc
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(_OUTLOOK_SEND_URL, json=payload)
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def email_reply(
+    message_id: str,
+    body: str,
+    body_type: str = "html",
+) -> dict:
+    """Reply to an existing email thread via the agent's Outlook mailbox."""
+    if not _OUTLOOK_SEND_URL:
+        raise RuntimeError("OUTLOOK_SEND_URL not configured — cannot send via Outlook")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            _OUTLOOK_SEND_URL,
+            json={
+                "deploymentId": _DEPLOYMENT_ID,
+                "agentEmail": _WORKSPACE_EMAIL,
+                "replyToMessageId": message_id,
+                "body": body,
+                "bodyType": body_type,
+            },
+        )
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def email_forward(message_id: str, to: str | list[str], comment: str = "") -> dict:
+    """Forward an email to another recipient."""
+    token = await _get_access_token()
+    recipients = [to] if isinstance(to, str) else to
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        resp = await client.post(
+            _user_url(f"messages/{message_id}/forward"),
+            headers=_auth_headers(token),
+            json={
+                "comment": comment,
+                "toRecipients": [
+                    {"emailAddress": {"address": addr}} for addr in recipients
+                ],
+            },
+        )
+        resp.raise_for_status()
+    return {"success": True}
+
+
+async def email_mark_read(message_id: str, is_read: bool = True) -> None:
+    """Mark an email as read or unread."""
+    token = await _get_access_token()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.patch(
+            _user_url(f"messages/{message_id}"),
+            headers=_auth_headers(token),
+            json={"isRead": is_read},
+        )
+        resp.raise_for_status()
 
 
 # ─── Message enrichment ───────────────────────────────────────────────────────

@@ -24,6 +24,8 @@ import { fileURLToPath } from "node:url";
 import Dockerode from "dockerode";
 import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
+import { removeAgentNetwork } from "../clients/docker.js";
+import { stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { startPoller, stopPoller } from "./poller-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -193,6 +195,7 @@ export async function spawnCustomAgent(
   env: ContainerEnv,
   packageDir: string,
   inboxId?: string,
+  networkName?: string,
 ): Promise<{ containerName: string; port: number }> {
   const resolvedDir = resolve(packageDir);
 
@@ -231,8 +234,21 @@ export async function spawnCustomAgent(
         NanoCpus: 1_000_000_000,           // 1 CPU core
         PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
         SecurityOpt: ["no-new-privileges"],
+        ExtraHosts: ["host.docker.internal:host-gateway"],
       },
     });
+
+    // Connect to MCP sidecar network (in addition to default bridge)
+    // Must happen before start so sidecars are reachable immediately.
+    if (networkName) {
+      try {
+        const network = docker.getNetwork(networkName);
+        await network.connect({ Container: container.id });
+        console.log(`[custom-runner] Connected ${containerName} to network ${networkName}`);
+      } catch (err: any) {
+        console.warn(`[custom-runner] Failed to connect to network ${networkName}: ${err.message}`);
+      }
+    }
 
     await container.start();
 
@@ -246,8 +262,8 @@ export async function spawnCustomAgent(
 
     console.log(`[custom-runner] Container ${containerName} started on port ${hostPort}`);
 
-    // Spawn AgentMail poller via centralized manager
-    // Custom containers don't use OpenClaw hooks auth — adapter expects no Bearer token
+    // Spawn poller — Outlook poller for Microsoft workspace, AgentMail poller otherwise
+    const emailMode = (env.EMAIL_MODE === "outlook" ? "outlook" : "agentmail") as "outlook" | "agentmail";
     startPoller({
       deploymentId,
       agentEmail: env.AGENT_EMAIL,
@@ -256,6 +272,8 @@ export async function spawnCustomAgent(
       gatewayUrl: `http://127.0.0.1:${hostPort}`,
       hooksToken: "",
       marketplaceUrl: env.MARKETPLACE_URL || config.approvalWebhookUrl || "http://localhost:3002",
+      emailMode,
+      outlookEmail: emailMode === "outlook" ? (env.WORKSPACE_EMAIL || env.AGENT_EMAIL) : undefined,
     });
 
     customProcesses.set(deploymentId, {
@@ -298,6 +316,10 @@ export async function stopCustomAgent(deploymentId: string): Promise<void> {
   } catch (err: any) {
     console.warn(`[custom-runner] Failed to stop container ${containerName}: ${err.message}`);
   }
+
+  // Stop MCP sidecars and remove the isolated network
+  await stopMcpSidecars(deploymentId);
+  await removeAgentNetwork(deploymentId);
 
   customProcesses.delete(deploymentId);
   console.log(`[custom-runner] Stopped custom agent ${deploymentId}`);
