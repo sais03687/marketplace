@@ -7,17 +7,84 @@
  *   GET /proxy/:deploymentId/skills
  *   POST /internal/microsoft-token   — mint Graph API token for a deployment
  *   POST /internal/outlook-send      — send email via Microsoft Graph on behalf of agent
+ *   POST /api/teams/messages          — Bot Framework messaging endpoint (Teams DMs)
  *
  * Secured with a Bearer token (PROVISIONING_SECRET env var).
  * Set PROVISIONING_PORT to override the default port (3003).
  */
 import http from "node:http";
+import {
+  CloudAdapter,
+  ConfigurationBotFrameworkAuthentication,
+  TurnContext,
+  ActivityTypes,
+} from "botbuilder";
 import { prisma } from "@marketplace/db";
 import { mintTokenForTenant } from "./clients/microsoft-workspace.js";
 import { config } from "./config.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
+
+// ─── Bot Framework adapter (Teams) ──────────────────────────────────────────
+const botAuth = new ConfigurationBotFrameworkAuthentication({
+  MicrosoftAppId: config.microsoftClientId,
+  MicrosoftAppPassword: config.microsoftClientSecret,
+  MicrosoftAppType: "MultiTenant",
+});
+const botAdapter = new CloudAdapter(botAuth);
+
+// Global error handler — log and swallow so the adapter stays alive
+botAdapter.onTurnError = async (context: TurnContext, error: Error) => {
+  console.error("[teams-bot] Unhandled error:", error.message);
+  try {
+    await context.sendActivity("Sorry, something went wrong processing your message.");
+  } catch { /* best-effort */ }
+};
+
+/** Wrap raw http.IncomingMessage to satisfy botbuilder's Request interface. */
+function toBotRequest(req: http.IncomingMessage): Promise<import("botbuilder").Request> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    req.on("end", () => {
+      try {
+        resolve({
+          body: body ? JSON.parse(body) : {},
+          headers: req.headers as Record<string, string | string[] | undefined>,
+          method: req.method,
+        });
+      } catch (err) { reject(err); }
+    });
+    req.on("error", reject);
+  });
+}
+
+/** Wrap raw http.ServerResponse to satisfy botbuilder's Response interface. */
+function toBotResponse(res: http.ServerResponse) {
+  return {
+    socket: res.socket,
+    end(...args: unknown[]) { (res.end as Function)(...args); },
+    header(name: string, value: unknown) { res.setHeader(name, value as string); },
+    send(bodyOrStatus?: unknown) {
+      if (typeof bodyOrStatus === "number") {
+        res.statusCode = bodyOrStatus;
+        res.end();
+      } else if (typeof bodyOrStatus === "string") {
+        res.end(bodyOrStatus);
+      } else if (bodyOrStatus !== undefined) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(bodyOrStatus));
+      } else {
+        res.end();
+      }
+    },
+    status(code: number) {
+      res.statusCode = code;
+      return this; // chainable: res.status(200).send(...)
+    },
+  };
+}
 
 function send(res: http.ServerResponse, status: number, body: object) {
   const json = JSON.stringify(body);
@@ -264,6 +331,120 @@ export function startProxyServer() {
           send(res, 500, { error: "Failed to send email" });
         }
       });
+      return;
+    }
+
+    // ─── Teams Bot Framework messaging endpoint ────────────────────────────
+    // Azure Bot Service POSTs Activities here. JWT validation is handled by
+    // the CloudAdapter so no Bearer token check needed.
+    if (req.method === "POST" && req.url === "/api/teams/messages") {
+      try {
+        const botReq = await toBotRequest(req);
+        const botRes = toBotResponse(res);
+        await botAdapter.process(botReq, botRes, async (context: TurnContext) => {
+          // Only handle message activities (ignore typing, conversationUpdate, etc.)
+          if (context.activity.type !== ActivityTypes.Message) return;
+
+          const text = (context.activity.text || "").trim();
+          if (!text) return;
+
+          const tenantId = context.activity.conversation?.tenantId
+            || context.activity.channelData?.tenant?.id;
+          const teamsUserId = context.activity.from?.id;
+          const teamsUserName = context.activity.from?.name || "Teams User";
+
+          if (!tenantId) {
+            await context.sendActivity("Unable to identify your organization. Please contact support.");
+            return;
+          }
+
+          // Find active deployment(s) for this buyer tenant
+          const deployments = await prisma.deployment.findMany({
+            where: {
+              buyerMicrosoftTenantId: tenantId,
+              status: "ACTIVE",
+            },
+            select: { id: true, containerName: true, agentName: true },
+          });
+
+          if (deployments.length === 0) {
+            await context.sendActivity(
+              "No active agent found for your organization. "
+              + "Please ensure an agent has been deployed and your Microsoft 365 tenant is connected."
+            );
+            return;
+          }
+
+          // For MVP: route to the first active deployment for this tenant.
+          // TODO: if multiple agents exist, let the user pick via Adaptive Card.
+          const deployment = deployments[0];
+
+          if (!deployment.containerName) {
+            await context.sendActivity(
+              `${deployment.agentName} is currently starting up. Please try again in a moment.`
+            );
+            return;
+          }
+
+          const containerUrl = deployment.containerName.startsWith("http")
+            ? deployment.containerName
+            : `http://${deployment.containerName}:4100`;
+
+          // Send typing indicator while the agent processes
+          await context.sendActivity({ type: ActivityTypes.Typing });
+
+          // Keep sending typing every 3s (Teams typing indicator lasts ~3s)
+          const typingInterval = setInterval(async () => {
+            try {
+              await context.sendActivity({ type: ActivityTypes.Typing });
+            } catch { /* conversation may have ended */ }
+          }, 3000);
+
+          try {
+            // Forward to agent container's /hooks/teams endpoint
+            const hookResponse = await fetch(`${containerUrl}/hooks/teams`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                message: text,
+                teamsUserId,
+                teamsUserName,
+                tenantId,
+                deploymentId: deployment.id,
+                conversationId: context.activity.conversation?.id,
+              }),
+              signal: AbortSignal.timeout(90_000), // 90s — agent has 60s LLM timeout + overhead
+            });
+
+            const result = await hookResponse.json() as {
+              ok?: boolean;
+              reply?: string;
+              error?: string;
+            };
+
+            clearInterval(typingInterval);
+
+            if (result.ok && result.reply) {
+              await context.sendActivity(result.reply);
+            } else {
+              await context.sendActivity(
+                result.error || "I wasn't able to process your message. Please try again."
+              );
+            }
+          } catch (err: any) {
+            clearInterval(typingInterval);
+            console.error("[teams-bot] Container call failed:", err.message);
+            await context.sendActivity(
+              "The agent took too long to respond. Please try again with a simpler request."
+            );
+          }
+        });
+      } catch (err: any) {
+        console.error("[teams-bot] Adapter error:", err.message);
+        if (!res.headersSent) {
+          send(res, 500, { error: "Bot Framework error" });
+        }
+      }
       return;
     }
 

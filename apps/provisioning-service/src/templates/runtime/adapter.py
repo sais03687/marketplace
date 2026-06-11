@@ -1256,6 +1256,114 @@ async def receive_agentmail_webhook(request: Request):
     return {"ok": True, "status": "accepted"}
 
 
+@app.post("/hooks/teams")
+async def receive_teams_message(request: Request):
+    """Receive a message from Microsoft Teams via the provisioning service.
+
+    Unlike email hooks (fire-and-forget), this endpoint is synchronous —
+    it waits for the agent to process and returns the reply text so the
+    provisioning service can send it back to Teams immediately.
+
+    Payload: { message, teamsUserId, teamsUserName, tenantId, deploymentId, conversationId }
+    Response: { ok: true, reply: "..." } or { ok: false, error: "..." }
+    """
+    payload = await request.json()
+    message = payload.get("message", "").strip()
+    teams_user_name = payload.get("teamsUserName", "Teams User")
+    teams_user_id = payload.get("teamsUserId", "")
+    conversation_id = payload.get("conversationId", "")
+
+    if not message:
+        return {"ok": False, "error": "Empty message"}
+
+    # Rate limit check
+    if not _check_and_increment("llm_calls"):
+        return {"ok": False, "error": "Rate limit exceeded. Please try again later."}
+
+    context = {
+        "agent_name": AGENT_NAME,
+        "agent_email": AGENT_EMAIL,
+        "company_name": COMPANY_NAME,
+        "company_domain": COMPANY_DOMAIN,
+        "hook_name": "Teams",
+        "session_key": f"hook:teams:{conversation_id}",
+        "agentmind_prompt": AGENTMIND_PROMPT,
+        "teams_user_id": teams_user_id,
+        "teams_user_name": teams_user_name,
+        "google_sa_email": GOOGLE_SA_EMAIL,
+        "workspace_email": WORKSPACE_EMAIL,
+        "workspace_provider": WORKSPACE_PROVIDER,
+    }
+
+    try:
+        async def _bypass_approve(*args, **kwargs) -> str:
+            return ""
+
+        async def _bypass_resolve(approval_id, **kwargs) -> dict:
+            return {"status": "APPROVED"}
+
+        print(f"[adapter] Teams message from {teams_user_name}: {message[:100]}...", flush=True)
+
+        result = await run_agent(
+            content=f"Teams message from {teams_user_name}:\n{message}",
+            context=context,
+            approve_fn=_bypass_approve,
+            resolve_fn=_bypass_resolve,
+            contribute_fn=contribute_knowledge,
+            search_fn=search_knowledge,
+            use_fn=report_usage,
+            request_decision_fn=request_decision,
+            **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+        )
+
+        if not isinstance(result, dict):
+            return {"ok": False, "error": "Agent returned invalid response"}
+
+        # Extract the reply text from the agent result.
+        # The agent may return action=send_email/reply_email with text, or action=none.
+        # For Teams we just need the text content regardless of action type.
+        reply_text = result.get("text", "")
+
+        if not reply_text:
+            # Retry once with explicit instruction (same pattern as AgentMail fallback)
+            retry_content = (
+                f"Teams message from {teams_user_name}:\n{message}"
+                "\n\n[SYSTEM REMINDER] The above is a direct message from a user "
+                "on Microsoft Teams who is waiting for a response. You MUST reply. "
+                "Populate draft.text with a complete, helpful response."
+            )
+            retry_result = await run_agent(
+                content=retry_content,
+                context=context,
+                approve_fn=_bypass_approve,
+                resolve_fn=_bypass_resolve,
+                contribute_fn=contribute_knowledge,
+                search_fn=search_knowledge,
+                use_fn=report_usage,
+                request_decision_fn=request_decision,
+                **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+            )
+            reply_text = retry_result.get("text", "") if isinstance(retry_result, dict) else ""
+
+        if not reply_text:
+            reply_text = "I received your message but wasn't able to formulate a response. Could you try rephrasing?"
+
+        # Strip HTML if markdown lib is available (Teams prefers plain text / markdown)
+        # The agent may return HTML-formatted email text
+        if "<" in reply_text and ">" in reply_text:
+            import re as _re
+            reply_text = _re.sub(r"<br\s*/?>", "\n", reply_text)
+            reply_text = _re.sub(r"<[^>]+>", "", reply_text)
+            reply_text = reply_text.strip()
+
+        print(f"[adapter] Teams reply ({len(reply_text)} chars) to {teams_user_name}", flush=True)
+        return {"ok": True, "reply": reply_text}
+
+    except Exception as exc:
+        print(f"[adapter] Teams handler error: {exc}", flush=True)
+        return {"ok": False, "error": "Internal error processing your message"}
+
+
 async def _handle_message(message: str, context: dict):
     """Process a message through the LangGraph agent and act on the result."""
     print(f"[adapter] _handle_message called with session_key={context.get('session_key', '')}", flush=True)

@@ -11,6 +11,7 @@
   "dependencies": {
     "@marketplace/agent-package-schema": "workspace:*",
     "@marketplace/db": "workspace:*",
+    "botbuilder": "^4.23.3",
     "bullmq": "^5.34.0",
     "dockerode": "^4.0.4",
     "dotenv": "^17.3.1",

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "76bfdef8-89ff-465c-ab4c-099a05a45e8c",
+  "developer": {
+    "name": "AgentStore",
+    "websiteUrl": "https://agentstore.dev",
+    "privacyUrl": "https://agentstore.dev/privacy",
+    "termsOfUseUrl": "https://agentstore.dev/terms"
+  },
+  "name": {
+    "short": "AgentStore",
+    "full": "AgentStore - AI Agent Marketplace"
+  },
+  "description": {
+    "short": "Chat with your deployed AI agent directly in Teams",
+    "full": "AgentStore lets you deploy AI agents into your Microsoft 365 organization. This app enables direct 1:1 chat with your agent in Microsoft Teams. The agent can help with email, calendar, SharePoint files, data analysis, and more."
+  },
+  "icons": {
+    "outline": "icon-outline.png",
+    "color": "icon-color.png"
+  },
+  "accentColor": "#4F46E5",
+  "bots": [
+    {
+      "botId": "76bfdef8-89ff-465c-ab4c-099a05a45e8c",
+      "scopes": ["personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal"],
+          "commands": [
+            {
+              "title": "help",
+              "description": "Show what this agent can do"
+            },
+            {
+              "title": "status",
+              "description": "Check agent status and capabilities"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["agentstore.dev", "5.161.125.216"]
+}
