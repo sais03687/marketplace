@@ -26,22 +26,8 @@ import { config } from "./config.js";
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
 
-// ─── Bot Framework adapter (Teams) ──────────────────────────────────────────
-const botAuth = new ConfigurationBotFrameworkAuthentication({
-  MicrosoftAppId: config.microsoftClientId,
-  MicrosoftAppPassword: config.microsoftClientSecret,
-  MicrosoftAppType: "SingleTenant",
-  MicrosoftAppTenantId: config.microsoftTenantId,
-});
-const botAdapter = new CloudAdapter(botAuth);
-
-// Global error handler — log and swallow so the adapter stays alive
-botAdapter.onTurnError = async (context: TurnContext, error: Error) => {
-  console.error("[teams-bot] Unhandled error:", error.message);
-  try {
-    await context.sendActivity("Sorry, something went wrong processing your message.");
-  } catch { /* best-effort */ }
-};
+// Bot adapter is created lazily inside startProxyServer() so env vars are loaded first.
+let botAdapter: CloudAdapter | null = null;
 
 /** Wrap raw http.IncomingMessage to satisfy botbuilder's Request interface. */
 function toBotRequest(req: http.IncomingMessage): Promise<import("botbuilder").Request> {
@@ -125,6 +111,22 @@ async function proxyContainer(
 }
 
 export function startProxyServer() {
+  // ─── Bot Framework adapter (Teams) ────────────────────────────────────────
+  // Created here (not at module level) so env vars from pm2 env_file are loaded.
+  const botAuth = new ConfigurationBotFrameworkAuthentication({
+    MicrosoftAppId: config.microsoftClientId,
+    MicrosoftAppPassword: config.microsoftClientSecret,
+    MicrosoftAppType: "SingleTenant",
+    MicrosoftAppTenantId: config.microsoftTenantId,
+  });
+  botAdapter = new CloudAdapter(botAuth);
+  botAdapter.onTurnError = async (context: TurnContext, error: Error) => {
+    console.error("[teams-bot] Unhandled error:", error.message);
+    try {
+      await context.sendActivity("Sorry, something went wrong processing your message.");
+    } catch { /* best-effort */ }
+  };
+
   const server = http.createServer(async (req, res) => {
     // Microsoft Graph change notification webhook — no Bearer auth (Graph uses clientState validation)
     // GET: validation handshake during subscription creation
