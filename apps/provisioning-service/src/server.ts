@@ -30,7 +30,8 @@ const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
 const botAuth = new ConfigurationBotFrameworkAuthentication({
   MicrosoftAppId: config.microsoftClientId,
   MicrosoftAppPassword: config.microsoftClientSecret,
-  MicrosoftAppType: "MultiTenant",
+  MicrosoftAppType: "SingleTenant",
+  MicrosoftAppTenantId: config.microsoftTenantId,
 });
 const botAdapter = new CloudAdapter(botAuth);
 
@@ -342,6 +343,8 @@ export function startProxyServer() {
         const botReq = await toBotRequest(req);
         const botRes = toBotResponse(res);
         await botAdapter.process(botReq, botRes, async (context: TurnContext) => {
+          console.log(`[teams-bot] Activity received: type=${context.activity.type} from=${context.activity.from?.name} text=${(context.activity.text || "").slice(0, 50)}`);
+
           // Only handle message activities (ignore typing, conversationUpdate, etc.)
           if (context.activity.type !== ActivityTypes.Message) return;
 
@@ -352,6 +355,8 @@ export function startProxyServer() {
             || context.activity.channelData?.tenant?.id;
           const teamsUserId = context.activity.from?.id;
           const teamsUserName = context.activity.from?.name || "Teams User";
+
+          console.log(`[teams-bot] tenantId=${tenantId} userId=${teamsUserId} userName=${teamsUserName}`);
 
           if (!tenantId) {
             await context.sendActivity("Unable to identify your organization. Please contact support.");
