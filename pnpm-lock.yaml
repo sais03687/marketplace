@@ -36,6 +36,9 @@ importers:
       '@marketplace/db':
         specifier: workspace:*
         version: link:../../packages/db
+      adm-zip:
+        specifier: ^0.5.17
+        version: 0.5.17
       botbuilder:
         specifier: ^4.23.3
         version: 4.23.3
@@ -55,6 +58,9 @@ importers:
         specifier: ^171.4.0
         version: 171.4.0
     devDependencies:
+      '@types/adm-zip':
+        specifier: ^0.5.8
+        version: 0.5.8
       '@types/dockerode':
         specifier: ^3.3.38
         version: 3.3.47
@@ -1514,6 +1520,9 @@ packages:
     cpu: [arm64]
     os: [win32]
 
+  '@types/adm-zip@0.5.8':
+    resolution: {integrity: sha512-RVVH7QvZYbN+ihqZ4kX/dMiowf6o+Jk1fNwiSdx0NahBJLU787zkULhGhJM8mf/obmLGmgdMM0bXsQTmyfbR7Q==}
+
   '@types/body-parser@1.19.6':
     resolution: {integrity: sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==}
 
@@ -1620,6 +1629,10 @@ packages:
 
   adaptivecards@1.2.3:
     resolution: {integrity: sha512-amQ5OSW3OpIkrxVKLjxVBPk/T49yuOtnqs1z5ZPfZr0+OpTovzmiHbyoAGDIsu5SNYHwOZFp/3LGOnRaALFa/g==}
+
+  adm-zip@0.5.17:
+    resolution: {integrity: sha512-+Ut8d9LLqwEvHHJl1+PIHqoyDxFgVN847JTVM3Izi3xHDWPE4UtzzXysMZQs64DMcrJfBeS/uoEP4AD3HQHnQQ==}
+    engines: {node: '>=12.0'}
 
   agent-base@6.0.2:
     resolution: {integrity: sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==}
@@ -4184,6 +4197,10 @@ snapshots:
   '@turbo/windows-arm64@2.8.20':
     optional: true
 
+  '@types/adm-zip@0.5.8':
+    dependencies:
+      '@types/node': 22.19.15
+
   '@types/body-parser@1.19.6':
     dependencies:
       '@types/connect': 3.4.38
@@ -4316,6 +4333,8 @@ snapshots:
       negotiator: 1.0.0
 
   adaptivecards@1.2.3: {}
+
+  adm-zip@0.5.17: {}
 
   agent-base@6.0.2:
     dependencies:

@@ -52,6 +52,75 @@ for _env_key in list(os.environ):
 # NOW safe to import creator code — secrets and MCP URLs are no longer in os.environ
 from creator.agent import run_agent
 
+# ─── Platform-level approval gate for destructive workspace actions ──────────
+# The creator's agent.py imports microsoft_tools directly (as _mt). We can't
+# control that import, but we CAN monkey-patch the module's functions so that
+# destructive operations go through platform approval before executing.
+# This is enforced at the platform level — creators cannot bypass it.
+
+import logging as _logging
+
+# Categorise workspace actions by risk level:
+#   BLOCKED = always require approval (irreversible / destructive)
+#   AUDITED = log for audit trail, allow by default (core agent functionality)
+_BLOCKED_ACTIONS = {
+    "calendar_delete": "Delete a calendar event (irreversible)",
+}
+_AUDITED_ACTIONS = {
+    "calendar_create": "Create a calendar event",
+    "excel_write": "Overwrite cells in a spreadsheet",
+    "excel_append": "Append rows to a spreadsheet",
+    "drive_upload": "Upload a file to SharePoint",
+}
+_ALL_GATED_ACTIONS = {**_BLOCKED_ACTIONS, **_AUDITED_ACTIONS}
+
+try:
+    from creator import microsoft_tools as _mt_module
+except (ImportError, ValueError):
+    try:
+        import microsoft_tools as _mt_module  # type: ignore
+    except ImportError:
+        _mt_module = None
+
+if _mt_module is not None:
+    import functools
+
+    def _wrap_with_gate(action_name: str, original_fn):
+        """Wrap a microsoft_tools function with platform-level enforcement.
+        - BLOCKED actions: raise PermissionError (agent must use request_decision first)
+        - AUDITED actions: log for audit trail, execute normally
+        """
+
+        @functools.wraps(original_fn)
+        async def _gated(*args, **kwargs):
+            desc = _ALL_GATED_ACTIONS.get(action_name, action_name)
+            print(f"[platform-gate] {action_name} called — {desc}", flush=True)
+
+            if action_name in _BLOCKED_ACTIONS:
+                print(
+                    f"[platform-gate] BLOCKED {action_name} — requires manager approval "
+                    "(irreversible action)", flush=True,
+                )
+                raise PermissionError(
+                    f"Action '{action_name}' is blocked by platform policy because it is "
+                    "irreversible. Use request_decision to ask the manager for confirmation "
+                    "first, then retry after approval."
+                )
+
+            # Audited action — log and allow
+            print(f"[platform-gate] {action_name} — allowed (audit logged)", flush=True)
+            return await original_fn(*args, **kwargs)
+
+        return _gated
+
+    # Patch gated methods on the module — affects all imports of microsoft_tools.
+    # Because Python modules are singletons, this also patches the creator's _mt reference.
+    for _action_name in _ALL_GATED_ACTIONS:
+        if hasattr(_mt_module, _action_name):
+            _original = getattr(_mt_module, _action_name)
+            setattr(_mt_module, _action_name, _wrap_with_gate(_action_name, _original))
+            print(f"[platform-gate] Wrapped microsoft_tools.{_action_name}", flush=True)
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 DEPLOYMENT_ID = os.environ.get("DEPLOYMENT_ID", "unknown")
@@ -339,7 +408,7 @@ def render_markdown_email(text: str) -> str:
     return _EMAIL_HTML_WRAPPER.format(body=f"<div>{escaped}</div>")
 
 
-async def send_email(to: str, subject: str, text: str, thread_id: str | None = None) -> dict:
+async def send_email(to: str, subject: str, text: str, thread_id: str | None = None, attachments: list | None = None) -> dict:
     """Send an email via Outlook Graph proxy or AgentMail, depending on EMAIL_MODE."""
     clean_text = scrub_placeholders(text)
     clean_subject = scrub_placeholders(subject)
@@ -354,6 +423,8 @@ async def send_email(to: str, subject: str, text: str, thread_id: str | None = N
                 "body": render_markdown_email(clean_text),
                 "bodyType": "html",
             }
+            if attachments:
+                payload["attachments"] = attachments
             resp = await c.post(OUTLOOK_SEND_URL, json=payload)
             resp.raise_for_status()
             return resp.json()
@@ -368,6 +439,7 @@ async def send_email(to: str, subject: str, text: str, thread_id: str | None = N
     }
     if thread_id:
         payload["thread_id"] = thread_id
+    # AgentMail doesn't support attachments yet — skip
     resp = await client.post(f"/inboxes/{AGENT_EMAIL}/messages/send", json=payload)
     resp.raise_for_status()
     return resp.json()
@@ -380,6 +452,7 @@ async def reply_email(
     fallback_to: str | None = None,
     fallback_subject: str | None = None,
     fallback_thread_id: str | None = None,
+    attachments: list | None = None,
 ) -> dict:
     """Reply to a specific inbound message.
 
@@ -401,6 +474,8 @@ async def reply_email(
                     "bodyType": "html",
                     "replyToMessageId": message_id,
                 }
+                if attachments:
+                    payload["attachments"] = attachments
                 resp = await c.post(OUTLOOK_SEND_URL, json=payload)
                 resp.raise_for_status()
                 return resp.json()
@@ -440,6 +515,7 @@ async def reply_email(
             subject=subj,
             text=clean_text,
             thread_id=fallback_thread_id,
+            attachments=attachments,
         )
 
     raise RuntimeError(
@@ -1256,6 +1332,49 @@ async def receive_agentmail_webhook(request: Request):
     return {"ok": True, "status": "accepted"}
 
 
+# ─── Teams conversation history (in-memory, per conversation) ────────────────
+# Stores recent messages so follow-up questions have context.
+# Each entry: {"role": "user"|"assistant", "text": str}
+# Capped at _TEAMS_HISTORY_MAX messages per conversation. Evicted after 1 hour idle.
+_TEAMS_HISTORY_MAX = 20
+_teams_history: dict[str, list[dict]] = {}  # conversation_id -> [messages]
+_teams_history_ts: dict[str, float] = {}    # conversation_id -> last_activity_timestamp
+
+
+def _get_teams_history(conversation_id: str) -> list[dict]:
+    """Get conversation history, evicting stale conversations."""
+    now = time.time()
+    # Evict conversations idle for > 1 hour
+    stale = [k for k, ts in _teams_history_ts.items() if now - ts > 3600]
+    for k in stale:
+        _teams_history.pop(k, None)
+        _teams_history_ts.pop(k, None)
+    return _teams_history.get(conversation_id, [])
+
+
+def _append_teams_history(conversation_id: str, role: str, text: str):
+    """Append a message to conversation history."""
+    if conversation_id not in _teams_history:
+        _teams_history[conversation_id] = []
+    _teams_history[conversation_id].append({"role": role, "text": text[:2000]})
+    # Cap history length
+    if len(_teams_history[conversation_id]) > _TEAMS_HISTORY_MAX:
+        _teams_history[conversation_id] = _teams_history[conversation_id][-_TEAMS_HISTORY_MAX:]
+    _teams_history_ts[conversation_id] = time.time()
+
+
+def _format_teams_history(history: list[dict]) -> str:
+    """Format conversation history for inclusion in the agent prompt."""
+    if not history:
+        return ""
+    lines = ["[CONVERSATION HISTORY — most recent messages in this chat]"]
+    for msg in history:
+        prefix = "User" if msg["role"] == "user" else "You"
+        lines.append(f"{prefix}: {msg['text']}")
+    lines.append("[END HISTORY]\n")
+    return "\n".join(lines)
+
+
 @app.post("/hooks/teams")
 async def receive_teams_message(request: Request):
     """Receive a message from Microsoft Teams via the provisioning service.
@@ -1304,8 +1423,80 @@ async def receive_teams_message(request: Request):
 
         print(f"[adapter] Teams message from {teams_user_name}: {message[:100]}...", flush=True)
 
+        # Record user message in conversation history
+        _append_teams_history(conversation_id, "user", message)
+        history = _get_teams_history(conversation_id)
+        # Only include history context if there are prior messages (not just the current one)
+        history_context = _format_teams_history(history[:-1]) if len(history) > 1 else ""
+
+        # Capture files generated by MCP tools (python-sandbox outputs)
+        _captured_files = []
+        _last_stdout = ""  # fallback text if agent doesn't reply
+
+        async def _capturing_mcp_fn(server: str, tool: str, arguments: dict):
+            nonlocal _last_stdout
+            result = await call_mcp_tool(server, tool, arguments)
+            # Intercept file outputs from python-sandbox
+            if isinstance(result, dict):
+                # Capture stdout from successful runs (for fallback reply text)
+                if result.get("stdout") and result.get("returncode", 1) == 0:
+                    _last_stdout = result["stdout"].strip()
+                if result.get("files"):
+                    for f in result["files"]:
+                        name = f.get("name", "output")
+                        b64 = f.get("base64_content", "")
+                        if b64:
+                            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                            ct_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                                      "csv": "text/csv", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                      "pdf": "application/pdf"}
+                            _captured_files.append({
+                                "name": name,
+                                "base64": b64,
+                                "contentType": ct_map.get(ext, "application/octet-stream"),
+                            })
+            return result
+
+        # Wrap message with Teams-specific instructions so the agent replies
+        # in chat style rather than email style.
+        teams_content = (
+            f"{history_context}"
+            f"[TEAMS CHAT] Direct message from {teams_user_name}:\n"
+            f"{message}\n\n"
+            "[SYSTEM] This is a real-time Microsoft Teams chat, NOT email. "
+            "The user is waiting in real time so respond QUICKLY.\n"
+            "CRITICAL RULES FOR TEAMS CHAT:\n"
+            "- Keep your response SHORT and conversational — no email signatures, "
+            "no 'Best regards', no subject lines.\n"
+            "- ALWAYS use action type 'reply_email' with your chat response in params.text.\n"
+            "- Do NOT start with drive_list — this is a chat, not an email task. "
+            "Jump straight to the user's request.\n"
+            "- For simple greetings, questions, follow-ups, or 'what if' scenarios: "
+            "do the math in your REASONING and reply immediately with completed=true "
+            "on the FIRST iteration. Do NOT re-run python code or search SharePoint "
+            "for questions you can answer from the conversation history or simple arithmetic.\n"
+            "- ONLY use mcp_call/execute_python when the user explicitly asks for a NEW "
+            "chart, visualization, or complex data processing that truly requires code.\n"
+            "- If you DO use execute_python:\n"
+            "  1. In your Python code, ALWAYS save charts/files to /tmp/output/ "
+            "(e.g. plt.savefig('/tmp/output/dashboard.png', dpi=150, bbox_inches='tight')). "
+            "Do NOT print base64 to stdout.\n"
+            "  2. On the VERY NEXT iteration after getting the python results, "
+            "set completed=true and reply with the KEY DATA (actual numbers, insights, "
+            "trends) in params.text. The system will automatically attach any files "
+            "saved to /tmp/output/ to the Teams message.\n"
+            "  3. Do NOT use drive_upload for charts — they are sent inline automatically. "
+            "ONLY use drive_upload if the user explicitly asks to save to SharePoint.\n"
+            "- Your reply MUST contain actual data and findings, not just "
+            "'I generated a chart'. Include the numbers.\n"
+            "- You have LIMITED iterations. Do NOT waste iterations on action='none'. "
+            "Every iteration must either execute a tool or reply with completed=true.\n"
+            "- You MUST set completed=true and provide reply text before running out "
+            "of iterations. Never end with action='none' — always reply."
+        )
+
         result = await run_agent(
-            content=f"Teams message from {teams_user_name}:\n{message}",
+            content=teams_content,
             context=context,
             approve_fn=_bypass_approve,
             resolve_fn=_bypass_resolve,
@@ -1313,24 +1504,34 @@ async def receive_teams_message(request: Request):
             search_fn=search_knowledge,
             use_fn=report_usage,
             request_decision_fn=request_decision,
-            **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+            **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
         )
 
         if not isinstance(result, dict):
             return {"ok": False, "error": "Agent returned invalid response"}
 
+        print(f"[adapter] Teams run_agent result keys: {list(result.keys())}", flush=True)
+        print(f"[adapter] Teams run_agent result: { {k: str(v)[:200] for k, v in result.items()} }", flush=True)
+
         # Extract the reply text from the agent result.
         # The agent may return action=send_email/reply_email with text, or action=none.
         # For Teams we just need the text content regardless of action type.
+        # Also check params.text for cases where text is nested under params.
         reply_text = result.get("text", "")
+        if not reply_text and isinstance(result.get("params"), dict):
+            reply_text = result["params"].get("text", "")
 
         if not reply_text:
             # Retry once with explicit instruction (same pattern as AgentMail fallback)
             retry_content = (
-                f"Teams message from {teams_user_name}:\n{message}"
-                "\n\n[SYSTEM REMINDER] The above is a direct message from a user "
+                f"[TEAMS CHAT] Direct message from {teams_user_name}:\n"
+                f"{message}\n\n"
+                "[SYSTEM REMINDER] The above is a direct message from a user "
                 "on Microsoft Teams who is waiting for a response. You MUST reply. "
-                "Populate draft.text with a complete, helpful response."
+                "Keep it short and conversational — no email formatting. "
+                "Use action='reply_email' and put your response in params.text. "
+                "Do NOT upload files — just describe results in text. "
+                "Set completed=true on the FIRST iteration."
             )
             retry_result = await run_agent(
                 content=retry_content,
@@ -1341,23 +1542,105 @@ async def receive_teams_message(request: Request):
                 search_fn=search_knowledge,
                 use_fn=report_usage,
                 request_decision_fn=request_decision,
-                **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+                **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             )
             reply_text = retry_result.get("text", "") if isinstance(retry_result, dict) else ""
 
+        if not reply_text and _last_stdout:
+            # Agent ran code successfully but didn't reply — use the stdout as fallback
+            reply_text = _last_stdout
         if not reply_text:
             reply_text = "I received your message but wasn't able to formulate a response. Could you try rephrasing?"
 
-        # Strip HTML if markdown lib is available (Teams prefers plain text / markdown)
-        # The agent may return HTML-formatted email text
+        # Deduplicate captured files (agent may re-run code multiple times)
+        if _captured_files:
+            seen = set()
+            deduped = []
+            for f in reversed(_captured_files):  # prefer latest version
+                if f["name"] not in seen:
+                    seen.add(f["name"])
+                    deduped.append(f)
+            _captured_files.clear()
+            _captured_files.extend(reversed(deduped))
+
+        # Clean up the reply for chat context
+        import re as _re
+
+        # Strip HTML tags (agent may return email-formatted HTML)
         if "<" in reply_text and ">" in reply_text:
-            import re as _re
             reply_text = _re.sub(r"<br\s*/?>", "\n", reply_text)
             reply_text = _re.sub(r"<[^>]+>", "", reply_text)
-            reply_text = reply_text.strip()
 
-        print(f"[adapter] Teams reply ({len(reply_text)} chars) to {teams_user_name}", flush=True)
-        return {"ok": True, "reply": reply_text}
+        # Strip email signatures and sign-offs
+        reply_text = _re.sub(
+            r"\n*(Best regards|Kind regards|Regards|Sincerely|Thanks|Cheers),?\s*\n.*",
+            "",
+            reply_text,
+            flags=_re.DOTALL | _re.IGNORECASE,
+        )
+        # Strip agent name/title signature block at the end (e.g. "Data Analyst\nData Analyst, TestCorp")
+        reply_text = _re.sub(
+            r"\n{2,}[A-Z][A-Za-z ]+\n[A-Z][A-Za-z ,]+$",
+            "",
+            reply_text,
+        )
+        reply_text = reply_text.strip()
+
+        # ── Approval check for external actions triggered from Teams ──────
+        # If the agent tried to send an email (not just reply in chat),
+        # check if it needs approval before sending.
+        action = result.get("action", "none")
+        email_to = result.get("to", "")
+        if action == "send_email" and email_to and email_to != "None":
+            needs_approval_flag, approval_reason = _should_require_approval(email_to)
+            if needs_approval_flag:
+                # Queue for approval — don't send yet
+                try:
+                    risk = result.get("risk_assessment") or {}
+                    queued_id = await _tracked_queue(
+                        task_type=result.get("task_type", "send_email"),
+                        channel="teams",
+                        draft=result.get("text", ""),
+                        reasoning=f"Email to {email_to} triggered from Teams chat ({approval_reason})",
+                        stakes=float(risk.get("stakes", 5)),
+                        ambiguity=float(risk.get("ambiguity", 5)),
+                        reversibility=float(risk.get("reversibility", 5)),
+                        thread_id=conversation_id,
+                        original_request=message,
+                    )
+                    reply_text += (
+                        f"\n\n⏳ I've drafted an email to {email_to} but it needs "
+                        "manager approval before I can send it. I'll send it once approved."
+                    )
+                    print(f"[adapter] Teams: queued email to {email_to} for approval (id={queued_id})", flush=True)
+                except Exception as e:
+                    print(f"[adapter] Teams: failed to queue approval: {e}", flush=True)
+                    reply_text += f"\n\n⚠️ I tried to send an email to {email_to} but couldn't queue it for approval."
+            else:
+                # Auto-approved (internal/manager) — send it
+                try:
+                    _att = [{"name": f["name"], "content_base64": f["base64"], "contentType": f["contentType"]}
+                            for f in _captured_files] if _captured_files else None
+                    await send_email(
+                        to=email_to,
+                        subject=result.get("subject", ""),
+                        text=result.get("text", ""),
+                        attachments=_att,
+                    )
+                    reply_text += f"\n\n✅ Email sent to {email_to}."
+                    print(f"[adapter] Teams: auto-approved email to {email_to}", flush=True)
+                except Exception as e:
+                    print(f"[adapter] Teams: send_email failed: {e}", flush=True)
+                    reply_text += f"\n\n⚠️ I tried to send an email to {email_to} but it failed."
+
+        # Record agent reply in conversation history
+        _append_teams_history(conversation_id, "assistant", reply_text)
+
+        print(f"[adapter] Teams reply ({len(reply_text)} chars, {len(_captured_files)} files) to {teams_user_name}", flush=True)
+        response = {"ok": True, "reply": reply_text}
+        if _captured_files:
+            response["files"] = _captured_files
+        return response
 
     except Exception as exc:
         print(f"[adapter] Teams handler error: {exc}", flush=True)
@@ -1398,6 +1681,27 @@ async def _handle_message(message: str, context: dict):
             "workspace_provider": WORKSPACE_PROVIDER,
         }
 
+        # Capture files generated by MCP tools (for email attachments)
+        _email_captured_files: list[dict] = []
+
+        async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
+            mcp_result = await call_mcp_tool(server, tool, arguments)
+            if isinstance(mcp_result, dict) and mcp_result.get("files"):
+                for f in mcp_result["files"]:
+                    name = f.get("name", "output")
+                    b64 = f.get("base64_content", "")
+                    if b64:
+                        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                        ct_map = {"png": "image/png", "jpg": "image/jpeg", "csv": "text/csv",
+                                  "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                  "pdf": "application/pdf"}
+                        _email_captured_files.append({
+                            "name": name,
+                            "content_base64": b64,
+                            "contentType": ct_map.get(ext, "application/octet-stream"),
+                        })
+            return mcp_result
+
         print(f"[adapter] Running agent graph...", flush=True)
         result = await run_agent(
             content=message,
@@ -1408,7 +1712,7 @@ async def _handle_message(message: str, context: dict):
             search_fn=search_knowledge,
             use_fn=report_usage,
             request_decision_fn=request_decision,
-            **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+            **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
         )
 
         if not isinstance(result, dict):
@@ -1552,6 +1856,11 @@ async def _handle_message(message: str, context: dict):
                 print(f"[adapter] Rate limited: email budget exceeded for tier {MODEL}")
                 return
 
+            # Prepare attachments from captured MCP files (if any)
+            _att = _email_captured_files if _email_captured_files else None
+            if _att:
+                print(f"[adapter] Attaching {len(_att)} file(s) to email", flush=True)
+
             if action == "send_email":
                 send_to = result.get("to") or context.get("sender", "")
                 if not send_to:
@@ -1562,6 +1871,7 @@ async def _handle_message(message: str, context: dict):
                     subject=result.get("subject", ""),
                     text=result["text"],
                     thread_id=result.get("thread_id"),
+                    attachments=_att,
                 )
             elif action == "reply_email":
                 await reply_email(
@@ -1570,6 +1880,7 @@ async def _handle_message(message: str, context: dict):
                     fallback_to=_extract_email(result.get("to") or context.get("sender", "")),
                     fallback_subject=context.get("subject", ""),
                     fallback_thread_id=result.get("thread_id") or context.get("thread_id"),
+                    attachments=_att,
                 )
 
             # Clean up tracked approval

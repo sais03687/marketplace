@@ -29,6 +29,26 @@ export async function GET(request: Request) {
 
   console.log(`[microsoft-callback] Admin consent granted — tenant=${tenantId}, returnTo=${returnTo}`);
 
+  // Fire-and-forget: install the Teams app into the buyer's org catalog.
+  // This runs asynchronously so it doesn't block the redirect back to the hire wizard.
+  const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "http://5.161.125.216:3003";
+  const provisioningSecret = process.env.PROVISIONING_SECRET;
+  if (provisioningSecret) {
+    fetch(`${provisioningUrl}/internal/teams-install`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${provisioningSecret}`,
+      },
+      body: JSON.stringify({ tenantId }),
+    }).then((r) => {
+      if (r.ok) console.log(`[microsoft-callback] Teams app install triggered for tenant ${tenantId}`);
+      else r.text().then((t) => console.warn(`[microsoft-callback] Teams app install failed: ${r.status} ${t}`));
+    }).catch((err) => {
+      console.warn(`[microsoft-callback] Teams app install request failed: ${err.message}`);
+    });
+  }
+
   return NextResponse.redirect(
     `${appUrl}${returnTo}?microsoft=connected&microsoftTenantId=${encodeURIComponent(tenantId)}`,
   );

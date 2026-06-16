@@ -135,6 +135,7 @@ model Deployment {
   msGraphSubId                  String?
   workspaceScope                String                  @default("platform")
   buyerMicrosoftTenantId        String?
+  teamsServiceUrl               String?
   mailboxLocation               String                  @default("platform")
   buyerMailboxAddress            String?
   approvals                     Approval[]

@@ -75,6 +75,8 @@ export async function POST(
       agentEmailInboxId: true,
       weeklyDigestEmail: true,
       portalToken: true,
+      buyerMicrosoftTenantId: true,
+      teamsServiceUrl: true,
     },
   });
   if (!deployment) {
@@ -149,6 +151,36 @@ export async function POST(
       subject,
       html,
     });
+  }
+
+  // Send Teams approval card to manager (fire-and-forget)
+  if (deployment.buyerMicrosoftTenantId && deployment.teamsServiceUrl && deployment.weeklyDigestEmail) {
+    const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "http://5.161.125.216:3003";
+    const provisioningSecret = process.env.PROVISIONING_SECRET;
+    if (provisioningSecret) {
+      fetch(`${provisioningUrl}/internal/teams-approval-notify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${provisioningSecret}`,
+        },
+        body: JSON.stringify({
+          managerEmail: deployment.weeklyDigestEmail,
+          tenantId: deployment.buyerMicrosoftTenantId,
+          serviceUrl: deployment.teamsServiceUrl,
+          agentName: deployment.agentName,
+          taskType: String(taskType || "unknown"),
+          draftPreview: String(draft || "").slice(0, 1000),
+          approvalId: approval.id,
+          portalToken: deployment.portalToken,
+        }),
+      }).then((r) => {
+        if (r.ok) console.log(`[approvals] Teams approval card sent for ${approval.id}`);
+        else r.text().then((t) => console.warn(`[approvals] Teams approval notify failed: ${r.status} ${t}`));
+      }).catch((err) => {
+        console.warn(`[approvals] Teams approval notify request failed: ${err.message}`);
+      });
+    }
   }
 
   return jsonSuccess({ approval: { id: approval.id, status: approval.status } }, 201);

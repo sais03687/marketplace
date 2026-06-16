@@ -11,7 +11,9 @@
   "dependencies": {
     "@marketplace/agent-package-schema": "workspace:*",
     "@marketplace/db": "workspace:*",
+    "adm-zip": "^0.5.17",
     "botbuilder": "^4.23.3",
+    "botframework-connector": "^4.23.3",
     "bullmq": "^5.34.0",
     "dockerode": "^4.0.4",
     "dotenv": "^17.3.1",
@@ -19,6 +21,7 @@
     "googleapis": "^171.4.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/dockerode": "^3.3.38",
     "@types/express": "^5.0.0",
     "tsx": "^4.19.0",

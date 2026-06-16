@@ -19,6 +19,10 @@
  */
 
 import { config } from "../config.js";
+import AdmZip from "adm-zip";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const TOKEN_URL = `https://login.microsoftonline.com/${config.microsoftTenantId}/oauth2/v2.0/token`;
@@ -592,4 +596,134 @@ export async function deleteSharedMailbox(
     if (err.message?.includes("404") || err.message?.includes("Request_ResourceNotFound")) return;
     throw err;
   }
+}
+
+// ─── User Lookup ────────────────────────────────────────────────────────
+
+/**
+ * Look up a user by email address in a Microsoft 365 tenant.
+ * Returns the user's Azure AD object ID (which doubles as their Teams user ID),
+ * display name, and mail address.
+ *
+ * @param email       The user's email / UPN to look up
+ * @param tenantId    Target tenant (defaults to the platform tenant)
+ */
+export async function getUserByEmail(
+  email: string,
+  tenantId?: string,
+): Promise<{ id: string; displayName: string; mail: string }> {
+  const tid = tenantId ?? config.microsoftTenantId;
+  const { access_token } = await mintTokenForTenant(tid);
+
+  const resp = await fetch(`${GRAPH}/users/${encodeURIComponent(email)}?$select=id,displayName,mail`, {
+    headers: {
+      Authorization: `Bearer ${access_token}`,
+    },
+  });
+
+  if (!resp.ok) {
+    throw new Error(`getUserByEmail failed for ${email} (tenant ${tid}): ${resp.status} ${await resp.text()}`);
+  }
+
+  const data = await resp.json() as { id: string; displayName: string; mail: string };
+  return { id: data.id, displayName: data.displayName, mail: data.mail };
+}
+
+// ─── Teams App Auto-Install ──────────────────────────────────────────────
+
+/**
+ * Build the Teams app zip package in memory from the teams-app/ directory.
+ * Returns a Buffer containing the zip file.
+ */
+function buildTeamsAppZip(): Buffer {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const teamsAppDir = path.resolve(__dirname, "../../teams-app");
+
+  const zip = new AdmZip();
+  zip.addLocalFile(path.join(teamsAppDir, "manifest.json"));
+  zip.addLocalFile(path.join(teamsAppDir, "icon-color.png"));
+  zip.addLocalFile(path.join(teamsAppDir, "icon-outline.png"));
+
+  return zip.toBuffer();
+}
+
+/**
+ * Upload and install the Teams app into a buyer's organization app catalog.
+ *
+ * Uses Graph API to:
+ * 1. Upload the Teams app zip to the org's app catalog
+ * 2. The app becomes available to all users in that tenant
+ *
+ * Requires: AppCatalog.ReadWrite.All permission (granted via admin consent).
+ *
+ * If the app is already installed (same externalId/manifest ID), it updates it instead.
+ *
+ * Returns the teamsAppId from the catalog.
+ */
+export async function installTeamsAppForTenant(
+  tenantId: string,
+): Promise<{ teamsAppId: string }> {
+  const { access_token } = await mintTokenForTenant(tenantId);
+  const zipBuffer = buildTeamsAppZip();
+
+  // First, check if the app is already in the catalog (by externalId = manifest id)
+  const manifestId = "76bfdef8-89ff-465c-ab4c-099a05a45e8c";
+  let existingAppId: string | null = null;
+
+  try {
+    const existing = await graphRequestForTenant(
+      tenantId, "GET",
+      `/appCatalogs/teamsApps?$filter=externalId eq '${manifestId}'&$select=id,externalId`,
+    ) as { value: Array<{ id: string; externalId: string }> };
+    if (existing.value?.length > 0) {
+      existingAppId = existing.value[0]!.id;
+      console.log(`[teams-install] App already in catalog for tenant ${tenantId} (id=${existingAppId}), updating...`);
+    }
+  } catch (err: any) {
+    console.log(`[teams-install] Could not check existing app: ${err.message}`);
+  }
+
+  if (existingAppId) {
+    // Update existing app
+    const resp = await fetch(
+      `https://graph.microsoft.com/v1.0/appCatalogs/teamsApps/${existingAppId}/appDefinitions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+          "Content-Type": "application/zip",
+        },
+        body: new Uint8Array(zipBuffer),
+      },
+    );
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`[teams-install] Failed to update Teams app in catalog (tenant ${tenantId}): ${resp.status} ${errText}`);
+    }
+    console.log(`[teams-install] Updated Teams app in catalog for tenant ${tenantId}`);
+    return { teamsAppId: existingAppId };
+  }
+
+  // Upload new app to org catalog
+  const resp = await fetch(
+    "https://graph.microsoft.com/v1.0/appCatalogs/teamsApps?requiresReview=false",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+        "Content-Type": "application/zip",
+      },
+      body: new Uint8Array(zipBuffer),
+    },
+  );
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`[teams-install] Failed to upload Teams app to catalog (tenant ${tenantId}): ${resp.status} ${errText}`);
+  }
+
+  const data = await resp.json() as { id: string };
+  console.log(`[teams-install] Teams app uploaded to catalog for tenant ${tenantId} (id=${data.id})`);
+
+  return { teamsAppId: data.id };
 }

@@ -14,7 +14,7 @@ import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
 import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
-import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain, installTeamsAppForTenant } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
@@ -223,6 +223,14 @@ export async function provisionJob(deploymentId: string): Promise<void> {
           },
         });
         console.log(`[provision] Buyer-org shared mailbox created: ${mailbox.email}`);
+
+        // Auto-install Teams app into buyer's org catalog (non-fatal)
+        try {
+          const { teamsAppId } = await installTeamsAppForTenant(buyerTenantId);
+          console.log(`[provision] Teams app installed in buyer org catalog (teamsAppId=${teamsAppId})`);
+        } catch (teamsErr: any) {
+          console.warn(`[provision] Teams app auto-install failed (non-fatal): ${teamsErr.message}`);
+        }
       } catch (err: any) {
         console.warn(`[provision] Buyer-org shared mailbox creation failed: ${err.message}`);
         // Fall back to platform user
