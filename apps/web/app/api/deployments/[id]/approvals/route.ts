@@ -153,33 +153,40 @@ export async function POST(
     });
   }
 
-  // Send Teams approval card to manager (fire-and-forget)
+  // Send Teams approval card to manager (awaited so Vercel doesn't kill the function early)
   if (deployment.buyerMicrosoftTenantId && deployment.teamsServiceUrl && deployment.managerEmail) {
     const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "http://5.161.125.216:3003";
     const provisioningSecret = process.env.PROVISIONING_SECRET;
+    console.log(`[approvals] Teams notify check: tenantId=${deployment.buyerMicrosoftTenantId}, serviceUrl=${!!deployment.teamsServiceUrl}, managerEmail=${deployment.managerEmail}, provisioningUrl=${provisioningUrl}, hasSecret=${!!provisioningSecret}`);
     if (provisioningSecret) {
-      fetch(`${provisioningUrl}/internal/teams-approval-notify`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provisioningSecret}`,
-        },
-        body: JSON.stringify({
-          managerEmail: deployment.managerEmail,
-          tenantId: deployment.buyerMicrosoftTenantId,
-          serviceUrl: deployment.teamsServiceUrl,
-          agentName: deployment.agentName,
-          taskType: String(taskType || "unknown"),
-          draftPreview: String(draft || "").slice(0, 1000),
-          approvalId: approval.id,
-          portalToken: deployment.portalToken,
-        }),
-      }).then((r) => {
-        if (r.ok) console.log(`[approvals] Teams approval card sent for ${approval.id}`);
-        else r.text().then((t) => console.warn(`[approvals] Teams approval notify failed: ${r.status} ${t}`));
-      }).catch((err) => {
-        console.warn(`[approvals] Teams approval notify request failed: ${err.message}`);
-      });
+      try {
+        const notifyResp = await fetch(`${provisioningUrl}/internal/teams-approval-notify`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${provisioningSecret}`,
+          },
+          body: JSON.stringify({
+            managerEmail: deployment.managerEmail,
+            tenantId: deployment.buyerMicrosoftTenantId,
+            serviceUrl: deployment.teamsServiceUrl,
+            agentName: deployment.agentName,
+            taskType: String(taskType || "unknown"),
+            draftPreview: String(draft || "").slice(0, 1000),
+            approvalId: approval.id,
+            portalToken: deployment.portalToken,
+          }),
+        });
+        if (notifyResp.ok) {
+          console.log(`[approvals] Teams approval card sent for ${approval.id}`);
+        } else {
+          const t = await notifyResp.text();
+          console.warn(`[approvals] Teams approval notify failed: ${notifyResp.status} ${t}`);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[approvals] Teams approval notify request failed: ${message}`);
+      }
     }
   }
 

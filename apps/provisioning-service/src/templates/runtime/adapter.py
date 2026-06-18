@@ -128,7 +128,7 @@ AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "")
 COMPANY_DOMAIN = os.environ.get("COMPANY_DOMAIN", "")
-MANAGER_EMAIL = os.environ.get("MANAGER_EMAIL", "")
+MANAGER_EMAIL = os.environ.get("MANAGER_EMAIL", "") or os.environ.get("WEEKLY_DIGEST_EMAIL", "")
 AGENTMAIL_API_KEY = _secrets["AGENTMAIL_API_KEY"]
 ANTHROPIC_API_KEY = _secrets["ANTHROPIC_API_KEY"]
 MODEL = os.environ.get("MODEL", "sonnet")
@@ -1421,6 +1421,11 @@ async def receive_teams_message(request: Request):
         async def _bypass_resolve(approval_id, **kwargs) -> dict:
             return {"status": "APPROVED"}
 
+        # Captured approval reply — set by _teams_request_decision so the
+        # adapter can use it even if run_agent's final iteration returns
+        # action=none with no text.
+        _pending_approval_reply: str = ""
+
         # Non-blocking request_decision for Teams: queue the approval but
         # return immediately so the agent can tell the user it's pending.
         # The manager gets the Adaptive Card DM separately; the agent
@@ -1455,13 +1460,15 @@ async def receive_teams_message(request: Request):
                     original_request=question,
                 )
                 print(f"[adapter] Teams decision request queued (non-blocking): {approval_id}", flush=True)
+                nonlocal _pending_approval_reply
+                _pending_approval_reply = (
+                    "Your request requires manager approval. An approval card has been "
+                    "sent to the manager via Teams. Once approved, send your request "
+                    "again and I'll proceed."
+                )
                 return {
                     "status": "PENDING",
-                    "answer": (
-                        "Your request requires manager approval. An approval card has been "
-                        "sent to the manager. Once approved, send your request again and "
-                        "the agent will proceed."
-                    ),
+                    "answer": _pending_approval_reply,
                 }
             except Exception as e:
                 print(f"[adapter] Teams decision request failed: {e}", flush=True)
@@ -1592,6 +1599,10 @@ async def receive_teams_message(request: Request):
             )
             reply_text = retry_result.get("text", "") if isinstance(retry_result, dict) else ""
 
+        if not reply_text and _pending_approval_reply:
+            # Agent hit a blocked action, queued approval, but final iteration
+            # returned action=none without text — use the approval message.
+            reply_text = _pending_approval_reply
         if not reply_text and _last_stdout:
             # Agent ran code successfully but didn't reply — use the stdout as fallback
             reply_text = _last_stdout
