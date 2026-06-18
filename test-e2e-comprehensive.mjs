@@ -224,7 +224,7 @@ async function phase1_provision() {
         approvalPolicy: "external-only",
         autoApproveList: "",
       },
-      weeklyDigestEmail: testInboxHandle?.email_address || "alex@acme-e2e.com",
+      managerEmail: testInboxHandle?.email_address || "alex@acme-e2e.com",
       onboardingData: {
         company_focus: "B2B SaaS for HR teams",
         key_contacts: "CEO: Sarah Chen <sarah@acme-e2e.com>",

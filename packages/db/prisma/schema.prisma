@@ -116,7 +116,7 @@ model Deployment {
   onboardingState               OnboardingState         @default(INTERVIEW)
   onboardingData                Json?
   approvalWebhookToken          String                  @default(cuid())
-  weeklyDigestEmail             String?
+  managerEmail                  String?                         @map("weeklyDigestEmail")
   allowedEmails                 Json                    @default("[]")
   autoUpdate                    Boolean                 @default(true)
   createdAt                     DateTime                @default(now())

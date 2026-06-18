@@ -26,7 +26,7 @@ async function main() {
       agentVersion: agent.currentVersion,
       agentName: "Alex",
       status: "PROVISIONING",
-      weeklyDigestEmail: "saiha@test.example.com",
+      managerEmail: "saiha@test.example.com",
       autonomyConfig: {
         email_triage: "always_queue",
         meeting_prep: "always_queue",

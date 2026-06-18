@@ -22,7 +22,7 @@ export interface DeploymentOpenClawConfig {
   llmApiKey?: string;
   llmBaseUrl?: string;
   llmModel?: string;
-  weeklyDigestEmail?: string;
+  managerEmail?: string;
   heartbeatIntervalHours?: number;   // if set, adds a periodic heartbeat cron + hook
   heartbeatIntervalMinutes?: number; // override for dev/testing — uses */N * * * * format
 }
@@ -197,23 +197,10 @@ export function generateDeploymentConfig(
   const configPath = join(stateDir, "openclaw.json");
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 
-  // Write cron/jobs.json with weekly digest if recipient is configured
+  // Write cron/jobs.json
   const cronDir = join(stateDir, "cron");
   mkdirSync(cronDir, { recursive: true });
   const cronJobs: { version: number; jobs: unknown[] } = { version: 1, jobs: [] };
-  if (opts.weeklyDigestEmail) {
-    cronJobs.jobs.push({
-      name: "Weekly Digest",
-      schedule: { kind: "cron", expr: "0 9 * * 1" },
-      sessionTarget: "isolated",
-      wakeMode: "now",
-      payload: {
-        kind: "agentTurn",
-        message: `It is Monday morning. Compose and send the weekly digest email to ${opts.weeklyDigestEmail}. Follow the weekly-digest skill instructions exactly.`,
-      },
-      delivery: { mode: "none" },
-    });
-  }
 
   const heartbeatCronExpr = opts.heartbeatIntervalMinutes !== undefined
     ? `*/${opts.heartbeatIntervalMinutes} * * * *`           // every N minutes (testing)

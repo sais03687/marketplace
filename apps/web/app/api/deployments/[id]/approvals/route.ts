@@ -73,7 +73,7 @@ export async function POST(
       status: true,
       agentName: true,
       agentEmailInboxId: true,
-      weeklyDigestEmail: true,
+      managerEmail: true,
       portalToken: true,
       buyerMicrosoftTenantId: true,
       teamsServiceUrl: true,
@@ -135,7 +135,7 @@ export async function POST(
   });
 
   // Send email notification (fire-and-forget)
-  if (deployment.weeklyDigestEmail) {
+  if (deployment.managerEmail) {
     const portalUrl = deployment.portalToken
       ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
       : null;
@@ -147,14 +147,14 @@ export async function POST(
     });
     sendNotificationEmail({
       inboxId: deployment.agentEmailInboxId,
-      to: deployment.weeklyDigestEmail,
+      to: deployment.managerEmail,
       subject,
       html,
     });
   }
 
   // Send Teams approval card to manager (fire-and-forget)
-  if (deployment.buyerMicrosoftTenantId && deployment.teamsServiceUrl && deployment.weeklyDigestEmail) {
+  if (deployment.buyerMicrosoftTenantId && deployment.teamsServiceUrl && deployment.managerEmail) {
     const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "http://5.161.125.216:3003";
     const provisioningSecret = process.env.PROVISIONING_SECRET;
     if (provisioningSecret) {
@@ -165,7 +165,7 @@ export async function POST(
           Authorization: `Bearer ${provisioningSecret}`,
         },
         body: JSON.stringify({
-          managerEmail: deployment.weeklyDigestEmail,
+          managerEmail: deployment.managerEmail,
           tenantId: deployment.buyerMicrosoftTenantId,
           serviceUrl: deployment.teamsServiceUrl,
           agentName: deployment.agentName,

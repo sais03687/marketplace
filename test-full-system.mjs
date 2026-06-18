@@ -71,7 +71,7 @@ async function provisionAgent(opts) {
       agentVersion: agent.currentVersion,
       agentName,
       status: "PROVISIONING",
-      weeklyDigestEmail: `manager@${companyDomain}`,
+      managerEmail: `manager@${companyDomain}`,
       autonomyConfig: { approvalPolicy: "external-only" },
     },
   });

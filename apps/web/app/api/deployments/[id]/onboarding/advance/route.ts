@@ -42,7 +42,7 @@ export async function POST(
   });
 
   // Send introduction email from the agent's own inbox
-  if (deployment.weeklyDigestEmail && deployment.agentEmail) {
+  if (deployment.managerEmail && deployment.agentEmail) {
     const { subject, html } = buildIntroductionEmail({
       agentName: deployment.agentName,
       agentEmail: deployment.agentEmail,
@@ -53,7 +53,7 @@ export async function POST(
 
     await sendNotificationEmail({
       inboxId: deployment.agentEmailInboxId,
-      to: deployment.weeklyDigestEmail,
+      to: deployment.managerEmail,
       subject,
       html,
     });

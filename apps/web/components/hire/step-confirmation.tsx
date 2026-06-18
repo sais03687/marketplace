@@ -32,7 +32,7 @@ export function StepConfirmation() {
           agentId: state.agentId,
           agentName: state.hireName,
           roleTitle: state.roleTitle,
-          weeklyDigestEmail: state.weeklyDigestEmail || undefined,
+          managerEmail: state.managerEmail || undefined,
           approvalManagerEmail: state.approvalManagerEmail || undefined,
           workspaceProvider: state.workspaceProvider,
           buyerMicrosoftTenantId: state.buyerMicrosoftTenantId || undefined,

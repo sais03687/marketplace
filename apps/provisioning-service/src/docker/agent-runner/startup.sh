@@ -42,29 +42,7 @@ cat > /agent/openclaw.json <<JSONEOF
 }
 JSONEOF
 
-# 2. Write cron jobs for weekly digest
-if [ -n "${WEEKLY_DIGEST_EMAIL}" ]; then
-  mkdir -p ~/.openclaw/cron
-  cat > ~/.openclaw/cron/jobs.json <<CRONJSON
-{
-  "version": 1,
-  "jobs": [
-    {
-      "name": "Weekly Digest",
-      "schedule": { "kind": "cron", "expr": "0 9 * * 1" },
-      "sessionTarget": "isolated",
-      "wakeMode": "now",
-      "payload": {
-        "kind": "agentTurn",
-        "message": "It is Monday morning. Compose and send the weekly digest email to ${WEEKLY_DIGEST_EMAIL}. Follow the weekly-digest skill instructions exactly."
-      },
-      "delivery": { "mode": "none" }
-    }
-  ]
-}
-CRONJSON
-  echo "[startup] Weekly digest cron job configured for ${WEEKLY_DIGEST_EMAIL}"
-fi
+# 2. (Weekly digest cron removed — use manager email via MANAGER_EMAIL env var directly)
 
 # 3. Replace template placeholders in workspace files
 for f in ${WORKSPACE_DIR}/SOUL.md ${WORKSPACE_DIR}/onboarding/MEMORY_TEMPLATE.md ${WORKSPACE_DIR}/AGENTS.md; do

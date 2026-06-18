@@ -66,7 +66,7 @@ async function main() {
       agentVersion: openclawAgent.currentVersion,
       agentName: "Alex",
       status: "PROVISIONING",
-      weeklyDigestEmail: "saiha@mycompany.com",
+      managerEmail: "saiha@mycompany.com",
       autonomyConfig: {
         approvalPolicy: "external-only",
         approvalRiskThreshold: 6.0,
@@ -82,7 +82,7 @@ async function main() {
       agentVersion: customFallback.currentVersion,
       agentName: "LangChain Agent",
       status: "PROVISIONING",
-      weeklyDigestEmail: "saiha@mycompany.com",
+      managerEmail: "saiha@mycompany.com",
       autonomyConfig: {
         approvalPolicy: "external-only",
         approvalRiskThreshold: 6.0,

@@ -65,12 +65,12 @@ import logging as _logging
 #   AUDITED = log for audit trail, allow by default (core agent functionality)
 _BLOCKED_ACTIONS = {
     "calendar_delete": "Delete a calendar event (irreversible)",
+    "excel_write": "Overwrite cells in a spreadsheet (requires approval)",
+    "excel_append": "Append rows to a spreadsheet (requires approval)",
+    "drive_upload": "Upload a file to SharePoint (requires approval)",
 }
 _AUDITED_ACTIONS = {
     "calendar_create": "Create a calendar event",
-    "excel_write": "Overwrite cells in a spreadsheet",
-    "excel_append": "Append rows to a spreadsheet",
-    "drive_upload": "Upload a file to SharePoint",
 }
 _ALL_GATED_ACTIONS = {**_BLOCKED_ACTIONS, **_AUDITED_ACTIONS}
 
@@ -128,7 +128,7 @@ AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "")
 COMPANY_DOMAIN = os.environ.get("COMPANY_DOMAIN", "")
-MANAGER_EMAIL = os.environ.get("WEEKLY_DIGEST_EMAIL", "")
+MANAGER_EMAIL = os.environ.get("MANAGER_EMAIL", "")
 AGENTMAIL_API_KEY = _secrets["AGENTMAIL_API_KEY"]
 ANTHROPIC_API_KEY = _secrets["ANTHROPIC_API_KEY"]
 MODEL = os.environ.get("MODEL", "sonnet")
@@ -1421,6 +1421,52 @@ async def receive_teams_message(request: Request):
         async def _bypass_resolve(approval_id, **kwargs) -> dict:
             return {"status": "APPROVED"}
 
+        # Non-blocking request_decision for Teams: queue the approval but
+        # return immediately so the agent can tell the user it's pending.
+        # The manager gets the Adaptive Card DM separately; the agent
+        # doesn't block waiting for resolution.
+        async def _teams_request_decision(
+            question: str,
+            context: str = "",
+            options: list[str] | None = None,
+            urgency: str = "normal",
+        ) -> dict:
+            draft_parts = [f"**Question:** {question}"]
+            if context:
+                draft_parts.append(f"\n**Context:** {context}")
+            if options:
+                draft_parts.append("\n**Suggested options:**")
+                for i, opt in enumerate(options, 1):
+                    draft_parts.append(f"  {i}. {opt}")
+            draft = "\n".join(draft_parts)
+
+            urgency_scores = {"low": (2.0, 2.0, 2.0), "normal": (5.0, 5.0, 5.0), "high": (8.0, 8.0, 3.0)}
+            stakes, ambiguity, reversibility = urgency_scores.get(urgency, (5.0, 5.0, 5.0))
+
+            try:
+                approval_id = await _original_queue(
+                    task_type="decision_request",
+                    channel="decision",
+                    draft=draft,
+                    reasoning=f"Agent needs manager input: {question[:100]}",
+                    stakes=stakes,
+                    ambiguity=ambiguity,
+                    reversibility=reversibility,
+                    original_request=question,
+                )
+                print(f"[adapter] Teams decision request queued (non-blocking): {approval_id}", flush=True)
+                return {
+                    "status": "PENDING",
+                    "answer": (
+                        "Your request requires manager approval. An approval card has been "
+                        "sent to the manager. Once approved, send your request again and "
+                        "the agent will proceed."
+                    ),
+                }
+            except Exception as e:
+                print(f"[adapter] Teams decision request failed: {e}", flush=True)
+                return {"status": "ERROR", "answer": f"Failed to submit approval: {str(e)}"}
+
         print(f"[adapter] Teams message from {teams_user_name}: {message[:100]}...", flush=True)
 
         # Record user message in conversation history
@@ -1503,7 +1549,7 @@ async def receive_teams_message(request: Request):
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
             use_fn=report_usage,
-            request_decision_fn=request_decision,
+            request_decision_fn=_teams_request_decision,
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
         )
 
@@ -1541,7 +1587,7 @@ async def receive_teams_message(request: Request):
                 contribute_fn=contribute_knowledge,
                 search_fn=search_knowledge,
                 use_fn=report_usage,
-                request_decision_fn=request_decision,
+                request_decision_fn=_teams_request_decision,
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             )
             reply_text = retry_result.get("text", "") if isinstance(retry_result, dict) else ""

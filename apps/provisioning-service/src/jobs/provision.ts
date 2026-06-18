@@ -372,7 +372,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
     MARKETPLACE_URL: config.approvalWebhookUrl.replace("localhost", "host.docker.internal"),
     APPROVAL_WEBHOOK_TOKEN: config.approvalWebhookToken,
     MODEL: deployment.agent.modelTier,
-    WEEKLY_DIGEST_EMAIL: deployment.weeklyDigestEmail || "",
+    MANAGER_EMAIL: deployment.managerEmail || "",
     LLM_API_KEY: config.llmApiKey,
     LLM_BASE_URL: config.llmBaseUrl,
     LLM_MODEL: config.llmModel,
@@ -651,7 +651,7 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   // 7. Send context to the agent so it knows who it is for subsequent conversations.
   // The formatted introduction email to the manager is sent explicitly by the hiring
   // manager clicking "Send Introduction Email" in the onboarding panel — not auto-sent here.
-  const managerEmail = deployment.weeklyDigestEmail || `admin@${deployment.company.domain}`;
+  const managerEmail = deployment.managerEmail || `admin@${deployment.company.domain}`;
   // If the hiring manager answered onboarding questions during the hire wizard,
   // include those answers so the agent can configure its knowledge base immediately.
   const hireAnswers = (deployment as any).onboardingData as Record<string, string> | null | undefined;

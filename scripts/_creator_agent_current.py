@@ -36,7 +36,7 @@ _PLACEHOLDERS = {
     "{{AGENT_EMAIL}}": os.environ.get("AGENT_EMAIL", ""),
     "{{COMPANY_NAME}}": os.environ.get("COMPANY_NAME", ""),
     "{{COMPANY_DOMAIN}}": os.environ.get("COMPANY_DOMAIN", ""),
-    "{{MANAGER_EMAIL}}": os.environ.get("WEEKLY_DIGEST_EMAIL", ""),
+    "{{MANAGER_EMAIL}}": os.environ.get("MANAGER_EMAIL", ""),
 }
 
 

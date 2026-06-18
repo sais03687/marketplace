@@ -32,7 +32,7 @@ interface AutonomyConfig {
 
 interface DeploymentSettings {
   agentName: string;
-  weeklyDigestEmail: string | null;
+  managerEmail: string | null;
   autoUpdate: boolean;
   autonomyConfig: AutonomyConfig;
   runtime: string;
@@ -91,7 +91,7 @@ export default function SettingsPage() {
       .then((data) => {
         setSettings({
           agentName: data.agentName,
-          weeklyDigestEmail: data.weeklyDigestEmail,
+          managerEmail: data.managerEmail,
           autoUpdate: data.autoUpdate,
           autonomyConfig: data.autonomyConfig || {},
           runtime: data.agent?.runtime || "CUSTOM",
@@ -133,7 +133,7 @@ export default function SettingsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         agentName: settings.agentName,
-        weeklyDigestEmail: settings.weeklyDigestEmail || undefined,
+        managerEmail: settings.managerEmail || undefined,
         autoUpdate: settings.autoUpdate,
         autonomyConfig: settings.autonomyConfig,
       }),
@@ -273,18 +273,18 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <label className="text-sm font-medium">Weekly Digest Email</label>
+            <label className="text-sm font-medium">Manager Email</label>
             <Input
               className="mt-1"
               type="email"
-              value={settings.weeklyDigestEmail || ""}
+              value={settings.managerEmail || ""}
               onChange={(e) =>
                 setSettings({
                   ...settings,
-                  weeklyDigestEmail: e.target.value || null,
+                  managerEmail: e.target.value || null,
                 })
               }
-              placeholder="team@company.com"
+              placeholder="manager@company.com"
             />
           </div>
         </CardContent>

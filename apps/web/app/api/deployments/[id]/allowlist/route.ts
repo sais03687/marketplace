@@ -22,7 +22,7 @@ export async function GET(
     where: { id },
     select: {
       allowedEmails: true,
-      weeklyDigestEmail: true,
+      managerEmail: true,
       company: { select: { domain: true } },
     },
   });
@@ -32,7 +32,7 @@ export async function GET(
   return jsonSuccess({
     allowedEmails: (deployment.allowedEmails as string[]) ?? [],
     companyDomain: deployment.company.domain,
-    managerEmail: deployment.weeklyDigestEmail ?? null,
+    managerEmail: deployment.managerEmail ?? null,
   });
 }
 

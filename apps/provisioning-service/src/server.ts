@@ -174,11 +174,12 @@ async function sendApprovalToManager(params: {
   const credentials = new MicrosoftAppCredentials(appId, appPassword, tenantId);
   const connectorClient = new ConnectorClient(credentials, { baseUri: serviceUrl });
 
-  // Create a 1:1 conversation between the bot and the manager
+  // Create a 1:1 conversation between the bot and the manager.
+  // Use the raw AAD object ID — Bot Framework resolves it to the Teams user.
   const conversationParams: ConversationParameters = {
     isGroup: false,
     bot: { id: appId, name: "Agent Store" },
-    members: [{ id: `29:${userInfo.id}`, name: userInfo.displayName }],
+    members: [{ id: userInfo.id, name: userInfo.displayName }],
     tenantId,
     channelData: { tenant: { id: tenantId } },
     activity: undefined as unknown as import("botbuilder").Activity,
@@ -192,7 +193,7 @@ async function sendApprovalToManager(params: {
     type: "message",
     attachments: [card],
     from: { id: appId, name: "Agent Store" },
-    recipient: { id: `29:${userInfo.id}`, name: userInfo.displayName },
+    recipient: { id: userInfo.id, name: userInfo.displayName },
   } as import("botbuilder").Partial<import("botbuilder").Activity> as any);
 
   console.log(`[teams-approval] Sent approval card to ${managerEmail} (conversation ${conversationId})`);

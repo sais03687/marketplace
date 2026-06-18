@@ -35,7 +35,7 @@ export async function POST(
       status: true,
       agentName: true,
       agentEmailInboxId: true,
-      weeklyDigestEmail: true,
+      managerEmail: true,
       portalToken: true,
     },
   });
@@ -91,7 +91,7 @@ export async function POST(
   });
 
   // Send email notification (fire-and-forget)
-  if (deployment.weeklyDigestEmail) {
+  if (deployment.managerEmail) {
     const portalUrl = deployment.portalToken
       ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
       : null;
@@ -103,7 +103,7 @@ export async function POST(
     });
     sendNotificationEmail({
       inboxId: deployment.agentEmailInboxId,
-      to: deployment.weeklyDigestEmail,
+      to: deployment.managerEmail,
       subject,
       html,
     });

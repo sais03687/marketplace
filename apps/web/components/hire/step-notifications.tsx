@@ -29,16 +29,15 @@ export function StepNotifications() {
       </div>
 
       <div>
-        <label className="text-sm font-medium">Weekly Digest Email</label>
+        <label className="text-sm font-medium">Manager Email</label>
         <p className="text-xs text-muted-foreground mb-1">
-          Receive a weekly summary of tasks, approvals, and trust score
-          progress.
+          The manager who will receive approval notifications and agent updates.
         </p>
         <Input
           type="email"
-          value={state.weeklyDigestEmail}
-          onChange={(e) => updateState({ weeklyDigestEmail: e.target.value })}
-          placeholder="team@company.com"
+          value={state.managerEmail}
+          onChange={(e) => updateState({ managerEmail: e.target.value })}
+          placeholder="manager@company.com"
         />
       </div>
 

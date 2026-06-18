@@ -16,7 +16,7 @@ const autonomyConfigSchema = z
 
 const settingsSchema = z.object({
   agentName: z.string().min(1).max(100).optional(),
-  weeklyDigestEmail: z.string().email().optional(),
+  managerEmail: z.string().email().optional(),
   autoUpdate: z.boolean().optional(),
   autonomyConfig: autonomyConfigSchema.optional(),
 });
@@ -41,8 +41,8 @@ export async function PATCH(
 
   const updateData: Record<string, unknown> = {};
   if (data.agentName !== undefined) updateData.agentName = data.agentName;
-  if (data.weeklyDigestEmail !== undefined)
-    updateData.weeklyDigestEmail = data.weeklyDigestEmail;
+  if (data.managerEmail !== undefined)
+    updateData.managerEmail = data.managerEmail;
   if (data.autoUpdate !== undefined) updateData.autoUpdate = data.autoUpdate;
   if (data.autonomyConfig !== undefined) {
     // Merge with existing so partial updates don't wipe other keys.

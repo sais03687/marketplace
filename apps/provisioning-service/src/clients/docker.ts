@@ -61,7 +61,7 @@ export interface ContainerEnv {
   MARKETPLACE_URL?: string;
   APPROVAL_WEBHOOK_TOKEN: string;
   MODEL: string;
-  WEEKLY_DIGEST_EMAIL?: string;
+  MANAGER_EMAIL?: string;
   GEMINI_API_KEY?: string;
   LLM_API_KEY?: string;
   LLM_BASE_URL?: string;

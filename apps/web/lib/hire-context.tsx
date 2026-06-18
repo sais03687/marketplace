@@ -22,7 +22,7 @@ export interface HireState {
   mailboxLocation: "platform" | "buyer_org";
   // Step 4
   approvalManagerEmail: string;
-  weeklyDigestEmail: string;
+  managerEmail: string;
   // Step 5 — interview answers collected during hire
   onboardingAnswers: Record<string, string>;
   // Step 6
@@ -74,7 +74,7 @@ export function HireProvider({
       buyerMicrosoftTenantId: null,
       mailboxLocation: "buyer_org",
       approvalManagerEmail: "",
-      weeklyDigestEmail: "",
+      managerEmail: "",
       onboardingAnswers: {},
       deploymentId: null,
       deploymentStatus: null,

@@ -111,7 +111,7 @@ export async function spawnLocalAgent(
     COMPANY_DOMAIN: env.COMPANY_DOMAIN,
     // Use per-deployment SA if available, fall back to platform SA
     GOOGLE_SERVICE_ACCOUNT_EMAIL: env.GOOGLE_SERVICE_ACCOUNT_EMAIL || config.googleServiceAccountEmail || "",
-    WEEKLY_DIGEST_EMAIL: env.WEEKLY_DIGEST_EMAIL || "",
+    MANAGER_EMAIL: env.MANAGER_EMAIL || "",
     DEPLOYMENT_ID: deploymentId,
     MARKETPLACE_API_URL: config.approvalWebhookUrl,
   }, packageOverride);
@@ -136,7 +136,7 @@ export async function spawnLocalAgent(
     llmApiKey: config.llmApiKey,
     llmBaseUrl: config.llmBaseUrl,
     llmModel: config.llmModel,
-    weeklyDigestEmail: env.WEEKLY_DIGEST_EMAIL,
+    managerEmail: env.MANAGER_EMAIL,
     heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES
       ? parseInt(env.HEARTBEAT_INTERVAL_MINUTES, 10)
       : undefined,

@@ -96,7 +96,7 @@ async function main() {
   console.log(`    Updated: status=ONBOARDING, email=${agentEmail}`);
 
   // 4. Send onboarding intro email
-  const managerEmail = deployment.weeklyDigestEmail || `admin@${deployment.company.domain}`;
+  const managerEmail = deployment.managerEmail || `admin@${deployment.company.domain}`;
   const agentName = deployment.agent.name;
 
   const introText = `Hi there!

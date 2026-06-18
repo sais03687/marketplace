@@ -113,7 +113,7 @@ async function main() {
       onboardingState: "INTERVIEW",
       onboardingData: {},
       autonomyConfig: { level: "LOW", autoApproveBelow: 20 },
-      weeklyDigestEmail: "buyer@test.com",
+      managerEmail: "buyer@test.com",
     },
   });
 
