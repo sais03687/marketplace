@@ -31,7 +31,7 @@ export async function GET(request: Request) {
 
   // Fire-and-forget: install the Teams app into the buyer's org catalog.
   // This runs asynchronously so it doesn't block the redirect back to the hire wizard.
-  const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "http://5.161.125.216:3003";
+  const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "https://api.agentstore.it.com";
   const provisioningSecret = process.env.PROVISIONING_SECRET;
   if (provisioningSecret) {
     fetch(`${provisioningUrl}/internal/teams-install`, {
