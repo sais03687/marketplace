@@ -7,6 +7,7 @@
  *   GET /proxy/:deploymentId/skills
  *   POST /internal/microsoft-token   — mint Graph API token for a deployment
  *   POST /internal/outlook-send      — send email via Microsoft Graph on behalf of agent
+ *   POST /internal/forward-resolve    — forward approval resolution to agent container
  *   POST /internal/teams-install      — install Teams app into buyer org catalog
  *   POST /internal/teams-approval-notify — send proactive approval card to manager in Teams
  *   POST /api/teams/messages          — Bot Framework messaging endpoint (Teams DMs)
@@ -523,6 +524,52 @@ export function startProxyServer() {
     // ─── Teams App Auto-Install ──────────────────────────────────────────────
     // Install the Teams app into a buyer's org catalog via Graph API.
     // Called by the web app after admin consent, or manually for existing deployments.
+    // ─── Forward Approval Resolution to Container ───────────────────────
+    // Called by the web app (Vercel) to forward an approval resolution to an
+    // agent container. Vercel can't reach Docker containers directly — this
+    // endpoint bridges the gap since the provisioning service runs on the same
+    // host as the containers.
+    if (req.method === "POST" && req.url === "/internal/forward-resolve") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { containerName, approvalId, action, editedText, rejectionReason } = JSON.parse(body) as {
+            containerName?: string;
+            approvalId?: string;
+            action?: string;
+            editedText?: string;
+            rejectionReason?: string;
+          };
+          if (!containerName || !approvalId) {
+            return send(res, 400, { error: "containerName and approvalId required" });
+          }
+
+          const containerUrl = containerName.startsWith("http")
+            ? containerName
+            : `http://${containerName}:4100`;
+
+          const fwdResp = await fetch(`${containerUrl}/internal/resolve-approval`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ approvalId, action, editedText, rejectionReason }),
+          });
+
+          const fwdBody = await fwdResp.text();
+          console.log(`[forward-resolve] ${approvalId} → ${containerUrl} → ${fwdResp.status}`);
+          send(res, fwdResp.status, fwdBody ? JSON.parse(fwdBody) : { forwarded: true });
+        } catch (err: any) {
+          console.error("[forward-resolve] Error:", err.message);
+          send(res, 502, { error: `Container unreachable: ${err.message}` });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/teams-install") {
       let body = "";
       req.on("data", (chunk: string) => { body += chunk; });
@@ -582,6 +629,55 @@ export function startProxyServer() {
           send(res, 200, { success: true, conversationId });
         } catch (err: any) {
           console.error("[teams-approval-notify] Error:", err.message);
+          send(res, 500, { error: err.message });
+        }
+      });
+      return;
+    }
+
+    // ─── Teams proactive send — deliver post-approval results to conversations ──
+    // Called by the adapter inside agent containers after an interrupted graph
+    // is resumed following manager approval.
+    if (req.method === "POST" && req.url === "/api/teams/proactive-send") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { tenantId, conversationId, message } = JSON.parse(body) as Record<string, string | undefined>;
+          if (!tenantId || !conversationId || !message) {
+            return send(res, 400, { error: "Missing tenantId, conversationId, or message" });
+          }
+
+          // Look up the service URL from a deployment with this tenant
+          const deployment = await prisma.deployment.findFirst({
+            where: { buyerMicrosoftTenantId: tenantId, status: "ACTIVE", teamsServiceUrl: { not: null } },
+            select: { teamsServiceUrl: true },
+          });
+
+          if (!deployment?.teamsServiceUrl) {
+            console.warn(`[teams-proactive] No service URL found for tenant ${tenantId}`);
+            return send(res, 404, { error: "No Teams service URL found for tenant" });
+          }
+
+          const appId = config.microsoftClientId;
+          const appPassword = config.microsoftClientSecret;
+          const credentials = new MicrosoftAppCredentials(appId, appPassword, tenantId);
+          const connectorClient = new ConnectorClient(credentials, { baseUri: deployment.teamsServiceUrl });
+
+          await connectorClient.conversations.sendToConversation(conversationId, {
+            type: "message",
+            text: message,
+            from: { id: appId, name: "Agent Store" },
+          } as any);
+
+          console.log(`[teams-proactive] Sent message to conversation ${conversationId} (${message.length} chars)`);
+          send(res, 200, { success: true });
+        } catch (err: any) {
+          console.error("[teams-proactive] Error:", err.message);
           send(res, 500, { error: err.message });
         }
       });

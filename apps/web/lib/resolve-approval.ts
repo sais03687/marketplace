@@ -100,21 +100,25 @@ export async function resolveApprovalAndUpdateTrust(
     data: { weightedScore: score, autonomyLevel },
   });
 
-  // Notify container (fire-and-forget)
+  // Notify container via the provisioning service (which can reach Docker containers).
+  // Vercel can't reach containers directly — the provisioning service bridges the gap.
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
     select: { containerName: true },
   });
 
   if (deployment?.containerName) {
+    const provisioningUrl = process.env.PROVISIONING_SERVICE_URL || "https://api.agentstore.it.com";
+    const provisioningSecret = process.env.PROVISIONING_SECRET;
     try {
-      const containerUrl = deployment.containerName.startsWith("http")
-        ? deployment.containerName
-        : `http://${deployment.containerName}:4100`;
-      await fetch(`${containerUrl}/internal/resolve-approval`, {
+      await fetch(`${provisioningUrl}/internal/forward-resolve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(provisioningSecret ? { Authorization: `Bearer ${provisioningSecret}` } : {}),
+        },
         body: JSON.stringify({
+          containerName: deployment.containerName,
           approvalId,
           action,
           editedText,
@@ -122,7 +126,7 @@ export async function resolveApprovalAndUpdateTrust(
         }),
       });
     } catch {
-      // Container may be unreachable
+      // Provisioning service may be unreachable
     }
   }
 
