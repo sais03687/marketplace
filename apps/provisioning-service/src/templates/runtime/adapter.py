@@ -50,76 +50,20 @@ for _env_key in list(os.environ):
         _mcp_servers[_integration] = os.environ.pop(_env_key)
 
 # NOW safe to import creator code — secrets and MCP URLs are no longer in os.environ
-from creator.agent import run_agent
-
-# ─── Platform-level approval gate for destructive workspace actions ──────────
-# The creator's agent.py imports microsoft_tools directly (as _mt). We can't
-# control that import, but we CAN monkey-patch the module's functions so that
-# destructive operations go through platform approval before executing.
-# This is enforced at the platform level — creators cannot bypass it.
+from creator.agent import run_agent, resume_agent
 
 import logging as _logging
 
-# Categorise workspace actions by risk level:
-#   BLOCKED = always require approval (irreversible / destructive)
-#   AUDITED = log for audit trail, allow by default (core agent functionality)
-_BLOCKED_ACTIONS = {
-    "calendar_delete": "Delete a calendar event (irreversible)",
-    "excel_write": "Overwrite cells in a spreadsheet (requires approval)",
-    "excel_append": "Append rows to a spreadsheet (requires approval)",
-    "drive_upload": "Upload a file to SharePoint (requires approval)",
-}
+# ─── Audited workspace actions (logged but auto-approved) ────────────────────
 _AUDITED_ACTIONS = {
     "calendar_create": "Create a calendar event",
 }
-_ALL_GATED_ACTIONS = {**_BLOCKED_ACTIONS, **_AUDITED_ACTIONS}
 
-try:
-    from creator import microsoft_tools as _mt_module
-except (ImportError, ValueError):
-    try:
-        import microsoft_tools as _mt_module  # type: ignore
-    except ImportError:
-        _mt_module = None
-
-if _mt_module is not None:
-    import functools
-
-    def _wrap_with_gate(action_name: str, original_fn):
-        """Wrap a microsoft_tools function with platform-level enforcement.
-        - BLOCKED actions: raise PermissionError (agent must use request_decision first)
-        - AUDITED actions: log for audit trail, execute normally
-        """
-
-        @functools.wraps(original_fn)
-        async def _gated(*args, **kwargs):
-            desc = _ALL_GATED_ACTIONS.get(action_name, action_name)
-            print(f"[platform-gate] {action_name} called — {desc}", flush=True)
-
-            if action_name in _BLOCKED_ACTIONS:
-                print(
-                    f"[platform-gate] BLOCKED {action_name} — requires manager approval "
-                    "(irreversible action)", flush=True,
-                )
-                raise PermissionError(
-                    f"Action '{action_name}' is blocked by platform policy because it is "
-                    "irreversible. Use request_decision to ask the manager for confirmation "
-                    "first, then retry after approval."
-                )
-
-            # Audited action — log and allow
-            print(f"[platform-gate] {action_name} — allowed (audit logged)", flush=True)
-            return await original_fn(*args, **kwargs)
-
-        return _gated
-
-    # Patch gated methods on the module — affects all imports of microsoft_tools.
-    # Because Python modules are singletons, this also patches the creator's _mt reference.
-    for _action_name in _ALL_GATED_ACTIONS:
-        if hasattr(_mt_module, _action_name):
-            _original = getattr(_mt_module, _action_name)
-            setattr(_mt_module, _action_name, _wrap_with_gate(_action_name, _original))
-            print(f"[platform-gate] Wrapped microsoft_tools.{_action_name}", flush=True)
+# ─── Pending interrupt resumes ──────────────────────────────────────────────
+# Maps approval_id → {thread_id, channel, channel_context}
+# When the manager resolves an approval, we look up the interrupted graph
+# and resume it with the resolution, then deliver the result.
+_pending_resumes: dict[str, dict] = {}
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -912,7 +856,6 @@ def _is_internal_recipient(to: str) -> bool:
     needs, _ = _should_require_approval(to)
     return not needs
 
-_approved_actions: dict[str, dict] = {}  # approval_id -> resolution data
 
 
 # ─── Return Contract Validator ────────────────────────────────────────────────
@@ -964,7 +907,7 @@ def _validate_result(result: dict) -> None:
             logging.warning(
                 "[adapter] action='resolve_approval' but 'approval_id' is missing — "
                 "resolution will fail. Make sure run_agent returns the approval_id "
-                "received from approve_fn()."
+                "received from the approval system."
             )
 
     risk = result.get("risk_assessment")
@@ -987,96 +930,6 @@ def _validate_result(result: dict) -> None:
                     )
 
 
-_original_queue = queue_for_approval
-_original_resolve = wait_for_resolution
-
-
-async def _tracked_queue(*args, **kwargs) -> str:
-    approval_id = await _original_queue(*args, **kwargs)
-    return approval_id
-
-
-async def _tracked_resolve(approval_id: str, **kwargs) -> dict:
-    result = await _original_resolve(approval_id, **kwargs)
-    if result.get("status") in ("APPROVED", "EDITED"):
-        _approved_actions[approval_id] = result
-    return result
-
-
-# ─── Decision Request — agent asks manager for high-level input ─────────────
-
-async def request_decision(
-    question: str,
-    context: str = "",
-    options: list[str] | None = None,
-    urgency: str = "normal",
-) -> dict:
-    """Ask the manager a question and wait for their response.
-
-    Unlike email approvals (which show a draft to approve/reject), decision
-    requests present a question with optional choices. The manager's answer
-    comes back as the resolution.
-
-    Args:
-        question: The question to ask the manager.
-        context: Background context to help the manager decide.
-        options: Optional list of suggested answers (manager can also free-text).
-        urgency: "low", "normal", or "high" — affects notification phrasing.
-
-    Returns:
-        Dict with:
-          - status: "APPROVED" (manager answered), "REJECTED" (manager declined), "EXPIRED"
-          - answer: The manager's response text (from resolutionAction field)
-    """
-    # Build a readable draft that shows the question + context in the portal
-    draft_parts = [f"**Question:** {question}"]
-    if context:
-        draft_parts.append(f"\n**Context:** {context}")
-    if options:
-        draft_parts.append("\n**Suggested options:**")
-        for i, opt in enumerate(options, 1):
-            draft_parts.append(f"  {i}. {opt}")
-    draft_parts.append(f"\n*Urgency: {urgency}*")
-    draft = "\n".join(draft_parts)
-
-    # Map urgency to risk scores so the portal shows appropriate priority
-    urgency_scores = {
-        "low": (2.0, 2.0, 2.0),
-        "normal": (5.0, 5.0, 5.0),
-        "high": (8.0, 8.0, 3.0),
-    }
-    stakes, ambiguity, reversibility = urgency_scores.get(urgency, (5.0, 5.0, 5.0))
-
-    try:
-        approval_id = await _tracked_queue(
-            task_type="decision_request",
-            channel="decision",
-            draft=draft,
-            reasoning=f"Agent needs manager input: {question[:100]}",
-            stakes=stakes,
-            ambiguity=ambiguity,
-            reversibility=reversibility,
-            original_request=question,
-        )
-        print(f"[adapter] Decision request queued: {approval_id}", flush=True)
-
-        resolution = await _tracked_resolve(approval_id)
-        status = resolution.get("status", "EXPIRED")
-        answer = resolution.get("resolutionAction", "")
-
-        if status == "APPROVED":
-            # Manager approved without editing — means "yes" or "proceed"
-            return {"status": "APPROVED", "answer": answer or "Approved — proceed as planned."}
-        elif status == "EDITED":
-            # Manager provided specific guidance
-            return {"status": "APPROVED", "answer": answer}
-        elif status == "REJECTED":
-            return {"status": "REJECTED", "answer": resolution.get("rejectionReason", "Request declined.")}
-        else:
-            return {"status": "EXPIRED", "answer": "No response received within the timeout period."}
-    except Exception as e:
-        print(f"[adapter] Decision request failed: {e}", flush=True)
-        return {"status": "ERROR", "answer": f"Failed to submit question: {str(e)}"}
 
 
 # ─── Fix 6: Per-Deployment Usage Caps ────────────────────────────────────────
@@ -1241,13 +1094,20 @@ async def get_approval_policy():
 
 @app.post("/internal/approvals/{approval_id}/resolve")
 async def resolve_approval(approval_id: str, body: ApprovalResolution):
-    """Receive an approval resolution from the marketplace and write it to disk."""
-    resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
-    resolution_path.write_text(json.dumps({
+    """Receive an approval resolution from the marketplace and write it to disk,
+    then resume the interrupted LangGraph if one is pending."""
+    resolution = {
         "status": body.status,
         "resolutionAction": body.resolutionAction,
         "rejectionReason": body.rejectionReason,
-    }))
+    }
+    # Write resolution file (backward compat for any polling code)
+    resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
+    resolution_path.write_text(json.dumps(resolution))
+
+    # If there's a pending interrupted graph, resume it
+    if approval_id in _pending_resumes:
+        asyncio.create_task(_resume_and_deliver(approval_id, resolution))
     return {"ok": True}
 
 
@@ -1261,13 +1121,266 @@ class ResolveApprovalAlt(BaseModel):
 @app.post("/internal/resolve-approval")
 async def resolve_approval_alt(body: ResolveApprovalAlt):
     """Alternate resolution endpoint used by the marketplace web app."""
-    resolution_path = RESOLUTIONS_DIR / f"{body.approvalId}.json"
-    resolution_path.write_text(json.dumps({
+    resolution = {
         "status": body.action,
         "resolutionAction": body.editedText,
         "rejectionReason": body.rejectionReason,
-    }))
+    }
+    resolution_path = RESOLUTIONS_DIR / f"{body.approvalId}.json"
+    resolution_path.write_text(json.dumps(resolution))
+
+    # If there's a pending interrupted graph, resume it
+    if body.approvalId in _pending_resumes:
+        asyncio.create_task(_resume_and_deliver(body.approvalId, resolution))
     return {"ok": True}
+
+
+# ─── Resume & Deliver — completes interrupted graph and delivers result ──────
+
+async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
+    """Resume an interrupted LangGraph and deliver the result to the right channel."""
+    resume_info = _pending_resumes.pop(approval_id, None)
+    if not resume_info:
+        print(f"[adapter] _resume_and_deliver: no pending resume for {approval_id}", flush=True)
+        return
+
+    thread_id = resume_info["thread_id"]
+    channel = resume_info["channel"]
+    channel_ctx = resume_info.get("channel_context", {})
+
+    print(f"[adapter] Resuming graph for approval {approval_id} (thread={thread_id}, channel={channel})", flush=True)
+
+    try:
+        result = await resume_agent(thread_id, resolution)
+    except Exception as e:
+        print(f"[adapter] resume_agent failed: {e}", flush=True)
+        result = {"status": "error", "error": str(e)}
+
+    # Check if graph hit another interrupt (chained blocked actions)
+    if isinstance(result, dict) and result.get("status") == "__interrupted__":
+        interrupts = result.get("interrupts", [])
+        if interrupts:
+            intr = interrupts[0]
+            action_name = intr.get("action", "unknown") if isinstance(intr, dict) else "unknown"
+            reasoning = intr.get("reasoning", "") if isinstance(intr, dict) else ""
+            risk = intr.get("risk_assessment", {}) if isinstance(intr, dict) else {}
+            try:
+                new_approval_id = await queue_for_approval(
+                    task_type=action_name,
+                    channel=channel,
+                    draft=json.dumps(intr.get("params", {}), default=str) if isinstance(intr, dict) else "",
+                    reasoning=reasoning[:200] if reasoning else f"Blocked action: {action_name}",
+                    stakes=float(risk.get("stakes", 5)),
+                    ambiguity=float(risk.get("ambiguity", 5)),
+                    reversibility=float(risk.get("reversibility", 5)),
+                    thread_id=channel_ctx.get("conversation_id") or channel_ctx.get("thread_id"),
+                    original_request=channel_ctx.get("original_message", ""),
+                )
+                _pending_resumes[new_approval_id] = {
+                    "thread_id": thread_id,
+                    "channel": channel,
+                    "channel_context": channel_ctx,
+                }
+                print(f"[adapter] Chained interrupt: new approval {new_approval_id}", flush=True)
+            except Exception as e:
+                print(f"[adapter] Failed to queue chained approval: {e}", flush=True)
+        return
+
+    if not isinstance(result, dict):
+        print(f"[adapter] resume_agent returned non-dict: {type(result)}", flush=True)
+        return
+
+    # Extract reply text from the agent result
+    reply_text = result.get("text", "")
+    action = result.get("action", "none")
+
+    if not reply_text and action in ("send_email", "reply_email"):
+        reply_text = result.get("text", "") or "Action completed successfully."
+
+    # Include action results in the reply (e.g., written data readback)
+    action_results = result.get("action_results", [])
+    if action_results and not reply_text:
+        # Use the last action result as the reply
+        last_result = action_results[-1] if isinstance(action_results, list) else str(action_results)
+        reply_text = f"✅ {last_result}"
+    elif action_results and reply_text:
+        # Append action details to the reply
+        for ar in (action_results if isinstance(action_results, list) else [action_results]):
+            if isinstance(ar, str) and ar.startswith("SUCCESS:"):
+                reply_text += f"\n\n📊 {ar}"
+                break
+
+    if not reply_text:
+        reply_text = "Your request has been processed after manager approval."
+
+    print(f"[adapter] Post-resume result: action={action}, text_len={len(reply_text)}", flush=True)
+
+    # Deliver to the appropriate channel
+    if channel == "teams":
+        await _deliver_teams_result(reply_text, result, channel_ctx)
+    elif channel == "email":
+        await _deliver_email_result(reply_text, result, channel_ctx)
+    else:
+        print(f"[adapter] Unknown channel '{channel}' — cannot deliver post-resume result", flush=True)
+
+
+async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> None:
+    """Send the post-resume result back to the Teams conversation via proactive messaging."""
+    conversation_id = ctx.get("conversation_id", "")
+    tenant_id = ctx.get("tenant_id", "")
+
+    if not conversation_id or not tenant_id:
+        print(f"[adapter] Cannot deliver Teams result: missing conversation_id or tenant_id", flush=True)
+        return
+
+    provisioning_url = os.environ.get("PROVISIONING_SERVICE_URL", "https://api.agentstore.it.com")
+    provisioning_secret = os.environ.get("PROVISIONING_SECRET", "")
+    if not provisioning_secret:
+        # Fallback: read from file (set by docker exec or provisioning)
+        _secret_file = Path("/agent/provisioning_secret.txt")
+        if _secret_file.exists():
+            provisioning_secret = _secret_file.read_text().strip()
+
+    if not provisioning_secret:
+        print(f"[adapter] Cannot deliver Teams result: no PROVISIONING_SECRET", flush=True)
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{provisioning_url}/api/teams/proactive-send",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {provisioning_secret}",
+                },
+                json={
+                    "tenantId": tenant_id,
+                    "conversationId": conversation_id,
+                    "message": reply_text,
+                },
+            )
+            if resp.status_code == 200:
+                print(f"[adapter] Teams proactive message sent for approval {conversation_id}", flush=True)
+            else:
+                print(f"[adapter] Teams proactive send failed: {resp.status_code} {resp.text}", flush=True)
+    except Exception as e:
+        print(f"[adapter] Teams proactive send error: {e}", flush=True)
+
+    # Also handle email sends if the resumed agent wants to send an email
+    if result.get("action") in ("send_email", "reply_email") and result.get("to"):
+        try:
+            await send_email(
+                to=result["to"],
+                subject=result.get("subject", ""),
+                text=result.get("text", reply_text),
+                thread_id=result.get("thread_id"),
+            )
+            print(f"[adapter] Post-resume email sent to {result['to']}", flush=True)
+        except Exception as e:
+            print(f"[adapter] Post-resume email send failed: {e}", flush=True)
+
+
+async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> None:
+    """Send the post-resume result back via email."""
+    action = result.get("action", "none")
+
+    if action in ("send_email", "reply_email"):
+        recipient = result.get("to") or ctx.get("sender", "")
+        if not recipient:
+            print(f"[adapter] Cannot deliver email result: no recipient", flush=True)
+            return
+
+        try:
+            if action == "reply_email" and ctx.get("message_id"):
+                await reply_email(
+                    message_id=ctx["message_id"],
+                    text=result.get("text", reply_text),
+                    fallback_to=recipient,
+                    fallback_subject=ctx.get("subject", ""),
+                    fallback_thread_id=result.get("thread_id") or ctx.get("thread_id"),
+                )
+            else:
+                await send_email(
+                    to=recipient,
+                    subject=result.get("subject", ctx.get("subject", "")),
+                    text=result.get("text", reply_text),
+                    thread_id=result.get("thread_id") or ctx.get("thread_id"),
+                )
+            print(f"[adapter] Post-resume email delivered to {recipient}", flush=True)
+        except Exception as e:
+            print(f"[adapter] Post-resume email delivery failed: {e}", flush=True)
+    else:
+        # Agent returned action=none after approval — notify the manager
+        if MANAGER_EMAIL:
+            try:
+                await send_email(
+                    to=MANAGER_EMAIL,
+                    subject=f"[{AGENT_NAME}] Approved action completed",
+                    text=reply_text,
+                )
+                print(f"[adapter] Post-resume notification sent to manager", flush=True)
+            except Exception as e:
+                print(f"[adapter] Post-resume notification failed: {e}", flush=True)
+
+
+# ─── Helper: handle interrupted graph result ─────────────────────────────────
+
+async def _handle_interrupt(
+    result: dict,
+    channel: str,
+    thread_id: str,
+    channel_context: dict,
+) -> str:
+    """Queue an approval for an interrupted graph and return a user-facing message."""
+    interrupts = result.get("interrupts", [])
+    if not interrupts:
+        return "Your request requires processing that I cannot complete right now."
+
+    intr = interrupts[0]
+    action_name = intr.get("action", "unknown") if isinstance(intr, dict) else "unknown"
+    params = intr.get("params", {}) if isinstance(intr, dict) else {}
+    reasoning = intr.get("reasoning", "") if isinstance(intr, dict) else ""
+    risk = intr.get("risk_assessment", {}) if isinstance(intr, dict) else {}
+
+    # Build a human-readable draft for the approval portal
+    if action_name == "request_decision":
+        draft = intr.get("question", "") if isinstance(intr, dict) else ""
+        task_type = "decision_request"
+    else:
+        draft = json.dumps(params, default=str, indent=2) if params else f"Action: {action_name}"
+        task_type = action_name
+
+    try:
+        approval_id = await queue_for_approval(
+            task_type=task_type,
+            channel=channel,
+            draft=draft,
+            reasoning=reasoning[:200] if reasoning else f"Blocked action: {action_name}",
+            stakes=float(risk.get("stakes", 5)),
+            ambiguity=float(risk.get("ambiguity", 5)),
+            reversibility=float(risk.get("reversibility", 5)),
+            thread_id=channel_context.get("conversation_id") or channel_context.get("thread_id"),
+            original_request=channel_context.get("original_message", ""),
+        )
+        _pending_resumes[approval_id] = {
+            "thread_id": thread_id,
+            "channel": channel,
+            "channel_context": channel_context,
+        }
+        print(f"[adapter] Queued approval {approval_id} for interrupted graph (thread={thread_id})", flush=True)
+
+        if action_name == "request_decision":
+            return (
+                f"I need your manager's input before I can proceed. "
+                f"An approval request has been sent. Once they respond, I'll continue automatically."
+            )
+        return (
+            f"Your request to {action_name.replace('_', ' ')} requires manager approval. "
+            f"An approval request has been sent. Once approved, I'll complete the action automatically."
+        )
+    except Exception as e:
+        print(f"[adapter] Failed to queue approval for interrupt: {e}", flush=True)
+        return f"I need manager approval to proceed but couldn't submit the request: {e}"
 
 
 @app.post("/hooks/agent")
@@ -1415,65 +1528,6 @@ async def receive_teams_message(request: Request):
     }
 
     try:
-        async def _bypass_approve(*args, **kwargs) -> str:
-            return ""
-
-        async def _bypass_resolve(approval_id, **kwargs) -> dict:
-            return {"status": "APPROVED"}
-
-        # Captured approval reply — set by _teams_request_decision so the
-        # adapter can use it even if run_agent's final iteration returns
-        # action=none with no text.
-        _pending_approval_reply: str = ""
-
-        # Non-blocking request_decision for Teams: queue the approval but
-        # return immediately so the agent can tell the user it's pending.
-        # The manager gets the Adaptive Card DM separately; the agent
-        # doesn't block waiting for resolution.
-        async def _teams_request_decision(
-            question: str,
-            context: str = "",
-            options: list[str] | None = None,
-            urgency: str = "normal",
-        ) -> dict:
-            draft_parts = [f"**Question:** {question}"]
-            if context:
-                draft_parts.append(f"\n**Context:** {context}")
-            if options:
-                draft_parts.append("\n**Suggested options:**")
-                for i, opt in enumerate(options, 1):
-                    draft_parts.append(f"  {i}. {opt}")
-            draft = "\n".join(draft_parts)
-
-            urgency_scores = {"low": (2.0, 2.0, 2.0), "normal": (5.0, 5.0, 5.0), "high": (8.0, 8.0, 3.0)}
-            stakes, ambiguity, reversibility = urgency_scores.get(urgency, (5.0, 5.0, 5.0))
-
-            try:
-                approval_id = await _original_queue(
-                    task_type="decision_request",
-                    channel="decision",
-                    draft=draft,
-                    reasoning=f"Agent needs manager input: {question[:100]}",
-                    stakes=stakes,
-                    ambiguity=ambiguity,
-                    reversibility=reversibility,
-                    original_request=question,
-                )
-                print(f"[adapter] Teams decision request queued (non-blocking): {approval_id}", flush=True)
-                nonlocal _pending_approval_reply
-                _pending_approval_reply = (
-                    "Your request requires manager approval. An approval card has been "
-                    "sent to the manager via Teams. Once approved, send your request "
-                    "again and I'll proceed."
-                )
-                return {
-                    "status": "PENDING",
-                    "answer": _pending_approval_reply,
-                }
-            except Exception as e:
-                print(f"[adapter] Teams decision request failed: {e}", flush=True)
-                return {"status": "ERROR", "answer": f"Failed to submit approval: {str(e)}"}
-
         print(f"[adapter] Teams message from {teams_user_name}: {message[:100]}...", flush=True)
 
         # Record user message in conversation history
@@ -1548,15 +1602,16 @@ async def receive_teams_message(request: Request):
             "of iterations. Never end with action='none' — always reply."
         )
 
+        # Use a unique thread_id for checkpointing (enables interrupt/resume)
+        thread_id = f"teams:{conversation_id}"
+
         result = await run_agent(
             content=teams_content,
             context=context,
-            approve_fn=_bypass_approve,
-            resolve_fn=_bypass_resolve,
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
             use_fn=report_usage,
-            request_decision_fn=_teams_request_decision,
+            thread_id=thread_id,
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
         )
 
@@ -1566,10 +1621,20 @@ async def receive_teams_message(request: Request):
         print(f"[adapter] Teams run_agent result keys: {list(result.keys())}", flush=True)
         print(f"[adapter] Teams run_agent result: { {k: str(v)[:200] for k, v in result.items()} }", flush=True)
 
+        # ── Handle interrupted graph (blocked action needs approval) ─────
+        if result.get("status") == "__interrupted__":
+            tenant_id = payload.get("tenantId", "")
+            channel_ctx = {
+                "conversation_id": conversation_id,
+                "tenant_id": tenant_id,
+                "teams_user_name": teams_user_name,
+                "original_message": message,
+            }
+            reply_text = await _handle_interrupt(result, "teams", thread_id, channel_ctx)
+            _append_teams_history(conversation_id, "assistant", reply_text)
+            return {"ok": True, "reply": reply_text}
+
         # Extract the reply text from the agent result.
-        # The agent may return action=send_email/reply_email with text, or action=none.
-        # For Teams we just need the text content regardless of action type.
-        # Also check params.text for cases where text is nested under params.
         reply_text = result.get("text", "")
         if not reply_text and isinstance(result.get("params"), dict):
             reply_text = result["params"].get("text", "")
@@ -1586,23 +1651,30 @@ async def receive_teams_message(request: Request):
                 "Do NOT upload files — just describe results in text. "
                 "Set completed=true on the FIRST iteration."
             )
+            retry_thread_id = f"teams:{conversation_id}:retry"
             retry_result = await run_agent(
                 content=retry_content,
                 context=context,
-                approve_fn=_bypass_approve,
-                resolve_fn=_bypass_resolve,
                 contribute_fn=contribute_knowledge,
                 search_fn=search_knowledge,
                 use_fn=report_usage,
-                request_decision_fn=_teams_request_decision,
+                thread_id=retry_thread_id,
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             )
+            # Check if the retry hit an interrupt (blocked action)
+            if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
+                tenant_id = payload.get("tenantId", "")
+                channel_ctx = {
+                    "conversation_id": conversation_id,
+                    "tenant_id": tenant_id,
+                    "teams_user_name": teams_user_name,
+                    "original_message": message,
+                }
+                reply_text = await _handle_interrupt(retry_result, "teams", retry_thread_id, channel_ctx)
+                _append_teams_history(conversation_id, "assistant", reply_text)
+                return {"ok": True, "reply": reply_text}
             reply_text = retry_result.get("text", "") if isinstance(retry_result, dict) else ""
 
-        if not reply_text and _pending_approval_reply:
-            # Agent hit a blocked action, queued approval, but final iteration
-            # returned action=none without text — use the approval message.
-            reply_text = _pending_approval_reply
         if not reply_text and _last_stdout:
             # Agent ran code successfully but didn't reply — use the stdout as fallback
             reply_text = _last_stdout
@@ -1635,7 +1707,7 @@ async def receive_teams_message(request: Request):
             reply_text,
             flags=_re.DOTALL | _re.IGNORECASE,
         )
-        # Strip agent name/title signature block at the end (e.g. "Data Analyst\nData Analyst, TestCorp")
+        # Strip agent name/title signature block at the end
         reply_text = _re.sub(
             r"\n{2,}[A-Z][A-Za-z ]+\n[A-Z][A-Za-z ,]+$",
             "",
@@ -1643,18 +1715,15 @@ async def receive_teams_message(request: Request):
         )
         reply_text = reply_text.strip()
 
-        # ── Approval check for external actions triggered from Teams ──────
-        # If the agent tried to send an email (not just reply in chat),
-        # check if it needs approval before sending.
+        # ── Approval check for external emails triggered from Teams ──────
         action = result.get("action", "none")
         email_to = result.get("to", "")
         if action == "send_email" and email_to and email_to != "None":
             needs_approval_flag, approval_reason = _should_require_approval(email_to)
             if needs_approval_flag:
-                # Queue for approval — don't send yet
                 try:
                     risk = result.get("risk_assessment") or {}
-                    queued_id = await _tracked_queue(
+                    queued_id = await queue_for_approval(
                         task_type=result.get("task_type", "send_email"),
                         channel="teams",
                         draft=result.get("text", ""),
@@ -1715,21 +1784,6 @@ async def _handle_message(message: str, context: dict):
 
         pre_approved = context.get("session_key", "") in PRE_APPROVED_HOOKS
 
-        # The graph's handle_approval node is advisory only — it doesn't know
-        # about internal-vs-external recipients, per-deployment pre-approved
-        # hooks, or marketplace state. If we gave it the real queue/resolve
-        # functions, it would block for up to 48h waiting on a resolution file
-        # even for replies to the hiring manager (which should auto-approve).
-        #
-        # Instead, bypass it: pass no-op approve/resolve that always succeed,
-        # so run_agent returns immediately. Real approval enforcement happens
-        # below, after we know the final recipient.
-        async def _bypass_approve(*args, **kwargs) -> str:
-            return ""
-
-        async def _bypass_resolve(approval_id, **kwargs) -> dict:
-            return {"status": "APPROVED"}
-
         # Surface the SA email so the agent can tell users what to share with it
         context = {
             **context,
@@ -1759,21 +1813,47 @@ async def _handle_message(message: str, context: dict):
                         })
             return mcp_result
 
+        # Use a unique thread_id for checkpointing (enables interrupt/resume)
+        session_key = context.get("session_key", "default")
+        thread_id = f"email:{session_key}"
+
         print(f"[adapter] Running agent graph...", flush=True)
         result = await run_agent(
             content=message,
             context=context,
-            approve_fn=_bypass_approve,
-            resolve_fn=_bypass_resolve,
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
             use_fn=report_usage,
-            request_decision_fn=request_decision,
+            thread_id=thread_id,
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
         )
 
         if not isinstance(result, dict):
             print(f"[adapter] run_agent returned non-dict ({type(result).__name__}) — skipping", flush=True)
+            return
+
+        # ── Handle interrupted graph (blocked action needs approval) ─────
+        if result.get("status") == "__interrupted__":
+            channel_ctx = {
+                "sender": context.get("sender", ""),
+                "subject": context.get("subject", ""),
+                "thread_id": context.get("thread_id"),
+                "message_id": context.get("message_id", ""),
+                "original_message": message[:200],
+                "session_key": session_key,
+            }
+            approval_msg = await _handle_interrupt(result, "email", thread_id, channel_ctx)
+            print(f"[adapter] Email graph interrupted: {approval_msg[:100]}", flush=True)
+            # For email, we should notify the sender that their request is pending
+            incoming_sender = context.get("sender", "")
+            if incoming_sender and _check_and_increment("emails"):
+                await reply_email(
+                    message_id=context.get("message_id", ""),
+                    text=approval_msg,
+                    fallback_to=_extract_email(incoming_sender),
+                    fallback_subject=context.get("subject", ""),
+                    fallback_thread_id=context.get("thread_id"),
+                )
             return
 
         _validate_result(result)
@@ -1782,32 +1862,29 @@ async def _handle_message(message: str, context: dict):
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)
 
         # ── Email-reply approval resolution ─────────────────────────────────
-        # The agent detected the manager approved/rejected/edited via email reply
-        # and returned action="resolve_approval". We:
-        #   1. Write the resolution file so any waiting _tracked_resolve() unblocks.
-        #   2. Sync the resolution to the marketplace DB via the portal API.
-        #   3. Reply to the manager confirming (optional, if agent provided a reply).
         if action == "resolve_approval":
             approval_id = result.get("approval_id", "")
             resolution_action = (result.get("resolution") or "APPROVED").upper()
-            edited_text = result.get("edited_text")  # if manager sent edited draft
+            edited_text = result.get("edited_text")
             rejection_reason = result.get("rejection_reason")
 
             if approval_id:
-                # 1. Write local resolution file (unblocks waiting _tracked_resolve)
-                resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
-                resolution_path.write_text(json.dumps({
+                resolution = {
                     "status": resolution_action,
                     "resolutionAction": edited_text,
                     "rejectionReason": rejection_reason,
-                }))
+                }
+                resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
+                resolution_path.write_text(json.dumps(resolution))
                 print(f"[adapter] Email-resolve: wrote resolution file for {approval_id} → {resolution_action}", flush=True)
 
-                # 2. Sync to marketplace DB via portal token (best-effort, non-blocking)
                 if PORTAL_TOKEN and MARKETPLACE_URL:
                     asyncio.create_task(_sync_approval_to_portal(approval_id, resolution_action, edited_text, rejection_reason))
 
-            # 3. Reply to manager confirming (if agent drafted a confirmation)
+                # If there's a pending interrupted graph, resume it
+                if approval_id in _pending_resumes:
+                    asyncio.create_task(_resume_and_deliver(approval_id, resolution))
+
             reply_text = result.get("text")
             if reply_text:
                 if _check_and_increment("emails"):
@@ -1821,22 +1898,15 @@ async def _handle_message(message: str, context: dict):
             return
 
         if action in ("send_email", "reply_email"):
-            approval_id = result.get("approval_id")
-
-            # Determine the actual recipient. For replies, fall back to the
-            # sender of the incoming email (the one we're replying to).
             recipient = result.get("to") or context.get("sender", "")
             risk_from_llm = result.get("risk_assessment") or {}
             needs_approval_policy, policy_reason = _should_require_approval(
                 recipient, risk_from_llm
             )
 
-            # Policy says auto-approve OR session is pre-approved (onboarding, etc.)
             if pre_approved or not needs_approval_policy:
                 if not pre_approved:
                     print(f"[adapter] Auto-approving ({policy_reason})", flush=True)
-                    # Record the auto-approval in the DB so AgentMind eligibility
-                    # is satisfied after the first successful task (Fix B).
                     try:
                         risk = result.get("risk_assessment") or {}
                         auto_stakes = float(risk.get("stakes") or 2.0)
@@ -1866,46 +1936,38 @@ async def _handle_message(message: str, context: dict):
                     print(f"[adapter] Pre-approved session ({context.get('session_key', '')})", flush=True)
             else:
                 print(f"[adapter] Requiring approval ({policy_reason})", flush=True)
-                # External recipient without a pre-approved session.
-                # Platform guarantees approval regardless of creator code logic.
-                if not approval_id:
-                    print(f"[adapter] External recipient — auto-queueing {action} for approval")
-                    draft_text = result.get("text", "")
-                    thread_id = result.get("thread_id") or context.get("thread_id")
-                    # Use the LLM's real risk assessment from the creator graph.
-                    # Falls back to mid-range defaults if the LLM didn't provide scores.
-                    risk = result.get("risk_assessment") or {}
-                    try:
-                        stakes_val = float(risk.get("stakes") or 5.0)
-                        ambiguity_val = float(risk.get("ambiguity") or 5.0)
-                        reversibility_val = float(risk.get("reversibility") or 5.0)
-                    except (TypeError, ValueError):
-                        stakes_val = ambiguity_val = reversibility_val = 5.0
-                    try:
-                        queued_id = await _tracked_queue(
-                            task_type=result.get("task_type", action),
-                            channel="email",
-                            draft=draft_text,
-                            reasoning=result.get("reasoning", "Auto-queued by platform adapter"),
-                            stakes=stakes_val,
-                            ambiguity=ambiguity_val,
-                            reversibility=reversibility_val,
-                            thread_id=thread_id,
-                            original_request=context.get("subject", ""),
-                        )
-                        print(f"[adapter] Queued approval {queued_id}; waiting for resolution", flush=True)
-                        resolution = await _tracked_resolve(queued_id)
-                        if resolution.get("status") not in ("APPROVED", "EDITED"):
-                            print(f"[adapter] Approval {queued_id} {resolution.get('status')} — not sending", flush=True)
-                            return
-                        if resolution.get("status") == "EDITED" and resolution.get("resolutionAction"):
-                            result["text"] = resolution["resolutionAction"]
-                        approval_id = queued_id
-                    except Exception as e:
-                        print(f"[adapter] Failed to auto-queue approval: {e}")
+                # External recipient — queue for approval with interrupt/resume
+                draft_text = result.get("text", "")
+                email_thread_id = result.get("thread_id") or context.get("thread_id")
+                risk = result.get("risk_assessment") or {}
+                try:
+                    stakes_val = float(risk.get("stakes") or 5.0)
+                    ambiguity_val = float(risk.get("ambiguity") or 5.0)
+                    reversibility_val = float(risk.get("reversibility") or 5.0)
+                except (TypeError, ValueError):
+                    stakes_val = ambiguity_val = reversibility_val = 5.0
+                try:
+                    queued_id = await queue_for_approval(
+                        task_type=result.get("task_type", action),
+                        channel="email",
+                        draft=draft_text,
+                        reasoning=result.get("reasoning", "Auto-queued by platform adapter"),
+                        stakes=stakes_val,
+                        ambiguity=ambiguity_val,
+                        reversibility=reversibility_val,
+                        thread_id=email_thread_id,
+                        original_request=context.get("subject", ""),
+                    )
+                    print(f"[adapter] Queued approval {queued_id}; waiting for resolution", flush=True)
+                    # Wait for resolution (polling file — existing pattern for email hook)
+                    resolution = await wait_for_resolution(queued_id)
+                    if resolution.get("status") not in ("APPROVED", "EDITED"):
+                        print(f"[adapter] Approval {queued_id} {resolution.get('status')} — not sending", flush=True)
                         return
-                elif approval_id not in _approved_actions:
-                    print(f"[adapter] BLOCKED: {action} with unverified approval_id {approval_id}")
+                    if resolution.get("status") == "EDITED" and resolution.get("resolutionAction"):
+                        result["text"] = resolution["resolutionAction"]
+                except Exception as e:
+                    print(f"[adapter] Failed to auto-queue approval: {e}")
                     return
 
             # Fix 6: check email budget
@@ -1940,17 +2002,7 @@ async def _handle_message(message: str, context: dict):
                     attachments=_att,
                 )
 
-            # Clean up tracked approval
-            if approval_id:
-                _approved_actions.pop(approval_id, None)
-
         elif context.get("hook_name") == "AgentMail":
-            # Defense in depth: if the LLM returned action=none for an
-            # inbound email, the human is waiting for a response. Retry
-            # run_agent once with an explicit reminder; if that still
-            # returns none, send a one-line acknowledgement so the sender
-            # is never left hanging. This protects against LLM
-            # non-determinism on free-tier models.
             print(f"[adapter] Agent returned action=none on AgentMail hook — retrying with explicit reminder", flush=True)
             try:
                 retry_content = (
@@ -1961,17 +2013,37 @@ async def _handle_message(message: str, context: dict):
                     "with a complete, helpful response to their question or "
                     "request. Do NOT return action=none."
                 )
+                retry_thread_id = f"email:{session_key}:retry"
                 retry_result = await run_agent(
                     content=retry_content,
                     context=context,
-                    approve_fn=_bypass_approve,
-                    resolve_fn=_bypass_resolve,
                     contribute_fn=contribute_knowledge,
                     search_fn=search_knowledge,
                     use_fn=report_usage,
-                    request_decision_fn=request_decision,
+                    thread_id=retry_thread_id,
                     **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
                 )
+                # Check if the retry hit an interrupt (blocked action)
+                if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
+                    channel_ctx = {
+                        "sender": context.get("sender", ""),
+                        "subject": context.get("subject", ""),
+                        "thread_id": context.get("thread_id"),
+                        "message_id": context.get("message_id", ""),
+                        "original_message": message[:500],
+                        "session_key": session_key,
+                    }
+                    approval_msg = await _handle_interrupt(retry_result, "email", retry_thread_id, channel_ctx)
+                    # Notify sender that approval is pending
+                    if _check_and_increment("emails"):
+                        await reply_email(
+                            message_id=context.get("message_id", ""),
+                            text=approval_msg,
+                            fallback_to=_extract_email(context.get("sender", "")),
+                            fallback_subject=context.get("subject", ""),
+                            fallback_thread_id=context.get("thread_id"),
+                        )
+                    return
                 retry_action = retry_result.get("action", "none")
                 print(f"[adapter] Retry returned action={retry_action}", flush=True)
                 if retry_action in ("send_email", "reply_email") and retry_result.get("text"):

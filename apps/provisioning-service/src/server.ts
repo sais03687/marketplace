@@ -64,6 +64,13 @@ function buildApprovalCard(params: {
   portalUrl?: string;
 }) {
   const { agentName, taskType, draftPreview, approvalId, portalUrl } = params;
+
+  // Decision requests get a different card — text input for an answer,
+  // not approve/reject buttons.
+  if (taskType === "decision_request") {
+    return buildDecisionCard({ agentName, question: draftPreview, approvalId, portalUrl });
+  }
+
   const body: unknown[] = [
     {
       type: "TextBlock",
@@ -141,6 +148,69 @@ function buildApprovalCard(params: {
             },
           ],
         },
+      },
+    ],
+  });
+}
+
+// ─── Decision Request Card for Teams ──────────────────────────────────────
+// Used when the agent asks the manager an open-ended question (request_decision).
+// Shows the question and a text input for the answer instead of approve/reject.
+function buildDecisionCard(params: {
+  agentName: string;
+  question: string;
+  approvalId: string;
+  portalUrl?: string;
+}) {
+  const { agentName, question, approvalId, portalUrl } = params;
+  const body: unknown[] = [
+    {
+      type: "TextBlock",
+      text: `❓ ${agentName} has a question`,
+      weight: "Bolder",
+      size: "Medium",
+      wrap: true,
+    },
+    {
+      type: "TextBlock",
+      text: question.slice(0, 1000) || "(no question provided)",
+      wrap: true,
+      spacing: "Medium",
+    },
+    {
+      type: "Input.Text",
+      id: "editedText",
+      placeholder: "Type your answer here...",
+      isMultiline: true,
+    },
+  ];
+
+  if (portalUrl) {
+    body.push({
+      type: "TextBlock",
+      text: `[View in portal](${portalUrl})`,
+      spacing: "Small",
+      isSubtle: true,
+    });
+  }
+
+  return CardFactory.adaptiveCard({
+    $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+    type: "AdaptiveCard",
+    version: "1.4",
+    body,
+    actions: [
+      {
+        type: "Action.Submit",
+        title: "📩 Send Answer",
+        style: "positive",
+        data: { mktAction: "EDITED", approvalId },
+      },
+      {
+        type: "Action.Submit",
+        title: "❌ Dismiss",
+        style: "destructive",
+        data: { mktAction: "REJECTED", approvalId, rejectionReason: "Dismissed — no answer provided" },
       },
     ],
   });
