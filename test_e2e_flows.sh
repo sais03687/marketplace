@@ -1,17 +1,62 @@
 #!/bin/bash
-# End-to-end test script for interrupt/resume, email, Teams, and AgentMind flows
-# Run on Hetzner VPS via SSH
+# End-to-end test suite — provisioning service, mail pollers, interrupt/resume,
+# Teams, and AgentMind. Runs ON the Hetzner VPS (needs docker + localhost ports).
+#
+#   ssh root@<vps> 'bash /opt/marketplace/test_e2e_flows.sh --quick'
+#
+#   --quick   Phase 0 only: infrastructure + regression guards (~15s).
+#             Use this after every deploy.
+#   (no flag) Phase 0 + the full behavioural suite. The behavioural tests drive a
+#             real agent and poll for up to 120s each, so budget ~10 minutes.
+#
+# Configuration comes from the environment. Secrets are NEVER hardcoded here —
+# an earlier version of this file embedded the live PROVISIONING_SECRET in
+# plaintext in a directory that is one `git add -A` away from a public repo.
+REPO_DIR="${REPO_DIR:-/opt/marketplace}"
+ENV_FILE="${ENV_FILE:-$REPO_DIR/.env.prod}"
 
-CONTAINER_URL="http://localhost:32789"
-PROVISIONING_URL="http://localhost:3003"
-PROVISIONING_SECRET="892c546b2bd5e0d8f5e8fa478f3c078dea1f13a103db8833d762c33d9b704352"
-CONTAINER_NAME="custom-agent-cmq4lu66"
+# Load config from .env.prod, but the caller always wins — sourcing would
+# otherwise clobber an override, which makes the guards untestable (you could
+# never point the script at a known-bad tree to prove a check actually fires).
+_OVERRIDES=""
+for _v in TENANT_CACHE_PATH GOOGLE_SERVICE_ACCOUNT_KEY PROVISIONING_PORT \
+          PROVISIONING_SECRET DATABASE_URL MARKETPLACE_URL; do
+  if [ -n "${!_v+x}" ]; then
+    _OVERRIDES="$_OVERRIDES $_v=$(printf '%q' "${!_v}")"
+  fi
+done
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
+fi
+[ -n "$_OVERRIDES" ] && eval "export $_OVERRIDES"
+
+CONTAINER_NAME="${CONTAINER_NAME:-custom-agent-cmq4lu66}"
+DEPLOYMENT_ID="${TEST_DEPLOYMENT_ID:-cmq4lu66z00048ibfmndlexdv}"
+CONTAINER_URL="${CONTAINER_URL:-http://localhost:32789}"
+PROVISIONING_URL="${PROVISIONING_URL:-http://localhost:3003}"
+PROVISIONING_PORT="${PROVISIONING_PORT:-3003}"
+TENANT_CACHE_PATH="${TENANT_CACHE_PATH:-/var/lib/marketplace/tenant-cache.json}"
+PROVISIONING_LOG="${PROVISIONING_LOG:-/var/log/marketplace-provisioning.log}"
+JOBS_DIR="$REPO_DIR/apps/provisioning-service/src/jobs"
+
+QUICK=0
+[ "$1" = "--quick" ] && QUICK=1
+
 PASS=0
 FAIL=0
+SKIP=0
 TOTAL=0
 
-pass() { ((PASS++)); ((TOTAL++)); echo "  ✅ PASS: $1"; }
-fail() { ((FAIL++)); ((TOTAL++)); echo "  ❌ FAIL: $1"; }
+pass() { PASS=$((PASS + 1)); TOTAL=$((TOTAL + 1)); echo "  ✅ PASS: $1"; }
+fail() { FAIL=$((FAIL + 1)); TOTAL=$((TOTAL + 1)); echo "  ❌ FAIL: $1"; }
+skip() { SKIP=$((SKIP + 1)); echo "  ⏭️  SKIP: $1"; }
+
+if [ -z "$PROVISIONING_SECRET" ]; then
+  echo "FATAL: PROVISIONING_SECRET is not set and could not be read from $ENV_FILE."
+  echo "       Export it or point ENV_FILE at the right file. It is not stored in this script."
+  exit 2
+fi
 
 # ── Polling helpers (avoid time-window flakiness) ──
 LOG_BASELINE=0
@@ -34,9 +79,160 @@ wait_for() {
 }
 
 echo "============================================"
-echo "E2E Test Suite — Interrupt/Resume + AgentMind"
+echo "E2E Suite — infra + interrupt/resume + AgentMind"
+echo "  container:  $CONTAINER_NAME"
+echo "  deployment: $DEPLOYMENT_ID"
+echo "  mode:       $([ $QUICK -eq 1 ] && echo 'quick (Phase 0 only)' || echo 'full')"
 echo "============================================"
 echo ""
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 0 — Infrastructure and regression guards
+#
+# Every check here corresponds to something that has actually broken in
+# production. These are cheap and deterministic; run them after every deploy.
+# ═════════════════════════════════════════════════════════════════════════════
+echo "── PHASE 0: infrastructure + regression guards ──"
+
+# 0.1 Postgres reachable. Neon suspends the compute when its quota is exhausted,
+# which is what took mail down for six days.
+if [ -n "$DATABASE_URL" ] && command -v psql >/dev/null 2>&1; then
+  if timeout 30 psql "$DATABASE_URL" -tAc "select 1" >/dev/null 2>&1; then
+    pass "Postgres reachable"
+  else
+    fail "Postgres unreachable (Neon suspended, or bad DATABASE_URL)"
+  fi
+else
+  skip "Postgres check (no psql or DATABASE_URL)"
+fi
+
+# 0.2 Provisioning service is actually serving, not merely 'online' in pm2.
+if ss -ltn 2>/dev/null | grep -q ":$PROVISIONING_PORT"; then
+  pass "Provisioning service listening on :$PROVISIONING_PORT"
+else
+  fail "Nothing listening on :$PROVISIONING_PORT (pm2 may report online while the env is wrong)"
+fi
+
+# 0.3 Graph token minting — the path that was down for six days.
+MINT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PROVISIONING_URL/internal/microsoft-token" \
+  -H "Content-Type: application/json" -d "{\"deploymentId\":\"$DEPLOYMENT_ID\"}")
+if [ "$MINT_CODE" = "200" ]; then
+  pass "Graph token minted (HTTP 200)"
+else
+  fail "Token mint returned HTTP $MINT_CODE (expected 200)"
+fi
+
+# 0.4 An unknown deployment must 404, not 500. It returned 500 for six days
+# because the Prisma lookup threw before the tenant was ever resolved.
+UNKNOWN_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PROVISIONING_URL/internal/microsoft-token" \
+  -H "Content-Type: application/json" -d '{"deploymentId":"definitely-does-not-exist"}')
+if [ "$UNKNOWN_CODE" = "404" ]; then
+  pass "Unknown deployment returns 404 (not a 500 from a DB throw)"
+else
+  fail "Unknown deployment returned HTTP $UNKNOWN_CODE (expected 404)"
+fi
+
+# 0.5 The tenant cache must live OUTSIDE the repo. If TENANT_CACHE_PATH is unset
+# it silently defaults to the service's cwd, dropping state inside the git tree.
+if [ -f "$TENANT_CACHE_PATH" ]; then
+  pass "Tenant cache present at $TENANT_CACHE_PATH"
+  case "$TENANT_CACHE_PATH" in
+    "$REPO_DIR"*) fail "Tenant cache is INSIDE the repo ($TENANT_CACHE_PATH)" ;;
+    *) pass "Tenant cache is outside the repo" ;;
+  esac
+else
+  fail "Tenant cache missing at $TENANT_CACHE_PATH"
+fi
+
+# 0.6 Cache is actually loaded at boot — proves the disk mirror works, which is
+# what keeps token minting alive across a restart while Postgres is down.
+if grep -q "loaded .* cached tenant" "$PROVISIONING_LOG" 2>/dev/null; then
+  pass "Tenant cache loaded from disk at boot"
+else
+  skip "No cache-load line in $PROVISIONING_LOG (log may have rotated)"
+fi
+
+# 0.7 Redis must be Upstash. A pm2 delete/start without sourcing .env.prod brings
+# the service up pointing at localhost:6379, which fails closed and silently.
+if grep -q "ECONNREFUSED.*6379\|connect ECONNREFUSED 127.0.0.1:6379" "$PROVISIONING_LOG" 2>/dev/null; then
+  fail "Service is falling back to localhost Redis — .env.prod was not loaded"
+else
+  pass "No localhost Redis fallback (Upstash env loaded)"
+fi
+
+# 0.8 Google Workspace is retired; every deployment is workspaceProvider=MICROSOFT.
+# Setting GOOGLE_SERVICE_ACCOUNT_KEY resurrects a 30s Drive poll per poller.
+if [ -n "$GOOGLE_SERVICE_ACCOUNT_KEY" ]; then
+  fail "GOOGLE_SERVICE_ACCOUNT_KEY is set — drive-watcher will poll a retired provider"
+else
+  pass "Google service account unset (drive-watcher stays disabled)"
+fi
+
+# 0.9 Structural guard: the allowlist must not be refreshed on a timer. A fixed
+# heartbeat queries the marketplace API (and Postgres) around the clock, which
+# prevents Neon from ever scaling to zero.
+TIMER_HITS=0
+for f in "$JOBS_DIR/outlook-poller.mjs" "$JOBS_DIR/agentmail-poller.mjs"; do
+  [ -f "$f" ] || continue
+  if grep -qE "setInterval\(\s*(fetchAllowlist|ensureAllowlist)" "$f"; then
+    TIMER_HITS=$((TIMER_HITS + 1))
+  fi
+done
+if [ "$TIMER_HITS" -eq 0 ]; then
+  pass "No timer-based allowlist refresh in either poller"
+else
+  fail "$TIMER_HITS poller(s) refresh the allowlist on a timer — Postgres will never idle"
+fi
+
+# 0.10 Structural guard: a message blocked by the allowlist must not be retained
+# or marked read, or it is dropped permanently and cannot be redelivered after
+# the sender is added to the allowlist.
+DENY_OK=0
+for f in "$JOBS_DIR/outlook-poller.mjs" "$JOBS_DIR/agentmail-poller.mjs"; do
+  [ -f "$f" ] || continue
+  if grep -q "processedIds.delete" "$f"; then
+    DENY_OK=$((DENY_OK + 1))
+  fi
+done
+if [ "$DENY_OK" -eq 2 ]; then
+  pass "Deny path releases held mail in both pollers (redelivery possible)"
+else
+  fail "Only $DENY_OK/2 pollers release denied mail — blocked messages are dropped"
+fi
+
+# 0.11 Agent container up.
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
+  pass "Agent container $CONTAINER_NAME running"
+else
+  fail "Agent container $CONTAINER_NAME not running"
+fi
+
+# 0.12 Auth: /internal/* must reject a bad or missing bearer token.
+BAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PROVISIONING_URL/internal/forward-resolve" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer WRONGTOKEN" \
+  -d '{"containerName":"http://localhost:32789","approvalId":"fake","action":"APPROVED"}')
+NO_AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PROVISIONING_URL/internal/forward-resolve" \
+  -H "Content-Type: application/json" \
+  -d '{"containerName":"http://localhost:32789","approvalId":"fake","action":"APPROVED"}')
+if [ "$BAD_CODE" = "401" ] && [ "$NO_AUTH_CODE" = "401" ]; then
+  pass "forward-resolve rejects bad and missing tokens (401)"
+else
+  fail "Auth not enforced: bad=$BAD_CODE missing=$NO_AUTH_CODE (expected 401/401)"
+fi
+
+echo ""
+
+if [ $QUICK -eq 1 ]; then
+  echo "============================================"
+  echo "RESULTS (quick): $PASS/$TOTAL passed, $FAIL failed, $SKIP skipped"
+  echo "============================================"
+  [ $FAIL -eq 0 ] || exit 1
+  exit 0
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 1+ — Behavioural tests. These drive a real agent and are slow.
+# ═════════════════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────
 # TEST 1: Email — blocked action triggers interrupt
@@ -103,7 +299,7 @@ if [ -n "$APPROVAL_ID" ]; then
   RESOLVE_RESP=$(curl -s -X POST "$PROVISIONING_URL/internal/forward-resolve" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $PROVISIONING_SECRET" \
-    -d "{\"containerName\":\"http://localhost:32789\",\"approvalId\":\"$APPROVAL_ID\",\"action\":\"APPROVED\"}")
+    -d "{\"containerName\":\"$CONTAINER_URL\",\"approvalId\":\"$APPROVAL_ID\",\"action\":\"APPROVED\"}")
   echo "  Resolve response: $RESOLVE_RESP"
   if echo "$RESOLVE_RESP" | grep -q '"ok":true'; then
     pass "Forward-resolve returned ok"
@@ -227,7 +423,7 @@ if [ -n "$TEAMS_APPROVAL" ]; then
   RESOLVE_RESP=$(curl -s -X POST "$PROVISIONING_URL/internal/forward-resolve" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $PROVISIONING_SECRET" \
-    -d "{\"containerName\":\"http://localhost:32789\",\"approvalId\":\"$TEAMS_APPROVAL\",\"action\":\"APPROVED\"}")
+    -d "{\"containerName\":\"$CONTAINER_URL\",\"approvalId\":\"$TEAMS_APPROVAL\",\"action\":\"APPROVED\"}")
   if echo "$RESOLVE_RESP" | grep -q '"ok":true'; then
     pass "Teams: forward-resolve ok"
   else
@@ -284,7 +480,7 @@ if wait_for "Queued approval" 90; then
   RESOLVE_RESP=$(curl -s -X POST "$PROVISIONING_URL/internal/forward-resolve" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $PROVISIONING_SECRET" \
-    -d "{\"containerName\":\"http://localhost:32789\",\"approvalId\":\"$REJECT_APPROVAL\",\"action\":\"REJECTED\",\"rejectionReason\":\"Not authorized for this operation\"}")
+    -d "{\"containerName\":\"$CONTAINER_URL\",\"approvalId\":\"$REJECT_APPROVAL\",\"action\":\"REJECTED\",\"rejectionReason\":\"Not authorized for this operation\"}")
   if echo "$RESOLVE_RESP" | grep -q '"ok":true'; then
     pass "Rejection: resolve forwarded"
   else
@@ -344,33 +540,10 @@ fi
 echo ""
 
 # ─────────────────────────────────────────────
-# TEST 8: Auth — forward-resolve rejects bad token
-# ─────────────────────────────────────────────
-echo "── TEST 8: Auth — forward-resolve rejects bad token ──"
-BAD_RESP=$(curl -s -X POST "$PROVISIONING_URL/internal/forward-resolve" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer WRONGTOKEN" \
-  -d '{"containerName":"http://localhost:32789","approvalId":"fake","action":"APPROVED"}')
-if echo "$BAD_RESP" | grep -q "Unauthorized"; then
-  pass "Bad token rejected with 401"
-else
-  fail "Bad token not rejected: $BAD_RESP"
-fi
-
-NO_AUTH_RESP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PROVISIONING_URL/internal/forward-resolve" \
-  -H "Content-Type: application/json" \
-  -d '{"containerName":"http://localhost:32789","approvalId":"fake","action":"APPROVED"}')
-if [ "$NO_AUTH_RESP" = "401" ]; then
-  pass "Missing auth rejected with 401"
-else
-  fail "Missing auth returned $NO_AUTH_RESP instead of 401"
-fi
-
-echo ""
-
-# ─────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────
 echo "============================================"
-echo "RESULTS: $PASS/$TOTAL passed, $FAIL failed"
+echo "RESULTS: $PASS/$TOTAL passed, $FAIL failed, $SKIP skipped"
 echo "============================================"
+[ $FAIL -eq 0 ] || exit 1
+exit 0
