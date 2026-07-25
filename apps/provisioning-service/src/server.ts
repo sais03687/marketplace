@@ -128,6 +128,66 @@ async function resolveTenantId(deploymentId: string): Promise<string | null> {
   }
 }
 
+// ─── Teams sender allowlist ───────────────────────────────────────────────
+// The mail pollers gate inbound email with this same list, but Teams arrives by
+// a different road (Bot Framework → here → the agent container) and was never
+// gated at all: anyone who could DM the bot got the agent's full capability,
+// including its SharePoint access.
+//
+// This gate fails CLOSED, unlike the poller. The poller treats an unreachable
+// allowlist as "allow everyone", which is how a non-functioning allowlist went
+// unnoticed. An empty list still means "no restriction configured" — that is the
+// product semantic — but "we could not find out" must never be treated the same
+// as "there is no rule".
+type Allowlist = { allowedEmails?: string[]; companyDomain?: string; managerEmail?: string | null };
+const _allowlistCache = new Map<string, { list: Allowlist; cachedAt: number }>();
+const ALLOWLIST_TTL_MS = 60 * 1000;
+
+async function getAllowlist(deploymentId: string): Promise<Allowlist | null> {
+  const cached = _allowlistCache.get(deploymentId);
+  if (cached && Date.now() - cached.cachedAt < ALLOWLIST_TTL_MS) return cached.list;
+  try {
+    const res = await fetch(`${MARKETPLACE_URL}/api/deployments/${deploymentId}/allowlist`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = (await res.json()) as Allowlist;
+    _allowlistCache.set(deploymentId, { list, cachedAt: Date.now() });
+    return list;
+  } catch (err: any) {
+    // Stale-on-error is fine; a total absence of knowledge is not.
+    if (cached) {
+      console.warn(`[teams-allowlist] serving stale allowlist for ${deploymentId}: ${err.message}`);
+      return cached.list;
+    }
+    console.error(`[teams-allowlist] allowlist unreachable for ${deploymentId}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Mirrors isSenderAllowed() in the pollers: manager, then empty=all, then exact,
+ * then @domain. Exported so the matching rules can be tested directly — this
+ * decides who may reach an agent holding application-level Graph credentials.
+ */
+export function isEmailAllowed(email: string, list: Allowlist): boolean {
+  const e = email.trim().toLowerCase();
+  if (!e) return false;
+  if (list.managerEmail && e === list.managerEmail.trim().toLowerCase()) return true;
+  const entries = list.allowedEmails || [];
+  if (entries.length === 0) return true; // no restriction configured
+  for (const raw of entries) {
+    const entry = String(raw).trim().toLowerCase();
+    if (!entry) continue;
+    if (entry.startsWith("@")) {
+      if (e.endsWith(entry)) return true;
+    } else if (e === entry) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── Temp file store for serving images/files in Teams messages ───────────
 // Files expire after 1 hour. Keyed by random ID.
 const _tempFiles = new Map<string, { data: Buffer; contentType: string; expiresAt: number }>();
@@ -962,6 +1022,45 @@ export function startProxyServer() {
               `${deployment.agentName} is currently starting up. Please try again in a moment.`
             );
             return;
+          }
+
+          // ── Allowlist gate ────────────────────────────────────────────────
+          // Nothing below this point should run for a sender who is not
+          // permitted to talk to this agent. The agent holds application-level
+          // Graph credentials, so anyone who reaches it can ask it to read the
+          // documents it can see.
+          const allowlist = await getAllowlist(deployment.id);
+          if (!allowlist) {
+            console.error(
+              `[teams-bot] DENY (allowlist unavailable) from=${context.activity.from?.name} deployment=${deployment.id}`,
+            );
+            await context.sendActivity(
+              "I can't verify your access right now, so I'm not able to help just yet. Please try again shortly.",
+            );
+            return;
+          }
+          // Only resolve the sender's identity when a restriction actually
+          // exists — an empty list allows everyone, so there is nothing to check.
+          if ((allowlist.allowedEmails || []).length > 0) {
+            let senderEmail = "";
+            try {
+              const member = await TeamsInfo.getMember(context, context.activity.from!.id);
+              senderEmail = String(
+                member?.email || (member as unknown as { userPrincipalName?: string })?.userPrincipalName || "",
+              );
+            } catch (err: any) {
+              console.warn(`[teams-bot] could not resolve Teams member identity: ${err.message}`);
+            }
+            if (!isEmailAllowed(senderEmail, allowlist)) {
+              console.log(
+                `[teams-bot] DENY from=${context.activity.from?.name} <${senderEmail || "unidentified"}> deployment=${deployment.id}`,
+              );
+              await context.sendActivity(
+                "Sorry — you're not on the access list for this agent. Please ask your administrator to add you.",
+              );
+              return;
+            }
+            console.log(`[teams-bot] ALLOW <${senderEmail}> deployment=${deployment.id}`);
           }
 
           const containerUrl = deployment.containerName.startsWith("http")
