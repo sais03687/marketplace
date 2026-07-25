@@ -17,6 +17,8 @@
  */
 import http from "node:http";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   CloudAdapter,
   ConfigurationBotFrameworkAuthentication,
@@ -35,6 +37,96 @@ const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
 const BOT_HOSTNAME = process.env.BOT_HOSTNAME || "bot.agentstore.it.com";
 const MARKETPLACE_URL = process.env.MARKETPLACE_URL || "https://www.agentstore.it.com";
+
+// ─── Microsoft tenant cache ───────────────────────────────────────────────
+// deploymentId → Microsoft tenant (buyer's own tenant, or the platform default).
+// This mapping is effectively immutable per deployment, so we cache it to:
+//   (a) avoid a DB query on every token refresh — the Outlook poller hits the
+//       token endpoint constantly, and each query keeps Neon awake and burns
+//       its compute quota; and
+//   (b) keep Graph token minting alive when the DB is briefly unavailable
+//       (stale-on-error) — Graph auth has no reason to depend on Postgres.
+// A short TTL bounds staleness in the rare case a buyer (re)connects their M365.
+// The cache is mirrored to disk so it survives a restart: an in-memory-only cache
+// is empty on boot and therefore useless during exactly the outage it exists for.
+const _tenantCache = new Map<string, { tenantId: string; cachedAt: number }>();
+const TENANT_CACHE_TTL_MS = 15 * 60 * 1000;
+const TENANT_CACHE_PATH =
+  process.env.TENANT_CACHE_PATH || path.resolve(process.cwd(), ".tenant-cache.json");
+
+function loadTenantCache() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(TENANT_CACHE_PATH, "utf8")) as Record<
+      string,
+      { tenantId: string; cachedAt: number }
+    >;
+    for (const [id, entry] of Object.entries(raw)) {
+      if (entry?.tenantId) _tenantCache.set(id, entry);
+    }
+    console.log(`[microsoft-token] loaded ${_tenantCache.size} cached tenant(s) from disk`);
+  } catch (err: any) {
+    // Missing file on first boot is normal; a corrupt one just starts empty.
+    if (err.code !== "ENOENT") {
+      console.warn(`[microsoft-token] could not read tenant cache: ${err.message}`);
+    }
+  }
+}
+
+function persistTenantCache() {
+  try {
+    fs.writeFileSync(TENANT_CACHE_PATH, JSON.stringify(Object.fromEntries(_tenantCache), null, 2));
+  } catch (err: any) {
+    console.warn(`[microsoft-token] could not write tenant cache: ${err.message}`);
+  }
+}
+
+loadTenantCache();
+
+// Throttle the DB-outage warning: the poller refreshes constantly, and an
+// unthrottled warn-per-request is what grew the poller log to gigabytes.
+const _lastStaleWarn = new Map<string, number>();
+const STALE_WARN_INTERVAL_MS = 5 * 60 * 1000;
+
+/**
+ * Resolve the Microsoft tenant for a deployment, backed by a disk-mirrored cache.
+ * Returns the tenantId, or null if the deployment has no tenant configured.
+ * Throws only when the DB is unavailable AND there is no cached value to serve.
+ */
+async function resolveTenantId(deploymentId: string): Promise<string | null> {
+  const cached = _tenantCache.get(deploymentId);
+  if (cached && Date.now() - cached.cachedAt < TENANT_CACHE_TTL_MS) {
+    return cached.tenantId;
+  }
+  try {
+    const deployment = await prisma.deployment.findUnique({
+      where: { id: deploymentId },
+      select: { id: true, buyerMicrosoftTenantId: true },
+    });
+    if (!deployment) return null;
+    const tenantId = deployment.buyerMicrosoftTenantId || config.microsoftTenantId;
+    if (tenantId && tenantId !== cached?.tenantId) {
+      _tenantCache.set(deploymentId, { tenantId, cachedAt: Date.now() });
+      persistTenantCache();
+    } else if (tenantId) {
+      // Same value — refresh the TTL in memory without rewriting the file.
+      _tenantCache.set(deploymentId, { tenantId, cachedAt: Date.now() });
+    }
+    return tenantId || null;
+  } catch (err: any) {
+    // Stale-on-error: a transient DB outage must not take down mail delivery.
+    if (cached) {
+      const lastWarn = _lastStaleWarn.get(deploymentId) || 0;
+      if (Date.now() - lastWarn > STALE_WARN_INTERVAL_MS) {
+        _lastStaleWarn.set(deploymentId, Date.now());
+        console.warn(
+          `[microsoft-token] DB unavailable, serving cached tenant for ${deploymentId}: ${err.message}`,
+        );
+      }
+      return cached.tenantId;
+    }
+    throw err;
+  }
+}
 
 // ─── Temp file store for serving images/files in Teams messages ───────────
 // Files expire after 1 hour. Keyed by random ID.
@@ -435,14 +527,7 @@ export function startProxyServer() {
           const { deploymentId } = JSON.parse(body) as { deploymentId?: string };
           if (!deploymentId) return send(res, 400, { error: "deploymentId required" });
 
-          const deployment = await prisma.deployment.findUnique({
-            where: { id: deploymentId },
-            select: { id: true, buyerMicrosoftTenantId: true },
-          });
-
-          if (!deployment) return send(res, 404, { error: "Deployment not found" });
-
-          const tenantId = deployment.buyerMicrosoftTenantId || config.microsoftTenantId;
+          const tenantId = await resolveTenantId(deploymentId);
           if (!tenantId) {
             return send(res, 404, { error: "No Microsoft tenant configured for this deployment" });
           }

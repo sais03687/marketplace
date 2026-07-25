@@ -199,19 +199,58 @@ async function getPendingApprovals(threadId) {
 
 /** { allowedEmails: string[], companyDomain: string, managerEmail: string|null } */
 let allowlistCache = { allowedEmails: [], companyDomain: "", managerEmail: null };
-const ALLOWLIST_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 
-async function fetchAllowlist() {
+// The allowlist is fetched lazily — only when there is actually mail to decide
+// about — rather than on a fixed heartbeat. A timer-based refresh queried the
+// marketplace API (and therefore Postgres) around the clock even on nights with
+// zero mail, which kept the database from ever scaling to zero. Fetching on
+// demand also means the list is fresh at the moment of the decision instead of
+// up to one refresh interval stale.
+const ALLOWLIST_TTL_MS = 60 * 1000; // treat a successful fetch as fresh this long
+const ALLOWLIST_MIN_GAP_MS = 5 * 1000; // floor between attempts, incl. forced ones
+const DENIED_RECHECK_MS = 15 * 60 * 1000; // re-check allowlist while denied mail waits
+
+let allowlistFetchedAt = 0; // last successful fetch
+let allowlistAttemptedAt = 0; // last attempt, success or not
+let allowlistVersion = ""; // changes only when the effective rules change
+let lastDeniedRecheck = 0;
+let allowlistUnreachable = false; // so the warning is logged once per failure streak
+
+/** Messages held back by the allowlist → the version they were denied under. */
+const deniedVersions = new Map();
+
+async function ensureAllowlist({ force = false } = {}) {
   if (!DEPLOYMENT_ID) return;
+  const now = Date.now();
+  // Throttle so the poll loop (or a burst of mail) can't hammer the API, and so
+  // a slow/failing marketplace is retried at a sane rate.
+  if (now - allowlistAttemptedAt < ALLOWLIST_MIN_GAP_MS) return;
+  if (!force && now - allowlistFetchedAt < ALLOWLIST_TTL_MS) return;
+  allowlistAttemptedAt = now;
   try {
     const res = await fetch(`${MARKETPLACE_URL}/api/deployments/${DEPLOYMENT_ID}/allowlist`, {
       signal: AbortSignal.timeout(5000),
     });
     if (res.ok) {
       allowlistCache = await res.json();
+      allowlistFetchedAt = Date.now();
+      allowlistVersion = JSON.stringify([
+        allowlistCache.managerEmail || "",
+        [...(allowlistCache.allowedEmails || [])].sort(),
+      ]);
+      allowlistUnreachable = false;
     }
-  } catch {
-    // Non-fatal — keep previous cache
+  } catch (err) {
+    // Non-fatal — keep the previous cache. But say so out loud: an unreachable
+    // allowlist leaves allowedEmails empty, which isSenderAllowed() treats as
+    // "allow everyone". Swallowing this silently is how a misconfigured
+    // MARKETPLACE_URL hid a non-functioning allowlist indefinitely.
+    if (!allowlistUnreachable) {
+      allowlistUnreachable = true;
+      console.error(
+        `[allowlist] fetch failed (${MARKETPLACE_URL}) — senders are NOT being restricted: ${err.message}`,
+      );
+    }
   }
 }
 
@@ -354,6 +393,23 @@ async function poll() {
   _pollRunning = true;
   try {
     const messages = await listMessages();
+
+    // Only touch the allowlist API when there is *undecided* mail. Messages we
+    // are already holding back are excluded, otherwise they would keep this
+    // condition true forever and turn the TTL back into a constant heartbeat —
+    // they are handled by the slower DENIED_RECHECK_MS path below instead.
+    if (
+      messages.some((m) => !processedIds.has(m.message_id) && !deniedVersions.has(m.message_id))
+    ) {
+      await ensureAllowlist();
+    }
+    // While denied mail is waiting, re-check on a slow cadence so a sender added
+    // to the allowlist later still gets delivered.
+    if (deniedVersions.size > 0 && Date.now() - lastDeniedRecheck > DENIED_RECHECK_MS) {
+      lastDeniedRecheck = Date.now();
+      await ensureAllowlist({ force: true });
+    }
+
     for (const msg of messages) {
       if (processedIds.has(msg.message_id)) continue;
 
@@ -371,11 +427,27 @@ async function poll() {
         continue;
       }
 
-      // Allowlist check — skip if sender is not permitted
+      // Allowlist check — hold back if sender is not permitted
       if (!isSenderAllowed(msg.from)) {
-        console.log(`  [blocked] From: ${msg.from} | not in allowlist — skipping`);
-        continue;
+        // Never deny on a stale allowlist: confirm against fresh data before
+        // holding mail back, but only once per set of rules so a denied message
+        // sitting in the inbox doesn't re-query on every poll cycle.
+        if (deniedVersions.get(msg.message_id) !== allowlistVersion) {
+          await ensureAllowlist({ force: true });
+        }
+        if (!isSenderAllowed(msg.from)) {
+          // Forget we saw it (it stays unread) so that if the sender is added to
+          // the allowlist later, the message is still delivered rather than
+          // dropped for the lifetime of this process.
+          processedIds.delete(msg.message_id);
+          if (deniedVersions.get(msg.message_id) !== allowlistVersion) {
+            deniedVersions.set(msg.message_id, allowlistVersion);
+            console.log(`  [blocked] From: ${msg.from} | not in allowlist — left unread`);
+          }
+          continue;
+        }
       }
+      deniedVersions.delete(msg.message_id);
 
       const fullMsg = await getMessage(msg.message_id);
       if (!fullMsg) continue;
@@ -565,13 +637,11 @@ if (driveEnabled) {
   console.log(`[drive-watcher] Disabled (no GOOGLE_SERVICE_ACCOUNT_KEY)`);
 }
 
-// Fetch allowlist at startup
-await fetchAllowlist();
+// Fetch allowlist at startup; thereafter it refreshes lazily when mail arrives
+// (see ensureAllowlist) rather than on a timer that would keep Postgres awake.
+await ensureAllowlist({ force: true });
 const managerLabel = allowlistCache.managerEmail ? ` (manager: ${allowlistCache.managerEmail})` : "";
 console.log(`[allowlist] ${allowlistCache.allowedEmails.length} additional entries${managerLabel}`);
-
-// Refresh allowlist every 5 minutes
-setInterval(fetchAllowlist, ALLOWLIST_REFRESH_MS);
 
 // Initial email poll — mark existing as seen without forwarding
 const existing = await listMessages();

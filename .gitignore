@@ -61,4 +61,14 @@ apps/web/storage/
 # Local env files
 .env.prod
 .env.local
+.env.vercel
+
+# Certificates & private keys (SharePoint/Graph app auth)
+*.pem
+*.pfx
+*.p12
+
+# Tenant cache fallback — only written here if TENANT_CACHE_PATH is unset;
+# in prod it lives outside the repo at /var/lib/marketplace/tenant-cache.json
+.tenant-cache.json
 

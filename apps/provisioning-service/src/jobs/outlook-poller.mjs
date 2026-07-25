@@ -281,19 +281,58 @@ async function classifyApprovalReply(replyText) {
 
 /** { allowedEmails: string[], companyDomain: string, managerEmail: string|null } */
 let allowlistCache = { allowedEmails: [], companyDomain: "", managerEmail: null };
-const ALLOWLIST_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 
-async function fetchAllowlist() {
+// The allowlist is fetched lazily — only when there is actually mail to decide
+// about — rather than on a fixed heartbeat. A timer-based refresh queried the
+// marketplace API (and therefore Postgres) around the clock even on nights with
+// zero mail, which kept the database from ever scaling to zero. Fetching on
+// demand also means the list is fresh at the moment of the decision instead of
+// up to one refresh interval stale.
+const ALLOWLIST_TTL_MS = 60 * 1000; // treat a successful fetch as fresh this long
+const ALLOWLIST_MIN_GAP_MS = 5 * 1000; // floor between attempts, incl. forced ones
+const DENIED_RECHECK_MS = 15 * 60 * 1000; // re-check allowlist while denied mail waits
+
+let allowlistFetchedAt = 0; // last successful fetch
+let allowlistAttemptedAt = 0; // last attempt, success or not
+let allowlistVersion = ""; // changes only when the effective rules change
+let lastDeniedRecheck = 0;
+let allowlistUnreachable = false; // so the warning is logged once per failure streak
+
+/** Messages held back by the allowlist → the version they were denied under. */
+const deniedVersions = new Map();
+
+async function ensureAllowlist({ force = false } = {}) {
   if (!DEPLOYMENT_ID) return;
+  const now = Date.now();
+  // Throttle so the 5s poll loop (or a burst of mail) can't hammer the API,
+  // and so a slow/failing marketplace is retried at a sane rate.
+  if (now - allowlistAttemptedAt < ALLOWLIST_MIN_GAP_MS) return;
+  if (!force && now - allowlistFetchedAt < ALLOWLIST_TTL_MS) return;
+  allowlistAttemptedAt = now;
   try {
     const res = await fetch(`${MARKETPLACE_URL}/api/deployments/${DEPLOYMENT_ID}/allowlist`, {
       signal: AbortSignal.timeout(5000),
     });
     if (res.ok) {
       allowlistCache = await res.json();
+      allowlistFetchedAt = Date.now();
+      allowlistVersion = JSON.stringify([
+        allowlistCache.managerEmail || "",
+        [...(allowlistCache.allowedEmails || [])].sort(),
+      ]);
+      allowlistUnreachable = false;
     }
-  } catch {
-    // Non-fatal — keep previous cache
+  } catch (err) {
+    // Non-fatal — keep the previous cache. But say so out loud: an unreachable
+    // allowlist leaves allowedEmails empty, which isSenderAllowed() treats as
+    // "allow everyone". Swallowing this silently is how a misconfigured
+    // MARKETPLACE_URL hid a non-functioning allowlist indefinitely.
+    if (!allowlistUnreachable) {
+      allowlistUnreachable = true;
+      console.error(
+        `[allowlist] fetch failed (${MARKETPLACE_URL}) — senders are NOT being restricted: ${err.message}`,
+      );
+    }
   }
 }
 
@@ -535,6 +574,21 @@ async function poll() {
     if (!token) return;
 
     const messages = await listUnreadMessages(token);
+
+    // Only touch the allowlist API when there is *undecided* mail. Messages we
+    // are already holding back are excluded, otherwise they would keep this
+    // condition true forever and turn the TTL back into a constant heartbeat —
+    // they are handled by the slower DENIED_RECHECK_MS path below instead.
+    if (messages.some((m) => !processedIds.has(m.id) && !deniedVersions.has(m.id))) {
+      await ensureAllowlist();
+    }
+    // While denied mail is waiting, re-check on a slow cadence so a sender added
+    // to the allowlist later still gets delivered.
+    if (deniedVersions.size > 0 && Date.now() - lastDeniedRecheck > DENIED_RECHECK_MS) {
+      lastDeniedRecheck = Date.now();
+      await ensureAllowlist({ force: true });
+    }
+
     for (const msg of messages) {
       const msgId = msg.id;
       if (processedIds.has(msgId)) continue;
@@ -548,14 +602,29 @@ async function poll() {
         continue;
       }
 
-      // Allowlist check — skip if sender is not permitted
+      // Allowlist check — hold back if sender is not permitted
       const fromFormatted = formatEmailAddress(msg.from);
       if (!isSenderAllowed(fromFormatted)) {
-        console.log(`  [blocked] From: ${fromFormatted} | not in allowlist — skipping`);
-        // Still mark as read so we don't re-process
-        await markAsRead(token, msgId);
-        continue;
+        // Never deny on a stale allowlist: confirm against fresh data before
+        // holding mail back, but only once per set of rules so a denied message
+        // sitting in the mailbox doesn't re-query on every 5s cycle.
+        if (deniedVersions.get(msgId) !== allowlistVersion) {
+          await ensureAllowlist({ force: true });
+        }
+        if (!isSenderAllowed(fromFormatted)) {
+          // Leave it unread and forget we saw it, so that if the sender is added
+          // to the allowlist later the message is still delivered. Previously it
+          // was marked read and retained here, which dropped it permanently and
+          // hid it from the mailbox owner too.
+          processedIds.delete(msgId);
+          if (deniedVersions.get(msgId) !== allowlistVersion) {
+            deniedVersions.set(msgId, allowlistVersion);
+            console.log(`  [blocked] From: ${fromFormatted} | not in allowlist — left unread`);
+          }
+          continue;
+        }
       }
+      deniedVersions.delete(msgId);
 
       // ── Approval-reply detection ──────────────────────────────────────
       // If the email body (including quoted content) contains an approval ID
@@ -796,13 +865,11 @@ if (!initialToken) {
   process.exit(1);
 }
 
-// Fetch allowlist at startup
-await fetchAllowlist();
+// Fetch allowlist at startup; thereafter it refreshes lazily when mail arrives
+// (see ensureAllowlist) rather than on a timer that would keep Postgres awake.
+await ensureAllowlist({ force: true });
 const managerLabel = allowlistCache.managerEmail ? ` (manager: ${allowlistCache.managerEmail})` : "";
 console.log(`[allowlist] ${allowlistCache.allowedEmails.length} additional entries${managerLabel}`);
-
-// Refresh allowlist every 5 minutes
-setInterval(fetchAllowlist, ALLOWLIST_REFRESH_MS);
 
 // Initial email poll — mark existing unread messages as seen without forwarding
 const existingMessages = await listUnreadMessages(initialToken);
