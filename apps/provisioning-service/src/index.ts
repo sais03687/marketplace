@@ -55,7 +55,6 @@ async function recoverLocalAgents(): Promise<void> {
         port,
         agentEmail: dep.agentEmail!,
         agentId: dep.agentId,
-        inboxId: dep.agentEmailInboxId ?? undefined,
         approvalWebhookToken: dep.approvalWebhookToken ?? undefined,
       });
 
@@ -144,29 +143,20 @@ async function recoverDockerPollers(): Promise<void> {
         continue;
       }
 
-      // Which mail channel to poll is a durable property of the deployment —
-      // its workspace provider — not a transient container env var. This call
-      // previously passed no emailMode at all, so startPoller defaulted to
-      // AgentMail and every restart of this service silently moved every
-      // deployment onto AgentMail inbound polling, regardless of how it was
-      // provisioned. That is how a Microsoft deployment ended up sending via
-      // Outlook while still receiving on AgentMail.
-      const emailMode = dep.workspaceProvider === "MICROSOFT" ? "outlook" : "agentmail";
-
       startPoller({
         deploymentId: dep.id,
         agentEmail: dep.agentEmail!,
-        inboxId: dep.agentEmailInboxId ?? undefined,
         agentId: dep.agentId,
         gatewayUrl: `http://127.0.0.1:${port}`,
         // Custom runtime containers don't use OpenClaw hooks auth
         hooksToken: runtime === "CUSTOM" ? "" : config.openclawHooksToken,
         marketplaceUrl: config.approvalWebhookUrl,
-        emailMode,
-        outlookEmail: emailMode === "outlook" ? (dep.workspaceEmail ?? dep.agentEmail!) : undefined,
+        // Prefer the workspace mailbox explicitly: agentEmail should already hold
+        // it, but the fallback keeps recovery working for any row not yet migrated.
+        outlookEmail: dep.workspaceEmail ?? dep.agentEmail!,
       });
       console.log(
-        `[recovery] Poller restored for ${dep.id.slice(0, 8)} (${emailMode}: ${emailMode === "outlook" ? dep.workspaceEmail : dep.agentEmail})`,
+        `[recovery] Poller restored for ${dep.id.slice(0, 8)} (${dep.workspaceEmail ?? dep.agentEmail})`,
       );
     } catch (err: any) {
       // Container may have stopped or been removed — skip gracefully

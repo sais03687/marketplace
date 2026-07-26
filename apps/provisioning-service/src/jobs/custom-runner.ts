@@ -279,23 +279,14 @@ export async function spawnCustomAgent(
 
     console.log(`[custom-runner] Container ${containerName} started on port ${hostPort}`);
 
-    // Spawn poller — Outlook poller for Microsoft workspace, AgentMail poller otherwise.
-    // A Microsoft workspace is identified by WORKSPACE_EMAIL as well as EMAIL_MODE:
-    // relying on EMAIL_MODE alone means any caller that rebuilds the container env
-    // without it silently downgrades the deployment to AgentMail.
-    const emailMode = (env.EMAIL_MODE === "outlook" || env.WORKSPACE_EMAIL
-      ? "outlook"
-      : "agentmail") as "outlook" | "agentmail";
     startPoller({
       deploymentId,
       agentEmail: env.AGENT_EMAIL,
-      inboxId,
       agentId: env.AGENT_ID,
       gatewayUrl: `http://127.0.0.1:${hostPort}`,
       hooksToken: "",
       marketplaceUrl: env.MARKETPLACE_URL || config.approvalWebhookUrl || "http://localhost:3002",
-      emailMode,
-      outlookEmail: emailMode === "outlook" ? (env.WORKSPACE_EMAIL || env.AGENT_EMAIL) : undefined,
+      outlookEmail: env.WORKSPACE_EMAIL || env.AGENT_EMAIL,
     });
 
     customProcesses.set(deploymentId, {

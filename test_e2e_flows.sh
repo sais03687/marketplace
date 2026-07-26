@@ -171,9 +171,16 @@ fi
 # 0.9 Structural guard: the allowlist must not be refreshed on a timer. A fixed
 # heartbeat queries the marketplace API (and Postgres) around the clock, which
 # prevents Neon from ever scaling to zero.
+# Derived from the pollers that actually exist rather than a hardcoded count:
+# AgentMail was retired, so hardcoding "2" turned its removal into a test failure.
+POLLERS=""
+for f in "$JOBS_DIR"/*-poller.mjs; do
+  [ -f "$f" ] && POLLERS="$POLLERS $f"
+done
+POLLER_COUNT=$(echo $POLLERS | wc -w)
+
 TIMER_HITS=0
-for f in "$JOBS_DIR/outlook-poller.mjs" "$JOBS_DIR/agentmail-poller.mjs"; do
-  [ -f "$f" ] || continue
+for f in $POLLERS; do
   if grep -qE "setInterval\(\s*(fetchAllowlist|ensureAllowlist)" "$f"; then
     TIMER_HITS=$((TIMER_HITS + 1))
   fi
@@ -188,16 +195,15 @@ fi
 # or marked read, or it is dropped permanently and cannot be redelivered after
 # the sender is added to the allowlist.
 DENY_OK=0
-for f in "$JOBS_DIR/outlook-poller.mjs" "$JOBS_DIR/agentmail-poller.mjs"; do
-  [ -f "$f" ] || continue
+for f in $POLLERS; do
   if grep -q "processedIds.delete" "$f"; then
     DENY_OK=$((DENY_OK + 1))
   fi
 done
-if [ "$DENY_OK" -eq 2 ]; then
-  pass "Deny path releases held mail in both pollers (redelivery possible)"
+if [ "$POLLER_COUNT" -gt 0 ] && [ "$DENY_OK" -eq "$POLLER_COUNT" ]; then
+  pass "Deny path releases held mail in all $POLLER_COUNT poller(s) (redelivery possible)"
 else
-  fail "Only $DENY_OK/2 pollers release denied mail — blocked messages are dropped"
+  fail "Only $DENY_OK/$POLLER_COUNT pollers release denied mail — blocked messages are dropped"
 fi
 
 # 0.11 Agent container up.

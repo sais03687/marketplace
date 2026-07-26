@@ -196,11 +196,10 @@ export async function spawnLocalAgent(
   // Wait for gateway to start
   await waitForGatewayReady(port, 90_000);
 
-  // 2. Spawn AgentMail poller via centralized manager
+  // 2. Spawn the mail poller via centralized manager
   startPoller({
     deploymentId,
     agentEmail: env.AGENT_EMAIL,
-    inboxId,
     agentId: env.AGENT_ID,
     gatewayUrl: `http://127.0.0.1:${port}`,
     hooksToken: config.openclawHooksToken,
@@ -293,7 +292,6 @@ export async function restartLocalAgent(opts: {
     startPoller({
       deploymentId,
       agentEmail: opts.agentEmail,
-      inboxId: opts.inboxId,
       agentId: opts.agentId,
       gatewayUrl: `http://127.0.0.1:${port}`,
       hooksToken: config.openclawHooksToken,
@@ -366,7 +364,6 @@ export async function restartLocalAgent(opts: {
   startPoller({
     deploymentId,
     agentEmail: opts.agentEmail,
-    inboxId: opts.inboxId,
     agentId: opts.agentId,
     gatewayUrl: `http://127.0.0.1:${port}`,
     hooksToken: config.openclawHooksToken,

@@ -678,13 +678,11 @@ export async function provisionJob(
     startPoller({
       deploymentId,
       agentEmail,
-      inboxId,
       agentId: deployment.agentId,
       gatewayUrl: `http://127.0.0.1:${healthPort}`,
       hooksToken: config.openclawHooksToken,
       marketplaceUrl: config.approvalWebhookUrl,
-      emailMode: workspaceProvider === "MICROSOFT" ? "outlook" : "agentmail",
-      outlookEmail: workspaceProvider === "MICROSOFT" ? workspaceEmail : undefined,
+      outlookEmail: workspaceEmail ?? agentEmail,
     });
   }
 

@@ -1,5 +1,5 @@
 /**
- * Centralized AgentMail poller process manager.
+ * Centralized mail poller process manager.
  *
  * All runtime modes (local OpenClaw, Docker OpenClaw, Custom Docker) register
  * their pollers here so that:
@@ -12,14 +12,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "../config.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Deployment ID → poller child process
 const pollers = new Map<string, ChildProcess>();
 
-function resolvePollerScript(name: string = "agentmail-poller.mjs"): string {
+function resolvePollerScript(name: string = "outlook-poller.mjs"): string {
   const localPath = join(__dirname, name);
   if (existsSync(localPath)) return localPath;
   const srcPath = join(__dirname, "..", "..", "src", "jobs", name);
@@ -31,32 +30,37 @@ function resolvePollerScript(name: string = "agentmail-poller.mjs"): string {
 
 export interface PollerOpts {
   deploymentId: string;
+  /** The agent's mailbox — its Microsoft 365 address. */
   agentEmail: string;
-  /** AgentMail inbox UUID — used as path param in API calls. Falls back to agentEmail if omitted. */
-  inboxId?: string;
   agentId: string;
   /** Full base URL for the agent gateway, e.g. "http://127.0.0.1:18800" */
   gatewayUrl: string;
   /** Bearer token for OpenClaw hooks auth. Pass "" for custom runtimes. */
   hooksToken: string;
   marketplaceUrl: string;
-  /** Email mode: "outlook" routes to outlook-poller.mjs, anything else to agentmail-poller.mjs */
-  emailMode?: "outlook" | "agentmail";
-  /** Microsoft 365 email address — used as OUTLOOK_AGENT_EMAIL for Graph API polling. */
+  /**
+   * Microsoft 365 address to poll, if it differs from agentEmail. Both now hold
+   * the same value for a Microsoft deployment; kept so callers that read
+   * workspaceEmail directly stay explicit about which address they mean.
+   */
   outlookEmail?: string;
 }
 
 /**
- * Spawn an AgentMail poller for a deployment.
+ * Spawn the Outlook mail poller for a deployment.
  * If a poller is already registered for this deployment it is killed first.
+ *
+ * Mail is Microsoft-only. There was previously an AgentMail poller selected by
+ * an emailMode flag, which gave every agent a second address on a second system
+ * that had to be kept in sync — and because the flag lived only in transient
+ * container env, a restart silently reverted deployments onto it.
  */
 export function startPoller(opts: PollerOpts): ChildProcess {
   stopPoller(opts.deploymentId); // idempotent — no-op if nothing is running
 
-  const useOutlook = opts.emailMode === "outlook";
-  const scriptName = useOutlook ? "outlook-poller.mjs" : "agentmail-poller.mjs";
-  const script = resolvePollerScript(scriptName);
+  const script = resolvePollerScript("outlook-poller.mjs");
 
+  const pollAddress = opts.outlookEmail || opts.agentEmail;
   const baseEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
     OPENCLAW_HOOKS_TOKEN: opts.hooksToken,
@@ -64,19 +68,12 @@ export function startPoller(opts: PollerOpts): ChildProcess {
     MARKETPLACE_URL: opts.marketplaceUrl,
     DEPLOYMENT_ID: opts.deploymentId,
     AGENT_ID: opts.agentId,
+    OUTLOOK_AGENT_EMAIL: pollAddress,
+    OUTLOOK_TOKEN_URL: `http://127.0.0.1:${process.env.PROVISIONING_PORT || "3003"}/internal/microsoft-token`,
+    // The mailbox being polled. Previously this was set to the AgentMail address
+    // even in Outlook mode, contradicting the comment above it.
+    POLLER_INBOX: pollAddress,
   };
-
-  if (useOutlook) {
-    // Outlook poller needs Graph token URL + Microsoft workspace email (not AgentMail)
-    baseEnv.OUTLOOK_AGENT_EMAIL = opts.outlookEmail || opts.agentEmail;
-    baseEnv.OUTLOOK_TOKEN_URL = `http://127.0.0.1:${process.env.PROVISIONING_PORT || "3003"}/internal/microsoft-token`;
-    baseEnv.POLLER_INBOX = opts.agentEmail;
-  } else {
-    // AgentMail poller needs API key + inbox ID
-    baseEnv.AGENTMAIL_API_KEY = config.agentMailApiKey;
-    baseEnv.POLLER_INBOX = opts.agentEmail;
-    baseEnv.POLLER_INBOX_ID = opts.inboxId || opts.agentEmail;
-  }
 
   const child = spawn(process.execPath, [script], {
     env: baseEnv,
@@ -84,8 +81,7 @@ export function startPoller(opts: PollerOpts): ChildProcess {
     detached: false,
   });
 
-  const pollerType = useOutlook ? "outlook" : "agentmail";
-  const label = `${pollerType}-${opts.deploymentId.slice(0, 8)}`;
+  const label = `outlook-${opts.deploymentId.slice(0, 8)}`;
   child.stdout?.on("data", (d: Buffer) => process.stdout.write(`[${label}] ${d}`));
   child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[${label}] ${d}`));
   child.on("exit", (code) => {
@@ -94,7 +90,7 @@ export function startPoller(opts: PollerOpts): ChildProcess {
   });
 
   pollers.set(opts.deploymentId, child);
-  console.log(`[${label}] Started → ${opts.gatewayUrl} (inbox: ${opts.agentEmail})`);
+  console.log(`[${label}] Started → ${opts.gatewayUrl} (mailbox: ${pollAddress})`);
   return child;
 }
 
