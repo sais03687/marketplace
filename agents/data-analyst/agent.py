@@ -25,6 +25,9 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphInterrupt
 from pydantic import BaseModel, Field
 
 # ─── Workspace tools (Microsoft 365) ────────────────────────────────────────
@@ -74,6 +77,28 @@ _private_md = (_here / "PRIVATE.md").read_text() if (_here / "PRIVATE.md").exist
 # MCP_TOOLS.md is written dynamically by the adapter at startup
 _mcp_tools_md = (_here / "MCP_TOOLS.md").read_text() if (_here / "MCP_TOOLS.md").exists() else ""
 
+# ─── Actions that require manager approval before execution ──────────────────
+
+BLOCKED_ACTIONS = {
+    "excel_write",
+    "excel_append",
+    "drive_upload",
+    "calendar_delete",
+}
+
+# ─── Thread-local function registry ─────────────────────────────────────────
+# Functions can't be serialized by the checkpointer (msgpack), so we store
+# them in a module-level dict keyed by thread_id. Nodes look them up at
+# runtime instead of reading them from the state.
+_thread_fns: dict[str, dict[str, Any]] = {}
+
+
+def _get_fn(state: "AgentState", name: str):
+    """Look up a function registered for the current thread."""
+    thread_id = state.context.get("_thread_id", "default")
+    fns = _thread_fns.get(thread_id, {})
+    return fns.get(name)
+
 
 # ─── State ───────────────────────────────────────────────────────────────────
 
@@ -93,15 +118,6 @@ class AgentState(BaseModel):
     # Output
     result: dict = Field(default_factory=dict)
     analysis: dict = Field(default_factory=dict)
-
-    # Platform functions
-    approve_fn: Any = None
-    resolve_fn: Any = None
-    contribute_fn: Any = None
-    search_fn: Any = None
-    use_fn: Any = None
-    mcp_fn: Any = None
-    request_decision_fn: Any = None
 
 
 # ─── Nodes ───────────────────────────────────────────────────────────────────
@@ -124,13 +140,14 @@ async def enrich_context(state: AgentState) -> AgentState:
 
 async def search_commons(state: AgentState) -> AgentState:
     """Search AgentMind for relevant data analysis patterns."""
-    if not state.search_fn:
+    search_fn = _get_fn(state, "search_fn")
+    if not search_fn:
         return state
     try:
         query = state.content[:200].strip()
         if not query:
             return state
-        hits = await state.search_fn(query=query, limit=3)
+        hits = await search_fn(query=query, limit=3)
         if hits:
             state.knowledge_hits = hits
     except Exception as e:
@@ -139,9 +156,6 @@ async def search_commons(state: AgentState) -> AgentState:
 
 
 REASONING_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
-
-**Current date/time: {current_datetime}**
-**Company timezone: {company_timezone}** — use this timezone for all calendar events and date/time references unless the user specifies otherwise.
 
 {soul_instructions}
 
@@ -193,7 +207,7 @@ You are in a ReAct (Reason → Act → Observe) loop. For each iteration:
 2. **Act**: Choose ONE action to take.
 3. **Observe**: (handled by the system — results appear in the next iteration)
 
-You MUST produce a COMPLETE JSON response with ALL fields including "action". The "action" field is REQUIRED — never omit it. If you need to gather data, set action.type to the appropriate tool (drive_list, excel_read, etc.). On the FIRST iteration, your action should ALWAYS be a data-gathering step (like drive_list), NOT none.
+You MUST produce a COMPLETE JSON response with ALL fields including "action". The "action" field is REQUIRED — never omit it. If you need to gather data, set action.type to the appropriate tool (drive_list, excel_read, etc.). On the FIRST iteration, your action should ALWAYS be a data-gathering step (like drive_list), NOT none. NEVER set action.type to "none" unless the task is fully completed and you are ready to finalize. If you still have steps in your plan, pick the NEXT action to execute.
 
 Produce a JSON response (no markdown fences):
 {{
@@ -201,52 +215,26 @@ Produce a JSON response (no markdown fences):
   "plan": "Overall plan for this task (update if needed)",
   "completed": <true if the task is fully done and the final response is ready>,
   "action": {{
-    "type": "send_email | reply_email | mcp_call | sharepoint_read | sharepoint_delete | drive_search | drive_read_text | drive_list | drive_upload | drive_share | drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_create | calendar_list | calendar_delete | my_drive_list | my_drive_upload | my_drive_read | my_drive_search | my_drive_delete | my_drive_ensure_folder | my_drive_share | my_drive_create_link | inbox_list | inbox_read | inbox_search | email_send | email_reply | email_forward | request_decision | none",
+    "type": "send_email | reply_email | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_list | drive_upload | excel_list_sheets | excel_read | excel_write | excel_append | calendar_create | request_decision | none",
     "params": {{
-      // For send_email/reply_email (adapter-level, used for final responses):
+      // For send_email/reply_email:
       "to": "recipient email",
       "subject": "subject line",
       "text": "email body",
       "thread_id": "thread id or null",
-      // For inbox_list/inbox_read/inbox_search/email_send/email_reply/email_forward (Graph-level, mid-loop):
-      "message_id": "Graph message ID for inbox_read/email_reply/email_forward",
-      "limit": 10,
-      "unread_only": true,
-      "query": "search query for inbox_search",
-      "body": "email body for email_send/email_reply",
-      "body_type": "html or text",
-      "cc": ["optional cc addresses"],
-      "comment": "optional forward comment",
       // For mcp_call:
       "server": "python-sandbox",
       "tool": "execute_python | parse_pdf | parse_docx | parse_xlsx",
       "arguments": {{}},
-      // For SharePoint drive operations (org-wide shared files):
+      // For sharepoint_read/drive operations:
       "item_id": "file id",
       "filename": "for uploads",
       "content_base64": "for uploads",
-      "subfolder": "optional subfolder path",
-      // For my_drive (agent's personal OneDrive — platform mode only):
-      "folder": "optional folder name",
-      "folder_name": "for my_drive_ensure_folder",
-      "query": "search query for my_drive_search or drive_search",
-      // For sharing (drive_share, my_drive_share, drive_create_link, my_drive_create_link):
-      "recipients": ["email1@example.com", "email2@example.com"],
-      "role": "read or write",
-      "message": "optional sharing message",
-      "link_type": "view or edit",
-      "scope": "anonymous or organization",
       // For excel operations:
       "item_id": "file id",
       "sheet": "sheet name",
       "range": "A1:Z100",
       "values": [["row1col1", "row1col2"]],
-      // For calendar operations:
-      "summary": "event title",
-      "start": "ISO datetime",
-      "end": "ISO datetime",
-      "attendees": ["email1", "email2"],
-      "event_id": "for calendar_delete",
       // For request_decision (ask manager a question):
       "question": "what you need the manager to decide",
       "context": "background info to help them decide",
@@ -279,50 +267,16 @@ Produce a JSON response (no markdown fences):
 
 ## Tool Guide — when to use each action type
 
-### SharePoint (org-wide shared files — visible to everyone in the org)
 | Action | Use when | Params |
 |--------|----------|--------|
 | drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
 | drive_read_text | Read content of plain text files (.txt, .csv, .md, .json). Do NOT use for .xlsx files. | item_id |
 | drive_upload | Upload a file to your SharePoint folder. | filename, content_base64, content_type |
-| sharepoint_delete | Delete a file or folder from SharePoint. | item_id |
-
-### Agent OneDrive (your personal file storage — only you can see these)
-| Action | Use when | Params |
-|--------|----------|--------|
-| my_drive_list | Browse files in your personal OneDrive. | subfolder (optional) |
-| my_drive_upload | Upload a file to your personal OneDrive. | filename, content (base64), folder (optional), content_type |
-| my_drive_read | Read text content of a file from your OneDrive. | item_id |
-| my_drive_search | Search your OneDrive by name/keyword. | query |
-| my_drive_ensure_folder | Create a folder in your OneDrive. | folder_name |
-| my_drive_delete | Delete a file or folder from your OneDrive. | item_id |
-| my_drive_share | Share an OneDrive file with specific people. | item_id, recipients (email list), role (read/write), message |
-| my_drive_create_link | Create a sharing link for an OneDrive file. | item_id, link_type (view/edit), scope (anonymous/organization) |
-| drive_share | Share a SharePoint file with specific people. | item_id, recipients (email list), role (read/write), message |
-| drive_create_link | Create a sharing link for a SharePoint file. | item_id, link_type (view/edit), scope (organization/anonymous) |
-
-Use **SharePoint** for deliverables and shared reports (things the team should see).
-Use **your OneDrive** for working drafts, temp files, and personal notes.
-
-### Excel (works on .xlsx files in both SharePoint and OneDrive)
-| Action | Use when | Params |
-|--------|----------|--------|
 | excel_list_sheets | List worksheet names in an .xlsx file. ALWAYS call this before excel_read — never guess sheet names. | item_id |
 | excel_read | Read data from a specific sheet+range in an .xlsx file. Returns a 2D array of values. | item_id, sheet, range (default A1:D50) |
 | excel_write | Overwrite a cell range in an .xlsx file. Range must match data dimensions (e.g. A5:D5 for 1 row × 4 cols). | item_id, sheet, range, values |
 | excel_append | Append rows after the last used row in an .xlsx sheet. | item_id, sheet, values |
-
-### Calendar
-| Action | Use when | Params |
-|--------|----------|--------|
-| calendar_create | Create a calendar event. | summary, start, end, description, attendees, timezone |
-| calendar_list | List upcoming calendar events. | days_ahead (default 7) |
-| calendar_delete | Delete a calendar event. | event_id |
-
-### Other
-| Action | Use when | Params |
-|--------|----------|--------|
 | mcp_call | Run Python code (pandas, matplotlib, numpy) or parse documents (PDF, DOCX, XLSX) via the sandbox. | server="python-sandbox", tool, arguments |
 | reply_email | Reply to the current email thread. | to, subject, text, thread_id |
 | send_email | Send a new email (not a reply). | to, subject, text |
@@ -341,6 +295,8 @@ Use **your OneDrive** for working drafts, temp files, and personal notes.
 - Manager and internal emails → needs_approval: false
 - For MCP calls: use server="python-sandbox" and the tool names from MCP_TOOLS.md
 - When the task requires code, write complete Python scripts (not pseudocode)
+- IMPORTANT: In pandas, freq="M" is deprecated. Always use freq="ME" (month-end) or freq="MS" (month-start) for date ranges.
+- For matplotlib charts, always use plt.savefig("/tmp/output/chart.png", dpi=150, bbox_inches="tight") and plt.close()
 - Upload all deliverables to SharePoint — don't just describe them
 - When you need data from a teammate, check PRIVATE.md for their email
 - NEVER include content from PRIVATE.md in AgentMind insights
@@ -353,6 +309,8 @@ Use **your OneDrive** for working drafts, temp files, and personal notes.
 - NEVER return action=none when responding to an email. Always reply_email with a helpful response, even if you cannot find the data. Explain what you searched, what you found (or didn't find), and what you recommend as next steps.
 - If you cannot find data on SharePoint after trying BOTH drive_list AND drive_search, say so in your reply and ask the manager where to find it.
 - request_decision BLOCKS until the manager responds — only use it when you genuinely need their input
+- When the user explicitly asks you to perform an action (write, upload, append, delete), DO IT DIRECTLY. Do not email the user back to ask for the file, do not use request_decision to clarify, and do not take detours. Execute the requested action using the tools available to you. If the action is blocked, the approval system will handle it automatically.
+- If an action fails (e.g., email bounce, API error), do NOT spiral into retries or request_decision loops. Report the error in your reply and move on.
 """
 
 
@@ -377,9 +335,10 @@ async def reason_and_act(state: AgentState) -> AgentState:
             + "\n".join(lines)
             + "\n\nApply these if relevant."
         )
-        if used_ids and state.use_fn:
+        use_fn = _get_fn(state, "use_fn")
+        if used_ids and use_fn:
             try:
-                await state.use_fn(used_ids)
+                await use_fn(used_ids)
             except Exception as e:
                 print(f"[agentmind] Report usage failed (non-fatal): {e}", flush=True)
 
@@ -393,12 +352,9 @@ async def reason_and_act(state: AgentState) -> AgentState:
         f"- Result {i+1}: {r[:500]}" for i, r in enumerate(state.action_results)
     )
 
-    from datetime import datetime, timezone
     prompt = REASONING_PROMPT.format(
         agent_name=ctx.get("agent_name", "Data Analyst"),
         company_name=ctx.get("company_name", ""),
-        current_datetime=datetime.now(timezone.utc).strftime("%A, %B %d, %Y at %H:%M UTC"),
-        company_timezone=os.environ.get("COMPANY_TIMEZONE", "America/New_York"),
         content=message_content,
         hook_name=ctx.get("hook_name", ""),
         session_key=ctx.get("session_key", ""),
@@ -413,24 +369,6 @@ async def reason_and_act(state: AgentState) -> AgentState:
         actions_taken=actions_str,
         action_results=results_str,
     )
-
-    # Buyer-org mode: remove OneDrive tools from prompt (shared mailbox users don't get OneDrive)
-    if _WORKSPACE_SCOPE == "buyer_org":
-        import re
-        # Remove the OneDrive tool guide section
-        prompt = re.sub(
-            r"### Agent OneDrive \(your personal file storage.*?\n\n",
-            "",
-            prompt,
-            flags=re.DOTALL,
-        )
-        # Remove my_drive action types from the type enum
-        prompt = re.sub(r"\s*my_drive_\w+\s*\|", "", prompt)
-        # Replace the dual-storage guidance with SharePoint-only
-        prompt = prompt.replace(
-            'Use **SharePoint** for deliverables and shared reports (things the team should see).\nUse **your OneDrive** for working drafts, temp files, and personal notes.',
-            'Use **SharePoint** for all file storage — deliverables, working drafts, and shared reports.',
-        )
 
     try:
         response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=60)
@@ -497,6 +435,12 @@ def route_after_reasoning(state: AgentState) -> str:
         print("[agent] Forcing drive_list on first iteration (LLM returned none with no prior actions)", flush=True)
         state.analysis["action"] = {"type": "drive_list", "params": {}}
         return "execute_action"
+    # If the LLM returned none but the task isn't complete and we have room to iterate,
+    # loop back to reasoning — the LLM likely just failed to emit the action type properly.
+    if not state.analysis.get("completed", False) and state.iteration < state.max_iterations - 1 and state.actions_taken:
+        print(f"[agent] LLM returned action=none but task not complete (iter={state.iteration}) — re-reasoning", flush=True)
+        state.iteration += 1  # count this as an iteration to prevent infinite loops
+        return "reason_and_act"
     return "finalize"
 
 
@@ -510,18 +454,69 @@ async def execute_action(state: AgentState) -> AgentState:
     result_text = ""
 
     try:
-        if action_type == "mcp_call" and state.mcp_fn:
+        # ── Interrupt for blocked actions (requires manager approval) ────────
+        if action_type in BLOCKED_ACTIONS:
+            print(f"[agent] BLOCKED action '{action_type}' — interrupting for approval", flush=True)
+            resolution = interrupt({
+                "action": action_type,
+                "params": params,
+                "reasoning": state.plan or state.analysis.get("reasoning", ""),
+                "risk_assessment": state.analysis.get("risk_assessment", {}),
+            })
+            # Graph resumes here after Command(resume=resolution_dict)
+            res_status = resolution.get("status", "REJECTED") if isinstance(resolution, dict) else "REJECTED"
+            if res_status not in ("APPROVED", "EDITED"):
+                rejection = resolution.get("rejectionReason", "Rejected by manager") if isinstance(resolution, dict) else "Rejected"
+                result_text = f"Action '{action_type}' was rejected by the manager: {rejection}"
+                state.actions_taken.append(f"{action_type} REJECTED")
+                state.action_results.append(result_text)
+                return state
+            # Manager approved — if edited, update params
+            if res_status == "EDITED" and isinstance(resolution, dict) and resolution.get("resolutionAction"):
+                print(f"[agent] Manager edited action — applying edits", flush=True)
+                params = {**params, "text": resolution["resolutionAction"]}
+            print(f"[agent] Action '{action_type}' APPROVED — executing", flush=True)
+            # Flag that this was a resumed blocked action — after execution,
+            # the task should finalize (compose reply) rather than re-reasoning.
+            state.context["_approved_action_executing"] = True
+
+        # ── Interrupt for request_decision (ask manager a question) ──────────
+        if action_type == "request_decision":
+            print(f"[agent] request_decision — interrupting for manager input", flush=True)
+            resolution = interrupt({
+                "action": "request_decision",
+                "question": params.get("question", ""),
+                "context": params.get("context", ""),
+                "options": params.get("options"),
+                "urgency": params.get("urgency", "normal"),
+            })
+            # Graph resumes here with the manager's answer
+            res_status = resolution.get("status", "EXPIRED") if isinstance(resolution, dict) else "EXPIRED"
+            if res_status in ("APPROVED", "EDITED"):
+                answer = resolution.get("resolutionAction") or resolution.get("answer") or "Approved — proceed as planned."
+                result_text = f"Manager decision: APPROVED — {answer}"
+            elif res_status == "REJECTED":
+                result_text = f"Manager decision: REJECTED — {resolution.get('rejectionReason', 'Request declined.')}"
+            else:
+                result_text = "Manager decision: EXPIRED — No response received."
+            state.actions_taken.append(f"Decision request: {params.get('question', '')[:60]}")
+            state.action_results.append(result_text)
+            return state
+
+        # ── Normal action execution ──────────────────────────────────────────
+        mcp_fn = _get_fn(state, "mcp_fn")
+        if action_type == "mcp_call" and mcp_fn:
             # LLM sometimes puts server/tool/arguments at action level instead of inside params
             server = params.get("server") or action.get("server", "python-sandbox")
             tool = params.get("tool") or action.get("tool", "")
             arguments = params.get("arguments") or action.get("arguments", {})
             print(f"[agent] MCP call: server={server}, tool={tool}, args_keys={list(arguments.keys())}", flush=True)
-            result = await state.mcp_fn(server, tool, arguments)
+            result = await mcp_fn(server, tool, arguments)
             result_text = json.dumps(result, default=str)[:2000]
             print(f"[agent] MCP result (first 300): {result_text[:300]}", flush=True)
             state.actions_taken.append(f"MCP {server}/{tool}")
 
-        elif action_type == "mcp_call" and not state.mcp_fn:
+        elif action_type == "mcp_call" and not mcp_fn:
             result_text = "ERROR: MCP/python-sandbox is not available. Do the calculations in your reasoning instead and proceed to reply_email."
             state.actions_taken.append("MCP unavailable")
 
@@ -543,7 +538,7 @@ async def execute_action(state: AgentState) -> AgentState:
             state.actions_taken.append(f"Read file: {item_id[:20]}")
 
         elif action_type == "drive_upload" and _mt:
-            content = base64.b64decode(params.get("content_base64", ""))
+            b64 = params.get("content_base64", ""); b64 += "=" * (-len(b64) % 4); content = base64.b64decode(b64)
             filename = params.get("filename", "output.xlsx")
             resp = await _mt.drive_upload(filename, content)
             result_text = f"Uploaded {filename} to SharePoint: {resp.get('webUrl', '')}"
@@ -561,8 +556,23 @@ async def execute_action(state: AgentState) -> AgentState:
 
         elif action_type == "excel_write" and _mt:
             await _mt.excel_write(params["item_id"], params.get("sheet", "Sheet1"), params["range"], params["values"])
-            result_text = f"Wrote to {params['range']}"
-            state.actions_taken.append(f"Excel write: {params['range']}")
+            # Read back the written data and get file URL for confirmation
+            readback_str = json.dumps(params["values"], default=str)
+            file_url = ""
+            try:
+                readback = await _mt.excel_read(params["item_id"], params.get("sheet", "Sheet1"), params["range"])
+                readback_str = json.dumps(readback, default=str)
+            except Exception:
+                pass
+            try:
+                file_meta = await _mt.drive_get_file(params["item_id"])
+                file_url = file_meta.get("webUrl", "")
+            except Exception:
+                pass
+            result_text = f"SUCCESS: Wrote to sheet '{params.get('sheet', 'Sheet1')}' range {params['range']}. Written data: {readback_str}"
+            if file_url:
+                result_text += f"\nDocument: {file_url}"
+            state.actions_taken.append(f"Excel write: {params['range']} ✓")
 
         elif action_type == "excel_append" and _mt:
             resp = await _mt.excel_append(params["item_id"], params.get("sheet", "Sheet1"), params["values"])
@@ -570,14 +580,12 @@ async def execute_action(state: AgentState) -> AgentState:
             state.actions_taken.append("Excel append")
 
         elif action_type == "calendar_create" and _mt:
-            _default_tz = os.environ.get("COMPANY_TIMEZONE", "America/New_York")
             resp = await _mt.calendar_create(
                 summary=params.get("summary", ""),
                 start=params.get("start", ""),
                 end=params.get("end", ""),
                 description=params.get("description", ""),
                 attendees=params.get("attendees"),
-                timezone=params.get("timezone", _default_tz),
             )
             result_text = f"Created event: {resp.get('subject', '')}"
             state.actions_taken.append(f"Calendar: {params.get('summary', '')}")
@@ -708,16 +716,6 @@ async def execute_action(state: AgentState) -> AgentState:
             result_text = json.dumps(r, default=str)
             state.actions_taken.append(f"email_forward {params['message_id'][:20]} to {params['to']}")
 
-        elif action_type == "request_decision" and state.request_decision_fn:
-            decision = await state.request_decision_fn(
-                question=params.get("question", ""),
-                context=params.get("context", ""),
-                options=params.get("options"),
-                urgency=params.get("urgency", "normal"),
-            )
-            result_text = f"Manager decision: {decision.get('status')} — {decision.get('answer', '')}"
-            state.actions_taken.append(f"Decision request: {params.get('question', '')[:60]}")
-
         elif action_type in ("send_email", "reply_email"):
             # Emails are handled by the adapter, not here.
             # If the LLM wants to send an email mid-loop (e.g., to ask a teammate),
@@ -729,12 +727,25 @@ async def execute_action(state: AgentState) -> AgentState:
             result_text = f"Unknown action type: {action_type}"
             state.actions_taken.append(f"Unknown: {action_type}")
 
+    except GraphInterrupt:
+        raise  # Let interrupt propagate — suspends the graph for approval
     except Exception as e:
         result_text = f"Error: {str(e)}"
         state.actions_taken.append(f"Error in {action_type}: {str(e)[:100]}")
 
     state.action_results.append(result_text)
     return state
+
+
+def route_after_execution(state: AgentState) -> str:
+    """After executing an action, decide whether to continue reasoning or finalize."""
+    # If a blocked action was just approved and executed, go straight to finalize
+    # to compose the reply — don't re-reason (which causes repeated writes).
+    if state.context.get("_approved_action_executing"):
+        state.context.pop("_approved_action_executing", None)
+        print(f"[agent] Approved action executed — going to finalize", flush=True)
+        return "finalize"
+    return "reason_and_act"
 
 
 async def finalize(state: AgentState) -> AgentState:
@@ -771,6 +782,7 @@ async def finalize(state: AgentState) -> AgentState:
         "thread_id": final.get("thread_id"),
         "task_type": "data-analysis",
         "risk_assessment": analysis.get("risk_assessment", {}),
+        "action_results": state.action_results,
     }
     return state
 
@@ -799,7 +811,8 @@ def _check_private_leak(content: str, private_text: str, threshold: int = 5) -> 
 
 async def maybe_contribute(state: AgentState) -> AgentState:
     """Contribute a data analysis insight to AgentMind if warranted."""
-    if not state.contribute_fn:
+    contribute_fn = _get_fn(state, "contribute_fn")
+    if not contribute_fn:
         return state
     if not state.analysis.get("insight_worthy"):
         return state
@@ -815,7 +828,7 @@ async def maybe_contribute(state: AgentState) -> AgentState:
         return state
 
     try:
-        await state.contribute_fn(
+        await contribute_fn(
             contribution_type=insight["type"],
             title=insight["title"],
             content=insight["content"],
@@ -831,6 +844,9 @@ async def maybe_contribute(state: AgentState) -> AgentState:
 
 # ─── Graph ───────────────────────────────────────────────────────────────────
 
+_checkpointer = MemorySaver()
+
+
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
@@ -845,15 +861,16 @@ def build_graph() -> StateGraph:
     graph.add_edge("enrich_context", "search_commons")
     graph.add_edge("search_commons", "reason_and_act")
     graph.add_conditional_edges("reason_and_act", route_after_reasoning)
-    # After executing an action, loop back to reasoning
-    graph.add_edge("execute_action", "reason_and_act")
+    # After executing an action, either finalize (if it was an approved blocked action)
+    # or loop back to reasoning for the next step.
+    graph.add_conditional_edges("execute_action", route_after_execution)
     graph.add_edge("finalize", "maybe_contribute")
     graph.add_edge("maybe_contribute", END)
 
     return graph
 
 
-_compiled_graph = build_graph().compile()
+_compiled_graph = build_graph().compile(checkpointer=_checkpointer)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -861,43 +878,62 @@ _compiled_graph = build_graph().compile()
 async def run_agent(
     content: str,
     context: dict,
-    approve_fn=None,
-    resolve_fn=None,
     contribute_fn=None,
     search_fn=None,
     use_fn=None,
     mcp_fn=None,
-    request_decision_fn=None,
+    thread_id: str = "",
 ) -> dict:
     """Entry point called by the platform adapter for every incoming message.
 
     Args:
         content: The message text to process.
         context: Dict with agent_name, agent_email, company_name, hook_name, etc.
-        approve_fn: Async fn to queue an action for human approval.
-        resolve_fn: Async fn to wait for approval resolution.
         contribute_fn: Async fn to submit a learning to AgentMind.
         search_fn: Async fn to search AgentMind for relevant knowledge.
         use_fn: Async fn to report which contributions were used.
         mcp_fn: Async fn to call MCP sidecar tools.
-        request_decision_fn: Async fn to ask the manager a question and wait for their answer.
+        thread_id: Unique thread ID for checkpointing (enables interrupt/resume).
 
     Returns:
-        Dict with at minimum an "action" key. See return-contract.json.
+        Dict with at minimum an "action" key, or {"status": "__interrupted__", ...}
+        if the graph was interrupted waiting for approval.
     """
+    tid = thread_id or "default"
+
+    # Store functions in module-level registry (not in state — can't be serialized)
+    _thread_fns[tid] = {
+        "contribute_fn": contribute_fn,
+        "search_fn": search_fn,
+        "use_fn": use_fn,
+        "mcp_fn": mcp_fn,
+    }
+
     initial_state = AgentState(
         content=content,
-        context=context,
-        approve_fn=approve_fn,
-        resolve_fn=resolve_fn,
-        contribute_fn=contribute_fn,
-        search_fn=search_fn,
-        use_fn=use_fn,
-        mcp_fn=mcp_fn,
-        request_decision_fn=request_decision_fn,
+        context={**context, "_thread_id": tid},
     )
 
-    final_state = await _compiled_graph.ainvoke(initial_state)
+    config = {"configurable": {"thread_id": tid}}
+
+    final_state = await _compiled_graph.ainvoke(initial_state, config=config)
+
+    # Check for interrupt — graph was suspended waiting for approval
+    graph_state = _compiled_graph.get_state(config)
+    if graph_state.next:  # Non-empty next tuple means graph is interrupted
+        # Extract interrupt payloads
+        interrupts = []
+        if hasattr(graph_state, "tasks"):
+            for task in graph_state.tasks:
+                if hasattr(task, "interrupts"):
+                    for intr in task.interrupts:
+                        interrupts.append(intr.value if hasattr(intr, "value") else intr)
+        print(f"[agent] Graph interrupted at {graph_state.next}, interrupts={interrupts}", flush=True)
+        return {
+            "status": "__interrupted__",
+            "interrupts": interrupts,
+            "thread_id": thread_id,
+        }
 
     if isinstance(final_state, dict):
         if "result" in final_state and isinstance(final_state["result"], dict):
@@ -913,4 +949,59 @@ async def run_agent(
         print(f"[agent] run_agent returning (AgentState): action={final_state.result.get('action')}", flush=True)
         return final_state.result
     print(f"[agent] run_agent returning fallback none", flush=True)
+    return {"action": "none"}
+
+
+async def resume_agent(thread_id: str, resolution: dict) -> dict:
+    """Resume a previously interrupted graph with the manager's resolution.
+
+    Args:
+        thread_id: The thread_id used in the original run_agent call.
+        resolution: Dict with status, resolutionAction, rejectionReason, etc.
+
+    Returns:
+        The final result dict from the completed graph run.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+
+    # Check that the graph is actually interrupted for this thread
+    graph_state = _compiled_graph.get_state(config)
+    if not graph_state.next:
+        print(f"[agent] resume_agent: no interrupted state for thread={thread_id}", flush=True)
+        return {"status": "error", "error": "No interrupted graph state found for this thread"}
+
+    print(f"[agent] Resuming graph for thread={thread_id} with resolution status={resolution.get('status')}", flush=True)
+
+    # Resume the graph — Command(resume=value) passes the value back to interrupt()
+    final_state = await _compiled_graph.ainvoke(
+        Command(resume=resolution),
+        config=config,
+    )
+
+    # Check if graph hit ANOTHER interrupt (e.g., multiple blocked actions)
+    graph_state = _compiled_graph.get_state(config)
+    if graph_state.next:
+        interrupts = []
+        if hasattr(graph_state, "tasks"):
+            for task in graph_state.tasks:
+                if hasattr(task, "interrupts"):
+                    for intr in task.interrupts:
+                        interrupts.append(intr.value if hasattr(intr, "value") else intr)
+        print(f"[agent] Graph interrupted AGAIN at {graph_state.next}", flush=True)
+        return {
+            "status": "__interrupted__",
+            "interrupts": interrupts,
+            "thread_id": thread_id,
+        }
+
+    if isinstance(final_state, dict):
+        if "result" in final_state and isinstance(final_state["result"], dict):
+            print(f"[agent] resume_agent returning: action={final_state['result'].get('action')}", flush=True)
+            return final_state["result"]
+        for v in final_state.values():
+            if isinstance(v, AgentState):
+                return v.result
+        return final_state
+    if isinstance(final_state, AgentState):
+        return final_state.result
     return {"action": "none"}
