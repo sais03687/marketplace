@@ -262,8 +262,13 @@ export async function spawnCustomAgent(
 
     console.log(`[custom-runner] Container ${containerName} started on port ${hostPort}`);
 
-    // Spawn poller — Outlook poller for Microsoft workspace, AgentMail poller otherwise
-    const emailMode = (env.EMAIL_MODE === "outlook" ? "outlook" : "agentmail") as "outlook" | "agentmail";
+    // Spawn poller — Outlook poller for Microsoft workspace, AgentMail poller otherwise.
+    // A Microsoft workspace is identified by WORKSPACE_EMAIL as well as EMAIL_MODE:
+    // relying on EMAIL_MODE alone means any caller that rebuilds the container env
+    // without it silently downgrades the deployment to AgentMail.
+    const emailMode = (env.EMAIL_MODE === "outlook" || env.WORKSPACE_EMAIL
+      ? "outlook"
+      : "agentmail") as "outlook" | "agentmail";
     startPoller({
       deploymentId,
       agentEmail: env.AGENT_EMAIL,

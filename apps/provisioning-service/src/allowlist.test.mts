@@ -1,7 +1,7 @@
 import { isEmailAllowed } from "./server.js";
 
 let pass = 0, fail = 0;
-const check = (name, actual, expected) => {
+const check = (name: string, actual: boolean, expected: boolean) => {
   if (actual === expected) { pass++; console.log(`  PASS  ${name}`); }
   else { fail++; console.log(`  FAIL  ${name} — got ${actual}, expected ${expected}`); }
 };

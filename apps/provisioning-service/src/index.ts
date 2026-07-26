@@ -144,6 +144,15 @@ async function recoverDockerPollers(): Promise<void> {
         continue;
       }
 
+      // Which mail channel to poll is a durable property of the deployment —
+      // its workspace provider — not a transient container env var. This call
+      // previously passed no emailMode at all, so startPoller defaulted to
+      // AgentMail and every restart of this service silently moved every
+      // deployment onto AgentMail inbound polling, regardless of how it was
+      // provisioned. That is how a Microsoft deployment ended up sending via
+      // Outlook while still receiving on AgentMail.
+      const emailMode = dep.workspaceProvider === "MICROSOFT" ? "outlook" : "agentmail";
+
       startPoller({
         deploymentId: dep.id,
         agentEmail: dep.agentEmail!,
@@ -153,8 +162,12 @@ async function recoverDockerPollers(): Promise<void> {
         // Custom runtime containers don't use OpenClaw hooks auth
         hooksToken: runtime === "CUSTOM" ? "" : config.openclawHooksToken,
         marketplaceUrl: config.approvalWebhookUrl,
+        emailMode,
+        outlookEmail: emailMode === "outlook" ? (dep.workspaceEmail ?? dep.agentEmail!) : undefined,
       });
-      console.log(`[recovery] Poller restored for ${dep.id.slice(0, 8)} (${dep.agentEmail})`);
+      console.log(
+        `[recovery] Poller restored for ${dep.id.slice(0, 8)} (${emailMode}: ${emailMode === "outlook" ? dep.workspaceEmail : dep.agentEmail})`,
+      );
     } catch (err: any) {
       // Container may have stopped or been removed — skip gracefully
       console.warn(`[recovery] Skipping ${dep.id.slice(0, 8)}: ${err.message}`);
