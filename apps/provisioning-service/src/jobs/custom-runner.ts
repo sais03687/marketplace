@@ -214,6 +214,23 @@ export async function spawnCustomAgent(
       `PORT=4000`,
     ];
 
+    // A container with this name may already exist when re-provisioning an
+    // existing deployment. Docker would reject the create with a 409, and the
+    // caller's failure path treats that as "provisioning failed, tear down the
+    // resources" — which deletes the agent's mailbox. Replace it explicitly so
+    // re-provisioning is a supported operation rather than one that always
+    // fails into a destructive rollback.
+    try {
+      const existing = docker.getContainer(containerName);
+      await existing.inspect(); // throws 404 if absent
+      console.log(`[custom-runner] Replacing existing container ${containerName}`);
+      await existing.remove({ force: true });
+    } catch (err: any) {
+      if (err.statusCode !== 404) {
+        throw new Error(`Could not replace existing container ${containerName}: ${err.message}`);
+      }
+    }
+
     const container = await docker.createContainer({
       Image: imageName,
       name: containerName,

@@ -183,6 +183,15 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   let workspaceEmail: string | undefined;
   let workspaceUserId: string | undefined;
 
+  // Captured before provisioning mutates anything. The failure path below tears
+  // down the resources it provisioned, which is right for a first-time provision
+  // and destructive for a re-provision: those resources already belong to a live
+  // agent. Anything the deployment already owned must never be deleted by the
+  // rollback — a recoverable container conflict once deleted a running agent's
+  // mailbox because the rollback could not tell the difference.
+  const preExistingWorkspaceUserId = (deployment as any).workspaceUserId as string | null;
+  const preExistingInboxId = (deployment as any).agentEmailInboxId as string | null;
+
   if (workspaceProvider === "GOOGLE" && config.googleWorkspaceSaKey) {
     try {
       const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
@@ -301,6 +310,20 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       } catch (err: any) {
         console.warn(`[provision] Service account creation failed, using platform SA: ${err.message}`);
       }
+    }
+  }
+
+  // Workspace identity is created with a deterministic username, so a re-provision
+  // of an already-provisioned deployment fails with a conflict. Every branch above
+  // only warns on that failure, leaving workspaceEmail undefined — and because the
+  // container env below injects WORKSPACE_EMAIL only when it is truthy *in this
+  // run*, re-provisioning would silently strip the agent's own address out of its
+  // environment. Fall back to what was persisted by the run that first created it.
+  if (workspaceProvider !== "NONE" && !workspaceEmail) {
+    workspaceEmail = (deployment as any).workspaceEmail ?? undefined;
+    workspaceUserId = (deployment as any).workspaceUserId ?? undefined;
+    if (workspaceEmail) {
+      console.log(`[provision] Reusing existing workspace identity: ${workspaceEmail}`);
     }
   }
 
@@ -504,23 +527,35 @@ export async function provisionJob(deploymentId: string): Promise<void> {
       healthPort = result.port;
     }
   } catch (err: any) {
-    // Clean up inbox on container failure
-    if (inboxId) {
+    // Clean up inbox on container failure — but only if this run created it.
+    if (inboxId && inboxId !== preExistingInboxId) {
       try {
         const { deleteInbox } = await import("../clients/agentmail.js");
         await deleteInbox(inboxId);
       } catch {
         // best-effort cleanup
       }
+    } else if (inboxId) {
+      console.log(`[provision] Keeping pre-existing inbox ${inboxId} (not created by this run)`);
     }
-    // Clean up M365 user on failure (prevents orphaned licensed users)
-    if (workspaceUserId && workspaceProvider === "MICROSOFT") {
+    // Clean up M365 user on failure (prevents orphaned licensed users) — again,
+    // only one this run created. Deleting a pre-existing user destroys the
+    // mailbox of an agent that is still running.
+    if (
+      workspaceUserId
+      && workspaceProvider === "MICROSOFT"
+      && workspaceUserId !== preExistingWorkspaceUserId
+    ) {
       try {
         await deleteMicrosoftUser(workspaceUserId);
         console.log(`[provision] Cleaned up orphaned M365 user ${workspaceUserId}`);
       } catch {
         // best-effort cleanup
       }
+    } else if (workspaceUserId) {
+      console.log(
+        `[provision] Keeping pre-existing M365 user ${workspaceUserId} (not created by this run)`,
+      );
     }
     // Clean up MCP sidecars and network on failure
     if (requiredIntegrations.length > 0) {
