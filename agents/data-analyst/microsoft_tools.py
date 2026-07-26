@@ -232,6 +232,11 @@ async def drive_upload(filename: str, content: bytes, content_type: str = "appli
 async def drive_list(subfolder: str = "") -> list[dict]:
     """List files in the agent's SharePoint folder (or a subfolder)."""
     token = await _get_access_token()
+    # The model calls this with subfolder omitted or explicitly null. An f-string
+    # renders None as the literal "None", producing .../root:/<folder>/None:/children
+    # and a 404 — so listing shared files failed whenever no subfolder was given.
+    # my_drive_list() avoids this by testing truthiness; do the same here.
+    subfolder = subfolder or ""
     path = f"{_SP_FOLDER}/{subfolder}".rstrip("/")
     async with httpx.AsyncClient(timeout=20.0) as client:
         resp = await client.get(
@@ -641,8 +646,9 @@ async def execute_writes(writes: list[dict]) -> list[dict]:
 # ─── Outlook Email ────────────────────────────────────────────────────────────
 
 _OUTLOOK_SEND_URL = os.environ.get("OUTLOOK_SEND_URL", "")
-_EMAIL_MODE = os.environ.get("EMAIL_MODE", "agentmail")
-EMAIL_AVAILABLE = bool(_EMAIL_MODE == "outlook" and _OUTLOOK_SEND_URL and AVAILABLE)
+# Mail is Microsoft-only; there is no longer an EMAIL_MODE to select a channel.
+# Availability is just "can we reach the Graph send proxy".
+EMAIL_AVAILABLE = bool(_OUTLOOK_SEND_URL and AVAILABLE)
 
 
 async def inbox_list(limit: int = 10, unread_only: bool = True) -> list[dict]:
