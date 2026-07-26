@@ -671,13 +671,27 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   // Preserve OBSERVATION if answers were collected during the hire wizard —
   // don't regress back to INTERVIEW.
   const hasHireAnswers = !!(deployment as any).onboardingData;
+  const wasActive = (deployment as any).status === "ACTIVE";
+
+  // For a Microsoft deployment the agent's address is its M365 mailbox, not the
+  // AgentMail inbox — see scripts/migrate-agent-email-to-m365.mjs. Writing the
+  // AgentMail address here reverted that migration on every re-provision, so the
+  // two now agree on which address is canonical.
+  const primaryAgentEmail =
+    workspaceProvider === "MICROSOFT" && workspaceEmail ? workspaceEmail : agentEmail;
+
   await prisma.deployment.update({
     where: { id: deploymentId },
     data: {
-      status: "ONBOARDING",
-      onboardingState: hasHireAnswers ? "OBSERVATION" : "INTERVIEW",
+      // Re-provisioning a live agent must not send it back through onboarding.
+      // AgentMind contributions are gated on ACTIVE, so demoting an
+      // already-onboarded deployment silently disables them.
+      status: wasActive ? "ACTIVE" : "ONBOARDING",
+      onboardingState: wasActive
+        ? undefined
+        : hasHireAnswers ? "OBSERVATION" : "INTERVIEW",
       containerName,
-      agentEmail,
+      agentEmail: primaryAgentEmail,
       agentEmailInboxId: inboxId,
       approvalWebhookToken: config.approvalWebhookToken,
     },

@@ -65,12 +65,10 @@ if (!APPLY) {
   process.exit(0);
 }
 
-await prisma.deployment.update({
-  where: { id: deploymentId },
-  data: { status: "PROVISIONING" },
-});
-console.log("\nStatus set to PROVISIONING");
-
+// Deliberately NOT setting status to PROVISIONING first. provision.ts decides
+// the final status by looking at the current one — an already-ACTIVE deployment
+// must stay ACTIVE rather than being sent back through onboarding — and
+// overwriting it here would destroy the very signal it reads.
 const queue = new Queue("provisioning", { connection: { url: process.env.REDIS_URL } });
 const job = await queue.add("provision", { type: "provision", deploymentId });
 console.log(`Enqueued provision job ${job.id}`);
