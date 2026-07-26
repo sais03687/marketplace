@@ -100,7 +100,15 @@ async function waitForCustomHealth(host: string, port: number): Promise<void> {
   throw new Error(`Custom health check timed out after ${config.healthCheckTimeoutMs}ms`);
 }
 
-export async function provisionJob(deploymentId: string): Promise<void> {
+export async function provisionJob(
+  deploymentId: string,
+  /**
+   * The status the deployment held before the caller set it to PROVISIONING,
+   * which this job requires as an entry condition. A re-provision of a live
+   * agent uses it to avoid demoting an ACTIVE deployment back to ONBOARDING.
+   */
+  statusBefore?: string,
+): Promise<void> {
   // 1. Validate deployment exists and is in PROVISIONING state
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
@@ -338,27 +346,40 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   let agentEmail: string;
   let inboxId: string | undefined;
 
-  // 2. Create AgentMail inbox
-  try {
-    const slug = deployment.agent.slug;
-    const companySlug = companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-    // Include a short deployment-ID suffix so multiple deployments of the same
-    // agent at the same company each get a distinct inbox.
-    const depSuffix = deploymentId.slice(-12);
-    const username = `${slug}-${companySlug}-${depSuffix}`;
-
-    const inbox = await withRetry(
-      () => createInbox(username, "agentmail.to"),
-      { step: "create_inbox", deploymentId },
+  // 2. Create AgentMail inbox — only where it will actually be used.
+  // A Microsoft deployment receives on its M365 mailbox and sends through the
+  // Graph proxy, so an AgentMail inbox is dead weight: a second address for the
+  // same agent that nothing polls, and one more thing to keep in sync. Anything
+  // provisioned before this keeps the inbox it already has, because
+  // deprovision.ts still needs the id to delete it when the agent is fired.
+  if (workspaceProvider === "MICROSOFT" && workspaceEmail) {
+    agentEmail = workspaceEmail;
+    inboxId = preExistingInboxId ?? undefined;
+    console.log(
+      `[provision] Microsoft workspace — skipping AgentMail inbox, agent address is ${workspaceEmail}`,
     );
-    agentEmail = inbox.email_address;
-    inboxId = inbox.id;
-  } catch (err: any) {
-    await prisma.deployment.update({
-      where: { id: deploymentId },
-      data: { status: "ERROR" },
-    });
-    throw err;
+  } else {
+    try {
+      const slug = deployment.agent.slug;
+      const companySlug = companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+      // Include a short deployment-ID suffix so multiple deployments of the same
+      // agent at the same company each get a distinct inbox.
+      const depSuffix = deploymentId.slice(-12);
+      const username = `${slug}-${companySlug}-${depSuffix}`;
+
+      const inbox = await withRetry(
+        () => createInbox(username, "agentmail.to"),
+        { step: "create_inbox", deploymentId },
+      );
+      agentEmail = inbox.email_address;
+      inboxId = inbox.id;
+    } catch (err: any) {
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: { status: "ERROR" },
+      });
+      throw err;
+    }
   }
 
   // 2b. Set up Gmail forwarding from workspace address → Agentmail inbox (Google path only)
@@ -671,7 +692,9 @@ export async function provisionJob(deploymentId: string): Promise<void> {
   // Preserve OBSERVATION if answers were collected during the hire wizard —
   // don't regress back to INTERVIEW.
   const hasHireAnswers = !!(deployment as any).onboardingData;
-  const wasActive = (deployment as any).status === "ACTIVE";
+  // The deployment is necessarily PROVISIONING by now — that is this job's entry
+  // condition — so the caller has to tell us what it was before.
+  const wasActive = statusBefore === "ACTIVE";
 
   // For a Microsoft deployment the agent's address is its M365 mailbox, not the
   // AgentMail inbox — see scripts/migrate-agent-email-to-m365.mjs. Writing the

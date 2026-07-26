@@ -65,12 +65,19 @@ if (!APPLY) {
   process.exit(0);
 }
 
-// Deliberately NOT setting status to PROVISIONING first. provision.ts decides
-// the final status by looking at the current one — an already-ACTIVE deployment
-// must stay ACTIVE rather than being sent back through onboarding — and
-// overwriting it here would destroy the very signal it reads.
+// provisionJob requires the deployment to be in PROVISIONING, but it also needs
+// to know what the status was beforehand so that re-provisioning a live agent
+// does not demote it to ONBOARDING (AgentMind contributions are gated on
+// ACTIVE). Setting the status destroys that signal, so it travels with the job.
+const statusBefore = dep.status;
+await prisma.deployment.update({
+  where: { id: deploymentId },
+  data: { status: "PROVISIONING" },
+});
+console.log(`\nStatus set to PROVISIONING (was ${statusBefore})`);
+
 const queue = new Queue("provisioning", { connection: { url: process.env.REDIS_URL } });
-const job = await queue.add("provision", { type: "provision", deploymentId });
+const job = await queue.add("provision", { type: "provision", deploymentId, statusBefore });
 console.log(`Enqueued provision job ${job.id}`);
 console.log("Watch: pm2 logs marketplace-provisioning");
 

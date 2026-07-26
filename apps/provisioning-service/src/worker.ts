@@ -13,7 +13,9 @@ async function processJob(job: Job<ProvisionJobData>): Promise<void> {
 
   switch (job.data.type) {
     case "provision":
-      await provisionJob(job.data.deploymentId);
+      // statusBefore lets a re-provision restore the status the deployment had
+      // before the caller moved it to PROVISIONING, which this job requires.
+      await provisionJob(job.data.deploymentId, (job.data as any).statusBefore);
       break;
     case "deprovision":
       await deprovisionJob(job.data.deploymentId);
