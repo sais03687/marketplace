@@ -1,8 +1,7 @@
 /**
  * Centralized mail poller process manager.
  *
- * All runtime modes (local OpenClaw, Docker OpenClaw, Custom Docker) register
- * their pollers here so that:
+ * Agent containers register their pollers here so that:
  *   - deprovision can reliably kill the right poller
  *   - startup recovery can re-spawn pollers for Docker containers that survived a
  *     service restart
@@ -35,8 +34,12 @@ export interface PollerOpts {
   agentId: string;
   /** Full base URL for the agent gateway, e.g. "http://127.0.0.1:18800" */
   gatewayUrl: string;
-  /** Bearer token for OpenClaw hooks auth. Pass "" for custom runtimes. */
-  hooksToken: string;
+  /**
+   * Bearer token the poller presents to the agent gateway. Empty in practice —
+   * the container's /hooks/* endpoints are currently unauthenticated. Kept
+   * because it is the existing lever for securing them.
+   */
+  hooksToken?: string;
   marketplaceUrl: string;
   /**
    * Microsoft 365 address to poll, if it differs from agentEmail. Both now hold
@@ -63,7 +66,7 @@ export function startPoller(opts: PollerOpts): ChildProcess {
   const pollAddress = opts.outlookEmail || opts.agentEmail;
   const baseEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
-    OPENCLAW_HOOKS_TOKEN: opts.hooksToken,
+    OPENCLAW_HOOKS_TOKEN: opts.hooksToken ?? "",
     POLLER_GATEWAY_URL: opts.gatewayUrl,
     MARKETPLACE_URL: opts.marketplaceUrl,
     DEPLOYMENT_ID: opts.deploymentId,

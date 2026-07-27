@@ -1,6 +1,6 @@
 /**
  * Downloads a Vercel Blob package prefix into a local temp directory
- * so OpenClaw / Docker can use it as a regular filesystem path.
+ * so Docker can use it as a regular filesystem path.
  *
  * Blob paths look like "packages/{slug}/{version}/"
  * The BLOB_BASE_URL env var points to the public blob store root,

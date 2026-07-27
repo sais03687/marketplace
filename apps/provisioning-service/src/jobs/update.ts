@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { getContainerPort } from "../clients/docker.js";
-import { getLocalAgentPort } from "./local-runner.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 function collectFiles(dir: string): Record<string, string> {
@@ -40,22 +39,11 @@ export async function updateJob(deploymentId: string): Promise<void> {
 
   console.log(`[update] Starting update for deployment ${deploymentId} → v${deployment.agentVersion}`);
 
-  const runtime = deployment.agent.runtime || "OPENCLAW";
-
   // ── Resolve port ────────────────────────────────────────────────────────────
-  let port: number;
-  if (runtime === "CUSTOM") {
-    const { getCustomAgentPort } = await import("./custom-runner.js");
-    const customPort = getCustomAgentPort(deploymentId);
-    if (!customPort) throw new Error(`No custom agent found for ${deploymentId}`);
-    port = customPort;
-  } else if (config.runnerMode === "docker" && deployment.containerName) {
-    port = await getContainerPort(deployment.containerName);
-  } else {
-    const localPort = getLocalAgentPort(deploymentId);
-    if (!localPort) throw new Error(`No local agent found for ${deploymentId}`);
-    port = localPort;
-  }
+  const { getCustomAgentPort } = await import("./custom-runner.js");
+  const port = getCustomAgentPort(deploymentId)
+    ?? (deployment.containerName ? await getContainerPort(deployment.containerName) : undefined);
+  if (!port) throw new Error(`No running agent found for ${deploymentId}`);
 
   // ── Fetch the package files for the new version ─────────────────────────────
   let files: Record<string, string> = {};

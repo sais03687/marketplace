@@ -3,7 +3,6 @@ import { startWorker } from "./worker.js";
 import { config } from "./config.js";
 import { getContainerPort } from "./clients/docker.js";
 import { startPoller } from "./jobs/poller-manager.js";
-import { restartLocalAgent } from "./jobs/local-runner.js";
 import { startProxyServer } from "./server.js";
 import Dockerode from "dockerode";
 
@@ -12,65 +11,8 @@ const docker = new Dockerode();
 console.log("[provisioning-service] Starting...");
 
 /**
- * On startup, re-spawn OpenClaw gateways and pollers for any local-mode
- * deployments that went offline when the provisioning service restarted.
- * Conversation history and agent state are preserved on disk — this just
- * brings the gateway process back up so the agent can respond again.
- */
-async function recoverLocalAgents(): Promise<void> {
-  let deployments;
-  try {
-    deployments = await prisma.deployment.findMany({
-      where: {
-        status: { in: ["ACTIVE", "ONBOARDING"] },
-        containerName: { startsWith: "http://localhost:" },
-        agentEmail: { not: null },
-      },
-      include: { agent: { select: { runtime: true } } },
-    });
-  } catch (err: any) {
-    console.warn(`[recovery] DB query failed, skipping local agent recovery: ${err.message}`);
-    return;
-  }
-
-  // Only recover OPENCLAW local-mode deployments (CUSTOM runtime uses Docker)
-  const localDeployments = deployments.filter(
-    (dep) => (dep.agent.runtime ?? "OPENCLAW") !== "CUSTOM",
-  );
-
-  if (localDeployments.length === 0) {
-    console.log("[recovery] No local agents to recover.");
-    return;
-  }
-
-  console.log(`[recovery] Recovering ${localDeployments.length} local agent(s)...`);
-
-  for (const dep of localDeployments) {
-    try {
-      const port = parseInt(new URL(dep.containerName!).port, 10);
-      if (!port) throw new Error(`Could not parse port from containerName: ${dep.containerName}`);
-
-      await restartLocalAgent({
-        deploymentId: dep.id,
-        port,
-        agentEmail: dep.agentEmail!,
-        agentId: dep.agentId,
-        approvalWebhookToken: dep.approvalWebhookToken ?? undefined,
-      });
-
-      console.log(`[recovery] Local agent recovered: ${dep.id.slice(0, 8)} on port ${port} (${dep.agentEmail})`);
-    } catch (err: any) {
-      console.warn(`[recovery] Failed to recover ${dep.id.slice(0, 8)}: ${err.message}`);
-    }
-  }
-}
-
-/**
- * On startup, re-spawn AgentMail pollers for any Docker-based deployments that
- * survived the service restart.
- *
- * - Docker-OpenClaw containers: named "agent-*"
- * - Custom Docker containers: named "custom-agent-*"
+ * On startup, re-spawn mail pollers for any agent containers that survived the
+ * service restart. Containers are named "custom-agent-*".
  */
 async function recoverDockerPollers(): Promise<void> {
   let deployments;
@@ -81,27 +23,17 @@ async function recoverDockerPollers(): Promise<void> {
         containerName: { not: null },
         agentEmail: { not: null },
       },
-      include: { agent: { select: { runtime: true } } },
     });
   } catch (err: any) {
     console.warn(`[recovery] DB query failed, skipping poller recovery: ${err.message}`);
     return;
   }
 
-  // Filter to Docker containers only. containerName formats:
-  //   - "agent-<slug>-<id>" / "custom-agent-<id>" — old Docker format
-  //   - "http://localhost:<port>" — new format for BOTH Docker and local-mode
-  // In local runner mode, http:// OPENCLAW deployments are handled by
-  // recoverLocalAgents instead. CUSTOM runtime is always Docker.
+  // containerName is either "custom-agent-<id>" (older rows) or
+  // "http://localhost:<port>". Anything else predates the current runner.
   const dockerDeployments = deployments.filter((dep) => {
     const name = dep.containerName ?? "";
-    const runtime = dep.agent.runtime ?? "OPENCLAW";
-    if (name.startsWith("agent-") || name.startsWith("custom-agent-")) return true;
-    if (name.startsWith("http://")) {
-      // CUSTOM is always Docker; OPENCLAW http:// is Docker only when not in local mode
-      return runtime === "CUSTOM" || config.runnerMode === "docker";
-    }
-    return false;
+    return name.startsWith("custom-agent-") || name.startsWith("http://");
   });
 
   if (dockerDeployments.length === 0) {
@@ -117,7 +49,6 @@ async function recoverDockerPollers(): Promise<void> {
     try {
       let port: number;
       const containerName = dep.containerName!;
-      const runtime = dep.agent.runtime ?? "OPENCLAW";
 
       if (containerName.startsWith("http://")) {
         // New format: extract port from URL
@@ -148,8 +79,6 @@ async function recoverDockerPollers(): Promise<void> {
         agentEmail: dep.agentEmail!,
         agentId: dep.agentId,
         gatewayUrl: `http://127.0.0.1:${port}`,
-        // Custom runtime containers don't use OpenClaw hooks auth
-        hooksToken: runtime === "CUSTOM" ? "" : config.openclawHooksToken,
         marketplaceUrl: config.approvalWebhookUrl,
         // Prefer the workspace mailbox explicitly: agentEmail should already hold
         // it, but the fallback keeps recovery working for any row not yet migrated.
@@ -167,11 +96,6 @@ async function recoverDockerPollers(): Promise<void> {
 
 const worker = startWorker();
 startProxyServer();
-
-// Recover local OpenClaw agents (gateways + pollers) that went offline with this process
-recoverLocalAgents().catch((err) => {
-  console.warn("[recovery] Unexpected error during local agent recovery:", err.message);
-});
 
 // Recover pollers for any Docker deployments that survived the last restart
 recoverDockerPollers().catch((err) => {

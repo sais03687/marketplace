@@ -5,8 +5,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const config = {
   redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
-  runnerMode: (process.env.RUNNER_MODE || "local") as "docker" | "local",
-  openclawImage: process.env.OPENCLAW_IMAGE || "marketplace/agent-runner:latest",
   databaseUrl: process.env.DATABASE_URL || "postgresql://marketplace:marketplace@localhost:5432/marketplace",
   agentMailApiKey: process.env.AGENTMAIL_API_KEY || "",
   agentMailApiBase: process.env.AGENTMAIL_API_BASE || "https://api.agentmail.to/v0",
@@ -18,9 +16,6 @@ export const config = {
   customAdapterPath: process.env.CUSTOM_ADAPTER_PATH || "",
   webAppRoot: process.env.WEB_APP_ROOT || resolve(__dirname, "../../web"),
 
-  // OpenClaw integration
-  openclawDir: resolve(process.env.OPENCLAW_DIR || "../../openclaw"),
-  openclawHooksToken: process.env.OPENCLAW_HOOKS_TOKEN || "",
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   openrouterApiKey: process.env.OPENROUTER_API_KEY || "",
 

@@ -76,7 +76,7 @@ export interface ContainerEnv {
   AUTO_APPROVE_LIST?: string;         // comma-separated emails/domains that always auto-approve
   REQUIRE_APPROVAL_LIST?: string;     // comma-separated emails/domains that always require approval
   // Fully rendered markdown section describing the policy in natural language.
-  // Appended to /agent/workspace/AGENTS.md by startup.sh so the OpenClaw agent's
+  // Appended to the agent workspace so the agent's
   // LLM reads the hired-manager's configured policy at every session.
   // CUSTOM runtime ignores this — adapter.py enforces policy deterministically.
   APPROVAL_POLICY_SECTION?: string;
@@ -111,53 +111,6 @@ export interface ContainerEnv {
 
 function envToArray(env: ContainerEnv): string[] {
   return Object.entries(env).map(([k, v]) => `${k}=${v}`);
-}
-
-export async function createAndStartContainer(
-  name: string,
-  env: ContainerEnv,
-  volumeBinds?: string[],  // optional extra bind mounts (e.g. creator package)
-  networkName?: string,     // optional isolated network (created by createAgentNetwork)
-): Promise<{ containerId: string; containerName: string }> {
-  const container = await docker.createContainer({
-    Image: config.openclawImage,
-    name,
-    Env: envToArray(env),
-    ExposedPorts: { "4000/tcp": {} },
-    HostConfig: {
-      PortBindings: {
-        "4000/tcp": [{ HostPort: "0" }], // random available port
-      },
-      RestartPolicy: { Name: "unless-stopped" },
-      ...(volumeBinds && volumeBinds.length > 0 ? { Binds: volumeBinds } : {}),
-      // Security: resource limits
-      Memory: 512 * 1024 * 1024,        // 512 MB hard limit
-      MemorySwap: 512 * 1024 * 1024,    // no swap (same as memory = swap disabled)
-      NanoCpus: 1_000_000_000,           // 1 CPU core
-      PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
-      SecurityOpt: ["no-new-privileges"],
-      // Security: drop all Linux capabilities — agent containers don't need any
-      CapDrop: ["ALL"],
-      // Security: read-only root filesystem with tmpfs for writable paths
-      ReadonlyRootfs: true,
-      Tmpfs: {
-        "/tmp": "rw,noexec,nosuid,size=64m",
-        "/agent/workspace": "rw,nosuid,size=128m",
-      },
-      // Security: attach to isolated per-deployment network if provided
-      ...(networkName ? { NetworkMode: networkName } : {}),
-      // TODO: Egress proxy — allowlist graph.microsoft.com, api.agentmail.to, etc.
-      // For now, network isolation between deployments is the priority.
-    },
-  });
-
-  await container.start();
-
-  const info = await container.inspect();
-  return {
-    containerId: info.Id,
-    containerName: info.Name.replace(/^\//, ""),
-  };
 }
 
 export async function getContainerPort(containerName: string): Promise<number> {

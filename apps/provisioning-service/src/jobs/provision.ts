@@ -2,16 +2,12 @@ import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { createInbox, setInboxWebhook } from "../clients/agentmail.js";
 import {
-  createAndStartContainer,
   createAgentNetwork,
   removeAgentNetwork,
   getContainerPort,
-  stopContainer,
   type ContainerEnv,
 } from "../clients/docker.js";
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
-import { spawnLocalAgent, stopLocalAgent } from "./local-runner.js";
-import { buildApprovalPolicySection } from "../utils/approval-policy-prompt.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
 import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain, installTeamsAppForTenant } from "../clients/microsoft-workspace.js";
@@ -62,23 +58,6 @@ async function withRetry<T>(
     }
   }
   throw new Error("unreachable");
-}
-
-async function waitForHealth(host: string, port: number): Promise<void> {
-  const deadline = Date.now() + config.healthCheckTimeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      // OpenClaw gateway responds to any request when ready (may return 401/404/200)
-      const res = await fetch(`http://${host}:${port}/`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (res.status > 0) return;
-    } catch {
-      // not ready yet
-    }
-    await new Promise((r) => setTimeout(r, config.healthCheckIntervalMs));
-  }
-  throw new Error(`Health check timed out after ${config.healthCheckTimeoutMs}ms`);
 }
 
 async function waitForCustomHealth(host: string, port: number): Promise<void> {
@@ -171,15 +150,6 @@ export async function provisionJob(
     Array.isArray(v) ? v.map(String).join(",") : typeof v === "string" ? v : "";
   const autoApproveList = normalizeList(ac.autoApproveList);
   const requireApprovalList = normalizeList(ac.requireApprovalList);
-
-  // Render the policy as a markdown section for OpenClaw's AGENTS.md.
-  // CUSTOM runtime reads the individual env vars directly via adapter.py;
-  // OPENCLAW reads this rendered section at session start (startup.sh
-  // appends it to /agent/workspace/AGENTS.md).
-  const approvalPolicySection = buildApprovalPolicySection(
-    ac,
-    companyDomain,
-  );
 
   // 2a. Provision workspace identity (Google Workspace or Microsoft 365).
   // The platform owns a single org/tenant; users are created programmatically here.
@@ -424,7 +394,6 @@ export async function provisionJob(
     APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,
     AUTO_APPROVE_LIST: autoApproveList,
     REQUIRE_APPROVAL_LIST: requireApprovalList,
-    APPROVAL_POLICY_SECTION: approvalPolicySection,
     ...(deployment.portalToken
       ? { PORTAL_TOKEN: deployment.portalToken }
       : {}),
@@ -469,7 +438,6 @@ export async function provisionJob(
       : {}),
   };
 
-  const runtime = deployment.agent.runtime || "OPENCLAW";
 
   // Hoisted so both the catch block and the post-try cleanup can access them.
   let resolvedPkgPath: string | null = null;
@@ -497,7 +465,7 @@ export async function provisionJob(
 
     // Create isolated Docker network for this deployment (agent + sidecars)
     // Custom runtime also needs a network when MCP sidecars are required.
-    if (config.runnerMode === "docker" || (runtime === "CUSTOM" && requiredIntegrations.length > 0)) {
+    if (requiredIntegrations.length > 0) {
       agentNetworkName = await createAgentNetwork(deploymentId);
     }
 
@@ -513,40 +481,16 @@ export async function provisionJob(
       }
     }
 
-    if (runtime === "CUSTOM") {
-      const { spawnCustomAgent } = await import("./custom-runner.js");
-      const { resolve } = await import("node:path");
-      const pkgPath = resolvedPkgPath ?? resolve(config.customStarterPath);
+    const { spawnCustomAgent } = await import("./custom-runner.js");
+    const { resolve } = await import("node:path");
+    const pkgPath = resolvedPkgPath ?? resolve(config.customStarterPath);
 
-      const result = await withRetry(
-        () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId, agentNetworkName ?? undefined),
-        { step: "spawn_custom_agent", deploymentId },
-      );
-      containerName = `http://localhost:${result.port}`;
-      healthPort = result.port;
-    } else if (config.runnerMode === "docker") {
-      const cName = `agent-${deployment.agent.slug}-${deploymentId.slice(0, 8)}`;
-
-      // Bind-mount the package as the workspace (read-only)
-      const volumeBinds = resolvedPkgPath
-        ? [`${resolvedPkgPath}:/agent/workspace:ro`]
-        : [];
-
-      const result = await withRetry(
-        () => createAndStartContainer(cName, containerEnv, volumeBinds, agentNetworkName ?? undefined),
-        { step: "create_container", deploymentId },
-      );
-      containerName = result.containerName;
-      healthPort = await getContainerPort(containerName);
-    } else {
-      // Local mode: spawn a child process (OpenClaw only)
-      const result = await withRetry(
-        () => spawnLocalAgent(deploymentId, containerEnv, resolvedPkgPath ?? undefined, inboxId),
-        { step: "spawn_local_agent", deploymentId },
-      );
-      containerName = `http://localhost:${result.port}`;
-      healthPort = result.port;
-    }
+    const result = await withRetry(
+      () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId, agentNetworkName ?? undefined),
+      { step: "spawn_custom_agent", deploymentId },
+    );
+    containerName = `http://localhost:${result.port}`;
+    healthPort = result.port;
   } catch (err: any) {
     // Clean up inbox on container failure — but only if this run created it.
     if (inboxId && inboxId !== preExistingInboxId) {
@@ -610,14 +554,9 @@ export async function provisionJob(
   }
 
   // 4. Wait for health check
-  if (runtime === "CUSTOM") {
+  {
     await withRetry(
       () => waitForCustomHealth(healthHost, healthPort),
-      { step: "health_check", deploymentId },
-    );
-  } else {
-    await withRetry(
-      () => waitForHealth(healthHost, healthPort),
       { step: "health_check", deploymentId },
     );
   }
@@ -666,24 +605,6 @@ export async function provisionJob(
       console.warn(`[provision] Failed to set inbox webhook: ${err.message}`);
       // Non-fatal: agent can still send outbound email, just won't receive inbound
     }
-  }
-
-  // 5b. Spawn email poller for Docker-OpenClaw mode.
-  // Local mode and Custom mode already start their pollers inside their runners.
-  // Docker-OpenClaw relies on the webhook set above, but that webhook points to
-  // localhost which AgentMail's cloud servers cannot reach in development.
-  // A poller is the reliable fallback for all environments.
-  if (runtime !== "CUSTOM" && config.runnerMode === "docker") {
-    const { startPoller } = await import("./poller-manager.js");
-    startPoller({
-      deploymentId,
-      agentEmail,
-      agentId: deployment.agentId,
-      gatewayUrl: `http://127.0.0.1:${healthPort}`,
-      hooksToken: config.openclawHooksToken,
-      marketplaceUrl: config.approvalWebhookUrl,
-      outlookEmail: workspaceEmail ?? agentEmail,
-    });
   }
 
   // 6. Update deployment to ONBOARDING.
@@ -760,10 +681,6 @@ export async function provisionJob(
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
-      if (runtime !== "CUSTOM") {
-        headers["Authorization"] = `Bearer ${config.openclawHooksToken}`;
-      }
-
       const res = await fetch(`http://${healthHost}:${healthPort}/hooks/agent`, {
         method: "POST",
         headers,

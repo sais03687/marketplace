@@ -2,7 +2,6 @@ import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { deleteInbox } from "../clients/agentmail.js";
 import { stopContainer, removeAgentNetwork } from "../clients/docker.js";
-import { stopLocalAgent } from "./local-runner.js";
 import { deleteDeploymentServiceAccount } from "../clients/google-iam.js";
 import { deleteGoogleWorkspaceUser } from "../clients/google-workspace.js";
 import { deleteMicrosoftUser } from "../clients/microsoft-workspace.js";
@@ -20,23 +19,12 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
 
   console.log(`[deprovision] Starting deprovision for ${deploymentId}`);
 
-  const runtime = deployment.agent.runtime || "OPENCLAW";
-
-  // 1. Stop the container or local process
+  // 1. Stop the agent container (also kills its poller)
   if (deployment.containerName) {
     try {
-      if (runtime === "CUSTOM") {
-        const { stopCustomAgent } = await import("./custom-runner.js");
-        await stopCustomAgent(deploymentId);
-      } else if (config.runnerMode === "docker") {
-        await stopContainer(deployment.containerName);
-        // Kill the poller that was spawned alongside this Docker container
-        const { stopPoller } = await import("./poller-manager.js");
-        stopPoller(deploymentId);
-      } else {
-        await stopLocalAgent(deploymentId);
-      }
-      console.log(`[deprovision] Container/process stopped: ${deployment.containerName}`);
+      const { stopCustomAgent } = await import("./custom-runner.js");
+      await stopCustomAgent(deploymentId);
+      console.log(`[deprovision] Container stopped: ${deployment.containerName}`);
     } catch (err: any) {
       console.warn(`[deprovision] Failed to stop container: ${err.message}`);
     }
