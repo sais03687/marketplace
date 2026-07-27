@@ -1,6 +1,8 @@
 // ─── Agent Runtime ──────────────────────────────────────────────────────────
 
-export type AgentRuntime = "openclaw" | "custom";
+// "openclaw" was retired — every agent runs in its own container built
+// from the creator's package.
+export type AgentRuntime = "custom";
 
 // ─── Platform-Hosted Integrations ───────────────────────────────────────────
 // These are MCP sidecar containers managed by the platform. Developers declare

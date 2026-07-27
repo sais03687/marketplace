@@ -43,7 +43,7 @@ model Agent {
   modelTier           ModelTier
   creatorId           String
   status              AgentStatus             @default(DRAFT)
-  runtime             AgentRuntime            @default(OPENCLAW)
+  runtime             AgentRuntime            @default(CUSTOM)
   currentVersion      String?
   packageUrl          String?
   averageRating       Float?
@@ -307,7 +307,6 @@ enum AgentCategory {
 }
 
 enum AgentRuntime {
-  OPENCLAW
   CUSTOM
 }
 

@@ -376,7 +376,6 @@ export async function provisionJob(
     AGENT_ID: deployment.agentId,
     ANTHROPIC_API_KEY: config.anthropicApiKey,
     GEMINI_API_KEY: config.geminiApiKey,
-    AGENTMAIL_API_KEY: config.agentMailApiKey,
     AGENT_EMAIL: agentEmail,
     AGENT_NAME: agentName,
     COMPANY_NAME: companyName,

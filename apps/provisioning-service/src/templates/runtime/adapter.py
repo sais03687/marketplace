@@ -29,7 +29,6 @@ except ImportError:
 # ─── Fix 1: Read secrets BEFORE importing creator code, then scrub from env ──
 
 _SECRETS_TO_SCRUB = [
-    "AGENTMAIL_API_KEY",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
     "APPROVAL_WEBHOOK_TOKEN",
@@ -73,7 +72,6 @@ AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "")
 COMPANY_DOMAIN = os.environ.get("COMPANY_DOMAIN", "")
 MANAGER_EMAIL = os.environ.get("MANAGER_EMAIL", "") or os.environ.get("WEEKLY_DIGEST_EMAIL", "")
-AGENTMAIL_API_KEY = _secrets["AGENTMAIL_API_KEY"]
 ANTHROPIC_API_KEY = _secrets["ANTHROPIC_API_KEY"]
 MODEL = os.environ.get("MODEL", "sonnet")
 APPROVAL_WEBHOOK = _secrets["MARKETPLACE_APPROVAL_WEBHOOK"] or "http://localhost:3002"
@@ -90,7 +88,6 @@ AGENT_ID = os.environ.get("AGENT_ID", "")
 PORT = int(os.environ.get("PORT", "4000"))
 
 # Email mode: "outlook" sends via Graph API proxy, "agentmail" (default) uses AgentMail API
-EMAIL_MODE = os.environ.get("EMAIL_MODE", "agentmail").strip().lower()
 OUTLOOK_SEND_URL = os.environ.get("OUTLOOK_SEND_URL", "")
 
 # Approval policy (configurable per-deployment via autonomyConfig → env vars)
@@ -206,22 +203,6 @@ async def _startup():
     """Discover MCP tools from sidecars and write dynamic tool docs."""
     await _discover_mcp_tools()
     _write_mcp_tools_doc()
-
-
-# ─── AgentMail Helpers ───────────────────────────────────────────────────────
-
-_http_client: httpx.AsyncClient | None = None
-
-
-def _get_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None or _http_client.is_closed:
-        _http_client = httpx.AsyncClient(
-            base_url="https://api.agentmail.to/v0",
-            headers={"Authorization": f"Bearer {AGENTMAIL_API_KEY}"},
-            timeout=30.0,
-        )
-    return _http_client
 
 
 # ─── Google SA email (informational context only) ────────────────────────────
@@ -353,40 +334,30 @@ def render_markdown_email(text: str) -> str:
 
 
 async def send_email(to: str, subject: str, text: str, thread_id: str | None = None, attachments: list | None = None) -> dict:
-    """Send an email via Outlook Graph proxy or AgentMail, depending on EMAIL_MODE."""
+    """Send an email through the Outlook Graph proxy."""
     clean_text = scrub_placeholders(text)
     clean_subject = scrub_placeholders(subject)
 
-    if EMAIL_MODE == "outlook" and OUTLOOK_SEND_URL:
-        async with httpx.AsyncClient(timeout=30.0) as c:
-            payload = {
-                "deploymentId": DEPLOYMENT_ID,
-                "agentEmail": WORKSPACE_EMAIL or AGENT_EMAIL,
-                "to": to,
-                "subject": clean_subject,
-                "body": render_markdown_email(clean_text),
-                "bodyType": "html",
-            }
-            if attachments:
-                payload["attachments"] = attachments
-            resp = await c.post(OUTLOOK_SEND_URL, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+    if not OUTLOOK_SEND_URL:
+        raise RuntimeError(
+            "OUTLOOK_SEND_URL is not set — the agent has no way to send mail. "
+            "It is injected at provision time for every Microsoft deployment."
+        )
 
-    # Default: AgentMail
-    client = _get_client()
-    payload: dict = {
-        "to": to,
-        "subject": clean_subject,
-        "text": clean_text,
-        "html": render_markdown_email(clean_text),
-    }
-    if thread_id:
-        payload["thread_id"] = thread_id
-    # AgentMail doesn't support attachments yet — skip
-    resp = await client.post(f"/inboxes/{AGENT_EMAIL}/messages/send", json=payload)
-    resp.raise_for_status()
-    return resp.json()
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        payload = {
+            "deploymentId": DEPLOYMENT_ID,
+            "agentEmail": WORKSPACE_EMAIL or AGENT_EMAIL,
+            "to": to,
+            "subject": clean_subject,
+            "body": render_markdown_email(clean_text),
+            "bodyType": "html",
+        }
+        if attachments:
+            payload["attachments"] = attachments
+        resp = await c.post(OUTLOOK_SEND_URL, json=payload)
+        resp.raise_for_status()
+        return resp.json()
 
 
 async def reply_email(
@@ -407,7 +378,7 @@ async def reply_email(
     """
     clean_text = scrub_placeholders(text)
 
-    if EMAIL_MODE == "outlook" and OUTLOOK_SEND_URL and message_id:
+    if OUTLOOK_SEND_URL and message_id:
         try:
             async with httpx.AsyncClient(timeout=30.0) as c:
                 payload = {
@@ -427,25 +398,6 @@ async def reply_email(
             print(
                 f"[adapter] Outlook reply to message {message_id} failed ({exc}); "
                 f"falling back to send_email",
-                flush=True,
-            )
-    elif message_id and EMAIL_MODE != "outlook":
-        # AgentMail reply
-        client = _get_client()
-        try:
-            resp = await client.post(
-                f"/inboxes/{AGENT_EMAIL}/messages/{message_id}/reply",
-                json={
-                    "text": clean_text,
-                    "html": render_markdown_email(clean_text),
-                },
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPStatusError as exc:
-            print(
-                f"[adapter] reply_email to message {message_id} failed "
-                f"({exc.response.status_code}); falling back to send_email",
                 flush=True,
             )
 
@@ -481,7 +433,6 @@ async def queue_for_approval(
     original_request: str = "",
 ) -> str:
     """Submit an action to the marketplace approval queue. Returns the approval ID."""
-    client = _get_client()
     combined = (stakes + ambiguity + reversibility) / 3
     payload = {
         "taskType": task_type,

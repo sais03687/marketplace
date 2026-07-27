@@ -24,7 +24,7 @@ const VALID_CATEGORIES: Set<string> = new Set([
 
 const VALID_TIERS: Set<string> = new Set(["haiku", "sonnet", "opus"]);
 
-const VALID_RUNTIMES: Set<string> = new Set(["openclaw", "custom"]);
+const VALID_RUNTIMES: Set<string> = new Set(["custom"]);
 
 export function validateManifest(m: unknown): ValidationError[] {
   const errors: ValidationError[] = [];
@@ -109,7 +109,7 @@ export function validateManifest(m: unknown): ValidationError[] {
     errors.push({ field: "autonomyDefaults", message: "autonomyDefaults is required" });
   }
 
-  // Runtime (optional, defaults to "openclaw")
+  // Runtime (optional, defaults to "custom" — the only supported runtime)
   if (manifest.runtime !== undefined && !VALID_RUNTIMES.has(manifest.runtime as string)) {
     errors.push({ field: "runtime", message: `runtime must be one of: ${[...VALID_RUNTIMES].join(", ")}` });
   }

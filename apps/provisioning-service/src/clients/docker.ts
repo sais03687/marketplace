@@ -51,7 +51,6 @@ export interface ContainerEnv {
   DEPLOYMENT_ID: string;
   AGENT_ID: string;
   ANTHROPIC_API_KEY: string;
-  AGENTMAIL_API_KEY: string;
   AGENT_EMAIL: string;
   AGENT_NAME: string;
   COMPANY_NAME: string;

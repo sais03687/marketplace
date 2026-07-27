@@ -958,7 +958,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
         <p className="text-xs text-muted-foreground">
           {isCustom
             ? "No sandbox results yet. Click \"Run Sandbox\" to start."
-            : "This package uses the OpenClaw runtime. Sandbox vetting requires custom runtime packages."}
+            : "This package targets a retired runtime. Sandbox vetting requires custom runtime packages."}
         </p>
       )}
     </div>

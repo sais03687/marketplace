@@ -167,7 +167,7 @@ if (manifestEntry) {
   try { manifest = JSON.parse(await manifestEntry.async("string")); } catch { /* handled in [B] */ }
 }
 
-const runtime  = manifest?.runtime  ?? "openclaw";
+const runtime  = manifest?.runtime  ?? "custom";
 const modelTier = manifest?.modelTier ?? "haiku";
 const version  = manifest?.version  ?? "?";
 const isCustom = runtime === "custom";
@@ -245,8 +245,8 @@ function addWarns(n)  { totalWarns  += n; }
 
 // ── [C] Runtime-Specific File Checks ─────────────────────────────────────────
 if (!isCustom) {
-  console.log(`${label("[C]", "File checks")} ${PASS}`);
-  console.log(`        ${C.dim}ℹ  OpenClaw runtime-specific file checks coming soon.${C.reset}`);
+  console.log(`${label("[C]", "File checks")} ${ERROR}`);
+  console.log(`        ${C.dim}✗  runtime "${runtime}" is no longer supported — use "custom".${C.reset}`);
 } else {
   const findings = [];
   if (!zip.file("agent.py"))

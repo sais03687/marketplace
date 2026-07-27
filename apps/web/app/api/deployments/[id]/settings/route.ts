@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { jsonSuccess, parseBody, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
-import { buildApprovalPolicySection } from "@/lib/approval-policy-prompt";
 
 const autonomyConfigSchema = z
   .object({
@@ -61,21 +60,8 @@ export async function PATCH(
   if (data.autonomyConfig && deployment.containerName) {
     try {
       const mergedAc = updateData.autonomyConfig as Record<string, unknown> | undefined;
-      const runtime = deployment.agent.runtime || "OPENCLAW";
-
-      if (runtime === "OPENCLAW") {
-        // OpenClaw: rewrite AGENTS.md via internal API with rendered policy section
-        const policySection = buildApprovalPolicySection(mergedAc, company.domain);
-        const baseUrl = deployment.containerName.startsWith("http")
-          ? deployment.containerName
-          : `http://${deployment.containerName}:4000`;
-        await fetch(`${baseUrl}/internal/approval-policy`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ policySection }),
-        }).catch(() => {});
-      } else {
-        // CUSTOM: write approval_policy.json via adapter's internal API
+      // Write approval_policy.json via the adapter's internal API.
+      {
         const ac = data.autonomyConfig;
         const override: Record<string, unknown> = {};
         if (ac.approvalPolicy) override.policy = ac.approvalPolicy;
