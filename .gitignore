@@ -72,3 +72,17 @@ apps/web/storage/
 # in prod it lives outside the repo at /var/lib/marketplace/tenant-cache.json
 .tenant-cache.json
 
+# One-off Graph/SharePoint diagnostics from the June 2026 MS365 debugging.
+# Kept locally for reference; several only run on the VPS because they read
+# /opt/marketplace/.env.prod or scrape `pm2 env`. Not worth versioning.
+check_perms.py
+check_sharepoint.py
+check_sharepoint.sh
+find_sp_perms.py
+test_graph.py
+test_microsoft.py
+cleanup_orphans.py
+tmp_agent_patch.py
+scripts/test-infra.mjs
+scripts/test-sharepoint.py
+
