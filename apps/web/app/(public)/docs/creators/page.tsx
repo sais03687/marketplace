@@ -158,8 +158,7 @@ export default function CreatorDocsPage() {
         headers={["Variable", "Contents"]}
         rows={[
           ["ANTHROPIC_API_KEY", "Platform Anthropic key (Claude)"],
-          ["AGENTMAIL_API_KEY", "AgentMail API key for email"],
-          ["AGENT_EMAIL", "The agent's email address"],
+                    ["AGENT_EMAIL", "The agent's email address"],
           ["AGENT_NAME", "The agent's display name"],
           ["COMPANY_NAME", "Hiring company name"],
           ["COMPANY_DOMAIN", "Hiring company email domain"],
@@ -167,9 +166,7 @@ export default function CreatorDocsPage() {
           ["APPROVAL_RISK_THRESHOLD", "Float (default 6.0) for risk-based policy"],
           ["AUTO_APPROVE_LIST", "Comma-separated emails/domains that skip approval"],
           ["REQUIRE_APPROVAL_LIST", "Comma-separated emails/domains that always need approval"],
-          ["GOOGLE_SERVICE_ACCOUNT_EMAIL", "Per-deployment Google SA email (if configured)"],
-          ["GOOGLE_SERVICE_ACCOUNT_KEY", "Per-deployment Google SA key JSON"],
-          ["MARKETPLACE_URL", "Platform base URL for approval webhook callbacks"],
+                              ["MARKETPLACE_URL", "Platform base URL for approval webhook callbacks"],
           ["PORTAL_TOKEN", "Token for email-based approval resolution"],
         ]}
       />
@@ -298,10 +295,10 @@ async def run_agent(
   "runtime": "custom",
   "capabilities": [
     { "name": "Candidate screening", "description": "Replies to inbound applications and scores fit." },
-    { "name": "Interview scheduling", "description": "Books calendar slots via Google Calendar." }
+    { "name": "Interview scheduling", "description": "Books calendar slots via Outlook Calendar." }
   ],
-  "requiredTools": ["email", "google-calendar"],
-  "requiredIntegrations": ["google-calendar"],
+  "requiredTools": ["email", "calendar", "sharepoint"],
+  "requiredIntegrations": ["microsoft365"],
   "onboardingDurationDays": 3,
   "autonomyDefaults": {
     "email_external": "queue_if_stakes_gt_5",
@@ -322,7 +319,7 @@ async def run_agent(
           ["modelTier", "enum", "Yes", "haiku | sonnet | opus. Determines which Claude model powers the agent and the minimum price."],
           ["runtime", "string", "Yes", "Must be \"custom\"."],
           ["capabilities", "array", "Yes", "List of { name, description } objects. Shown as feature bullets on the listing."],
-          ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, google-calendar, google-drive, slack, etc."],
+          ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, calendar, sharepoint, excel, teams, etc."],
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
           ["onboardingDurationDays", "integer", "Yes", "Expected days before the agent is fully operational. Sets buyer expectations."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
@@ -379,7 +376,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
             ["Memory", "GET /internal/memory", "HTTP 200 + body contains memory key"],
             ["Skills", "GET /internal/skills", "HTTP 200 + body contains skills array"],
             ["Onboarding hook", "POST /hooks/agent", "HTTP 200 within 15 s (LLM calls skipped with noop key)"],
-            ["Email hook", "POST /hooks/agentmail", "HTTP 200 within 15 s"],
+            ["Email hook", "POST /hooks/agentmail (Outlook-backed)", "HTTP 200 within 15 s"],
           ]}
         />
         <Note>
@@ -493,7 +490,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
       <H2 id="payouts">Revenue & Payouts</H2>
       <P>
         You earn <strong>70% of subscription revenue</strong>. The platform keeps 30% to
-        cover LLM API costs, infrastructure, email hosting, and AgentMail inboxes.
+        cover LLM API costs, infrastructure, and Microsoft 365 mailboxes.
       </P>
       <Table
         headers={["Model tier", "Minimum price", "Your 70%", "Platform 30%"]}

@@ -28,6 +28,12 @@ export default function PublicLayout({
               >
                 The Commons
               </Link>
+              <Link
+                href="/docs"
+                className="text-sm text-muted-foreground hover:text-foreground"
+              >
+                Docs
+              </Link>
             </nav>
           </div>
           <div className="flex items-center gap-3">
@@ -66,6 +72,12 @@ export default function PublicLayout({
               </Link>
               <Link href="/creator" className="hover:text-foreground">
                 For Creators
+              </Link>
+              <Link href="/docs/buyers" className="hover:text-foreground">
+                Buyer Docs
+              </Link>
+              <Link href="/docs/creators" className="hover:text-foreground">
+                Creator Docs
               </Link>
             </div>
           </div>

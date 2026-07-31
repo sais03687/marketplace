@@ -118,8 +118,8 @@ export default function BuyerDocsPage() {
 
       <Step n={1} title="Browse & select">
         <P>
-          Find an agent on the Marketplace. Each listing shows the monthly price, required Google
-          Workspace scopes, and what the agent can do.
+          Find an agent on the Marketplace. Each listing shows the monthly price, the Microsoft 365
+          permissions it needs, and what the agent can do.
         </P>
       </Step>
       <Step n={2} title="Answer onboarding questions">
@@ -137,12 +137,11 @@ export default function BuyerDocsPage() {
           below for a full breakdown.
         </P>
       </Step>
-      <Step n={4} title="Connect Google Workspace (if needed)">
+      <Step n={4} title="Connect Microsoft 365">
         <P>
-          Agents that use Google Calendar, Drive, or Sheets need a one-time{" "}
-          <strong>Domain-Wide Delegation</strong> setup in your Google Admin console. This takes
-          about two minutes and only needs to be done once per agent. See{" "}
-          <a href="#google-setup" className="text-blue-600 hover:underline">Google Workspace Setup</a>.
+          You sign in once as a tenant admin and consent to the permissions the agent needs.
+          Your agent is then given its own M365 account and mailbox in your tenant. See{" "}
+          <a href="#microsoft-setup" className="text-blue-600 hover:underline">Microsoft 365 Setup</a>.
         </P>
       </Step>
       <Step n={5} title="Agent goes live">
@@ -227,7 +226,7 @@ export default function BuyerDocsPage() {
       </P>
 
       <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 my-6 font-mono text-sm">
-        <p className="text-gray-400 mb-0.5">From: alex@yourcompany.agentmail.to</p>
+        <p className="text-gray-400 mb-0.5">From: alex-yourcompany-a1b2c3@agents.agentstore.it.com</p>
         <p className="text-gray-400 mb-3">Subject: [Approval needed] Reply to Ben at Acme Corp</p>
         <p className="text-gray-700 mb-3">
           I'd like to send the following reply to Ben Thompson at Acme Corp:
@@ -282,78 +281,68 @@ export default function BuyerDocsPage() {
         works on mobile. All decisions made on the portal sync instantly to the dashboard.
       </P>
 
-      {/* Google Workspace setup */}
-      <H2 id="google-setup">Google Workspace Setup</H2>
+      {/* Microsoft 365 setup */}
+      <H2 id="microsoft-setup">Microsoft 365 Setup</H2>
       <P>
-        Agents that interact with Google Calendar, Drive, or Sheets use a per-deployment{" "}
-        <strong>Google service account</strong> — a dedicated identity created specifically for
-        your deployment. This means the agent's Google access is scoped to your company and
-        can be revoked independently of any platform-level credentials.
-      </P>
-      <P>
-        To let the service account act on behalf of users in your domain you complete a one-time{" "}
-        <strong>Domain-Wide Delegation (DWD)</strong> setup. This takes about two minutes and
-        requires a Google Workspace Admin account.
+        Every agent works inside <strong>Microsoft 365</strong>. During provisioning your agent
+        is given its own M365 account in your tenant, with its own mailbox at an address like{" "}
+        <Code>data-analyst-yourcompany-a1b2c3@agents.agentstore.it.com</Code>. It reads and
+        sends mail as itself, and reaches SharePoint, OneDrive, Excel, and Outlook Calendar
+        through that identity.
       </P>
 
-      <Step n={1} title="Hire the agent">
+      <Step n={1} title="Connect your Microsoft tenant">
         <P>
-          A per-deployment service account is created automatically during provisioning. You can
-          see its email address (e.g.{" "}
-          <Code>sa-general-ops--abc123@your-project.iam.gserviceaccount.com</Code>) in the
-          agent's <strong>Settings → Google Workspace</strong> tab.
+          During the hire flow, click <strong>Connect Microsoft 365</strong>. You sign in as a
+          tenant admin once and consent to the permissions the agent needs. This is the only
+          admin step, and it takes about a minute.
         </P>
       </Step>
-      <Step n={2} title='Click "Open Google Admin Setup"'>
+      <Step n={2} title="Make sure you have a spare licence">
         <P>
-          This opens a pre-filled URL in your Google Admin console with the service account's
-          Client ID and the required OAuth scopes already populated. You do not need to copy
-          anything manually.
+          Provisioning assigns a licence carrying Exchange Online — Microsoft 365 Business
+          Basic, or anything else that includes a real mailbox plan — so Exchange will build
+          the agent a mailbox. If your tenant has no free seat on such a licence, the hire
+          fails with a clear error rather than producing an agent that cannot receive mail.
         </P>
       </Step>
-      <Step n={3} title="Authorise in Google Admin">
+      <Step n={3} title="Wait for the mailbox">
         <P>
-          You will see a dialog titled <em>"Add a new client ID."</em> Verify the Client ID and
-          scopes match what is shown in your dashboard, then click <strong>Authorise</strong>.
-        </P>
-      </Step>
-      <Step n={4} title='Click "Mark as configured"'>
-        <P>
-          Return to the dashboard and confirm setup. The agent will now have access to the
-          authorised scopes and can act on behalf of users in your domain.
+          Exchange usually takes a few minutes to create the mailbox, and can occasionally take
+          fifteen or more. The agent moves to onboarding once its mailbox answers.
         </P>
       </Step>
 
-      <H3>Sharing Google Drive Files</H3>
+      <H3>Sharing Files</H3>
       <P>
-        You do not need DWD to give the agent access to specific files. You can share any Google
-        Drive file, Sheet, or Doc directly with the service account email. The agent will be able
-        to read and edit those files without any further setup.
+        Share SharePoint or OneDrive files with the agent's address exactly as you would with a
+        colleague, or drop them into the agent's own SharePoint folder. It can then list and
+        read them, and open <Code>.xlsx</Code> workbooks directly to do calculations.
       </P>
       <P>
-        The service account email is shown in the agent's introduction email and in the{" "}
-        <strong>Settings → Google Workspace</strong> tab. It looks like a regular Google account
-        email — just share files with it as you would with any colleague.
+        SharePoint search indexing can lag behind newly shared files by several minutes. The
+        agent browses folders before falling back to search, so a file it cannot find yet is
+        usually just not indexed — asking again shortly afterwards normally works.
       </P>
 
-      <H3>Common Scopes</H3>
+      <H3>What the Agent Can Reach</H3>
       <Table
-        headers={["Scope", "What it enables"]}
+        headers={["Area", "What it enables"]}
         rows={[
-          ["https://www.googleapis.com/auth/gmail.modify", "Read, send, and label Gmail messages"],
-          ["https://www.googleapis.com/auth/calendar", "Read and create calendar events"],
-          ["https://www.googleapis.com/auth/drive", "Read and edit Google Drive files"],
-          ["https://www.googleapis.com/auth/spreadsheets", "Read and write Google Sheets"],
-          ["https://www.googleapis.com/auth/documents", "Read and edit Google Docs"],
+          ["Outlook mail", "Read its own inbox, reply, send, and forward"],
+          ["Outlook calendar", "List, create, update, and delete events"],
+          ["SharePoint / OneDrive", "List, search, read, upload, and share files"],
+          ["Excel", "Read sheets, and append or write rows"],
+          ["Microsoft Teams", "Receive and reply to direct messages, if installed"],
         ]}
       />
 
       <H3>Revoking Access</H3>
       <P>
-        To revoke Google Workspace access without firing the agent, remove the service account's
-        Client ID from the Domain-Wide Delegation list in Google Admin (
-        <em>Security → API Controls → Domain-wide delegation</em>). The agent stops making
-        Google API calls immediately. You can re-authorise later by repeating the setup.
+        To cut off an agent without firing it, pause it — the container stops and it answers
+        nothing. To remove its access permanently, fire it: its M365 account and mailbox are
+        deleted during deprovisioning. You can also narrow what reaches it at any time using
+        the sender allowlist, without touching its Microsoft access at all.
       </P>
 
       {/* AgentMind */}
@@ -373,7 +362,7 @@ export default function BuyerDocsPage() {
         headers={["What is shared", "What is never shared"]}
         rows={[
           ["Company name, domain, and team structure", "Email content or attachments"],
-          ["Key contacts and communication preferences", "Google Drive file contents"],
+          ["Key contacts and communication preferences", "SharePoint and OneDrive file contents"],
           ["Workflow patterns and recurring tasks", "Calendar event details"],
           ["Tone and style preferences (inferred from edits and rejections)", "Approval decisions for specific actions"],
           ["", "Any data belonging to another company"],
@@ -413,8 +402,7 @@ export default function BuyerDocsPage() {
       </P>
       <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1 ml-2">
         <li>Gateway process stops immediately</li>
-        <li>Agent's inbox is deleted from AgentMail</li>
-        <li>Per-deployment Google service account and credentials are revoked and deleted</li>
+        <li>Agent's Microsoft 365 account and mailbox are deleted from your tenant</li>
         <li>Agent's workspace, memory, and state are marked for deletion</li>
         <li>Stripe subscription is cancelled at end of the current billing period</li>
       </ul>
@@ -533,7 +521,7 @@ export default function BuyerDocsPage() {
         deployment time as environment variables. This means:
       </P>
       <ul className="list-disc list-inside text-gray-600 mb-4 space-y-1.5 ml-2">
-        <li>The creator never sees your LLM API key, your AgentMail key, or your Google service account credentials.</li>
+        <li>The creator never sees your LLM API key or your Microsoft 365 credentials.</li>
         <li>If a creator published a malicious package, they still cannot access platform keys — those are injected after vetting, not stored in the package.</li>
         <li>The adapter strips the five most sensitive platform secrets from <Code>os.environ</Code> before your agent's code even starts — custom code literally cannot read them.</li>
       </ul>
@@ -545,10 +533,10 @@ export default function BuyerDocsPage() {
       <Table
         headers={["Layer", "Isolation mechanism"]}
         rows={[
-          ["Email", "Dedicated AgentMail inbox per deployment — no shared mailboxes"],
+          ["Email", "Its own Microsoft 365 mailbox per deployment"],
           ["Memory", "Per-deployment MEMORY.md file — agents cannot read each other's memory"],
           ["Database", "Every DB row is scoped by deploymentId — no cross-company queries are possible"],
-          ["Google credentials", "Per-deployment service account — not shared with any other deployment"],
+          ["Microsoft identity", "Its own M365 account per deployment — not shared with any other deployment"],
           ["Container", "Separate Docker container per deployment — no shared process space"],
           ["AgentMind", "Cross-agent knowledge is scoped to your organisation ID — other companies' data is never visible"],
         ]}
@@ -577,9 +565,9 @@ export default function BuyerDocsPage() {
 
       <H3>Can the agent act on behalf of multiple people in my company?</H3>
       <P>
-        Yes, with Domain-Wide Delegation configured. The agent can read and send email, create
-        calendar events, and access Drive on behalf of any user in your Google Workspace domain
-        — subject to the scopes you authorised.
+        The agent acts as itself, not as your staff. It has its own Microsoft 365 identity and
+        works from its own mailbox. Anyone you put on its allowlist can email it and get work
+        back, but it never sends mail as another person.
       </P>
 
       <H3>Is my data private?</H3>
@@ -602,12 +590,11 @@ export default function BuyerDocsPage() {
         capability level, look for a listing of the same agent at a different tier.
       </P>
 
-      <H3>What happens to the Google service account if I fire the agent?</H3>
+      <H3>What happens to the agent's Microsoft account if I fire it?</H3>
       <P>
-        The per-deployment service account is deleted automatically when you fire the agent.
-        You do not need to revoke DWD manually — the credentials stop working the moment the
-        account is deleted. If you had shared any Drive files with the service account email,
-        you may want to remove that access from those files for cleanliness.
+        Its M365 account and mailbox are deleted from your tenant automatically, and its licence
+        seat is returned. If you shared SharePoint or OneDrive files with its address, you may
+        want to remove that sharing afterwards for cleanliness.
       </P>
 
       {/* Best practices */}
@@ -665,10 +652,10 @@ export default function BuyerDocsPage() {
         <li className="flex gap-3">
           <span className="text-red-500 font-bold shrink-0">✗</span>
           <span>
-            <strong>Don't skip the Google Workspace setup if the agent needs it.</strong> An
-            agent without Drive or Calendar access will work around limitations in ways you
-            probably don't want — asking you to forward files, scheduling things via email
-            manually, etc. Two minutes of setup pays dividends immediately.
+            <strong>Don't leave the agent without files to work on.</strong> An agent that
+            cannot reach SharePoint will work around it in ways you probably don't want —
+            asking you to forward attachments, or answering from memory instead of your data.
+            Share a folder with it early.
           </span>
         </li>
       </ul>

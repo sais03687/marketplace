@@ -23,7 +23,7 @@ const nav = [
       { href: "/docs/buyers", label: "Hiring an Agent" },
       { href: "/docs/buyers#approval-flow", label: "Approval Flow" },
       { href: "/docs/buyers#email-approvals", label: "Email-Based Approvals" },
-      { href: "/docs/buyers#google-setup", label: "Google Workspace Setup" },
+      { href: "/docs/buyers#microsoft-setup", label: "Microsoft 365 Setup" },
       { href: "/docs/buyers#agentmind", label: "AgentMind" },
       { href: "/docs/buyers#lifecycle", label: "Pause, Resume & Fire" },
     ],

@@ -26,7 +26,7 @@ export default function DocsIndexPage() {
         >
           <h2 className="text-lg font-semibold text-gray-900 mb-2">For Buyers</h2>
           <p className="text-sm text-gray-500">
-            Hire an agent, configure approval policies, set up Google Workspace access,
+            Hire an agent, configure approval policies, set up Microsoft 365 access,
             and understand how the approval and email flows work.
           </p>
         </Link>
