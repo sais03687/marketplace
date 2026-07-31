@@ -6,6 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ApprovalCard } from "@/components/marketplace/approval-card";
 import { OnboardingPanel } from "@/components/dashboard/onboarding-panel";
 import { Loader2, Pause, Play, UserX, RefreshCw, AlertTriangle, ArrowUpCircle, Star } from "lucide-react";
@@ -43,6 +51,7 @@ interface Deployment {
   agent: Agent;
   _count: { approvals: number };
   updateAvailable: boolean;
+  workspaceEmail: string | null;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -67,6 +76,7 @@ export default function AgentOverviewPage({
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [confirmFire, setConfirmFire] = useState(false);
+  const [fireWarning, setFireWarning] = useState<string | null>(null);
   const [review, setReview] = useState<{ rating: number; headline: string; body: string } | null>(null);
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
@@ -119,9 +129,21 @@ export default function AgentOverviewPage({
   };
 
   const handleFire = async () => {
-    if (!confirmFire) { setConfirmFire(true); return; }
     setActing(true);
-    await fetch(`/api/deployments/${deploymentId}/fire`, { method: "POST" });
+    try {
+      const res = await fetch(`/api/deployments/${deploymentId}/fire`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      // Cleanup is queued, not synchronous, and the enqueue can fail. When it does,
+      // say so here instead of navigating away as if everything had been removed.
+      if (body?.data?.cleanupQueued === false) {
+        setConfirmFire(false);
+        setActing(false);
+        setFireWarning(body.data.cleanupNote ?? "Cleanup could not be started and will run automatically within 24 hours.");
+        return;
+      }
+    } catch {
+      /* The row is already marked FIRED server-side; fall through to the dashboard. */
+    }
     router.push("/dashboard");
   };
 
@@ -338,28 +360,102 @@ export default function AgentOverviewPage({
           </Button>
 
           <div className="ml-auto flex items-center gap-2">
-            {confirmFire ? (
-              <>
-                <span className="text-xs text-destructive font-medium">
-                  This cannot be undone — all data will be deleted.
-                </span>
-                <Button variant="destructive" size="sm" onClick={handleFire} disabled={acting}>
-                  {acting ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                  Confirm fire
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setConfirmFire(false)}>
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={handleFire}>
-                <UserX className="mr-1 h-4 w-4" />
-                Fire agent
-              </Button>
-            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              onClick={() => setConfirmFire(true)}
+            >
+              <UserX className="mr-1 h-4 w-4" />
+              Fire agent
+            </Button>
           </div>
         </div>
       )}
+
+      <Dialog open={confirmFire} onOpenChange={(open) => { if (!open) setConfirmFire(false); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Fire {deployment?.agentName}?
+            </DialogTitle>
+            <DialogDescription>
+              This permanently deletes the agent&apos;s identity in your Microsoft 365
+              tenant. It cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 text-sm">
+            <div>
+              <p className="font-medium mb-2">Deleted permanently</p>
+              <ul className="space-y-1.5 text-muted-foreground list-disc pl-5">
+                <li>
+                  The agent&apos;s Microsoft 365 account
+                  {deployment?.workspaceEmail ? (
+                    <>
+                      {" — "}
+                      <span className="font-mono text-xs text-foreground break-all">
+                        {deployment.workspaceEmail}
+                      </span>
+                    </>
+                  ) : null}
+                </li>
+                <li>Its mailbox, and every email it has sent or received</li>
+                <li>Its OneDrive and any files stored there</li>
+                <li>The running agent and its isolated network</li>
+              </ul>
+            </div>
+
+            <div>
+              <p className="font-medium mb-2">Released back to you</p>
+              <ul className="space-y-1.5 text-muted-foreground list-disc pl-5">
+                <li>
+                  Its Microsoft 365 licence seat, free for another agent or employee
+                </li>
+                <li>
+                  Billing stops at the end of the current period — you keep access until then
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <p className="font-medium mb-2">Kept</p>
+              <ul className="space-y-1.5 text-muted-foreground list-disc pl-5">
+                <li>Files in the shared SharePoint folder, which is not deleted</li>
+                <li>This agent&apos;s approval history, kept for your records</li>
+              </ul>
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="ghost" onClick={() => setConfirmFire(false)} disabled={acting}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleFire} disabled={acting}>
+              {acting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+              Fire agent permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={fireWarning !== null} onOpenChange={(open) => { if (!open) setFireWarning(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              Agent fired — cleanup delayed
+            </DialogTitle>
+            <DialogDescription>{fireWarning}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => { setFireWarning(null); router.push("/dashboard"); }}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

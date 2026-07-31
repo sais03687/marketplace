@@ -46,6 +46,18 @@ export async function POST(
     data: { status: "FIRED", firedAt: new Date() },
   });
 
+  // Close out anything still awaiting a decision. A pending approval on a fired
+  // agent is not just clutter — deprovisioning deletes the mailbox it would send
+  // from, so approving one afterwards could only fail. EXPIRED is the existing
+  // terminal state for "was never acted on", which is exactly what happened.
+  const { count: expiredApprovals } = await prisma.approval.updateMany({
+    where: { deploymentId: id, status: "PENDING" },
+    data: { status: "EXPIRED" },
+  });
+  if (expiredApprovals > 0) {
+    console.log(`[fire] Expired ${expiredApprovals} pending approval(s) for ${id}`);
+  }
+
   // Cancel Stripe subscription at period end (buyer keeps access until then)
   if (deployment.stripeSubscriptionId) {
     const stripe = getStripe();
@@ -60,14 +72,44 @@ export async function POST(
     }
   }
 
-  // Enqueue cleanup: stops gateway, deletes AgentMail inbox, deletes GCP service account
-  try {
-    await getProvisioningQueue().add("deprovision", { type: "deprovision", deploymentId: id });
-  } catch (err: any) {
-    // Queue unavailable — log clearly; ops team can manually trigger cleanup
-    console.error(`[fire] Failed to enqueue deprovision for ${id}: ${err.message}`);
-    // Still return success to the client: the DB is already updated
+  // Enqueue cleanup: stops the container, deletes the AgentMail inbox, and deletes
+  // the Microsoft 365 identity while releasing its licence seat.
+  //
+  // This enqueue really does fail sometimes — a `read ECONNRESET` from Upstash was
+  // observed in production on 2026-07-31, which silently skipped cleanup while the
+  // UI reported the agent fired. Retry briefly, then tell the truth about the
+  // outcome instead of reporting unqualified success.
+  let cleanupQueued = false;
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await getProvisioningQueue().add("deprovision", { type: "deprovision", deploymentId: id });
+      cleanupQueued = true;
+      break;
+    } catch (err: any) {
+      lastError = err.message;
+      console.error(`[fire] Enqueue attempt ${attempt}/3 failed for ${id}: ${err.message}`);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 300 * attempt));
+    }
   }
 
-  return jsonSuccess({ message: "Agent fired", deploymentId: id });
+  if (!cleanupQueued) {
+    console.error(
+      `[fire] Could not enqueue deprovision for ${id} after 3 attempts: ${lastError}. ` +
+        `The nightly cleanup job will delete the Microsoft 365 user and release its seat.`,
+    );
+  }
+
+  // The deployment IS fired either way — the row is already updated and the agent
+  // stops receiving mail. What is uncertain is only the timing of the cleanup, so
+  // say so rather than letting the UI imply the seat came back immediately.
+  return jsonSuccess({
+    message: "Agent fired",
+    deploymentId: id,
+    cleanupQueued,
+    cleanupNote: cleanupQueued
+      ? "Cleanup is running now."
+      : "Cleanup could not be started immediately and will run automatically within 24 hours. " +
+        "The Microsoft 365 account and its licence seat are released then.",
+  });
 }

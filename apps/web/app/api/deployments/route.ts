@@ -52,10 +52,21 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const includeApprovals = url.searchParams.get("includeApprovals") === "true";
 
+  // The approvals dashboard is the only caller that asks for approvals, and a fired
+  // agent's approvals are dead weight there: its mailbox has been deleted, so none of
+  // them can be acted on. Firing expires them, but older rows predate that and would
+  // otherwise keep surfacing. The plain deployment list still includes FIRED agents,
+  // because the dashboard shows them as history.
+  const excludedStatuses = includeApprovals
+    ? ["PENDING_PAYMENT" as const, "FIRED" as const]
+    : ["PENDING_PAYMENT" as const];
+
   const deployments = await prisma.deployment.findMany({
-    where: { companyId: company.id, status: { not: "PENDING_PAYMENT" } },
+    where: { companyId: company.id, status: { notIn: excludedStatuses } },
     include: {
       agent: true,
+      // Deliberately unfiltered by status: the page has a "show resolved" toggle and
+      // counts resolved approvals, so it needs the full history for surviving agents.
       ...(includeApprovals ? { approvals: { orderBy: { createdAt: "desc" } } } : {}),
     },
     orderBy: { createdAt: "desc" },
