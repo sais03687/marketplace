@@ -374,6 +374,229 @@ export async function getBuyerDomain(tenantId: string): Promise<string> {
 }
 
 /**
+ * Raised when the buyer's own tenant cannot host the agent — no Exchange licence
+ * with a free seat, or Exchange never built the mailbox.
+ *
+ * Provisioning must NOT quietly fall back to a platform-tenant mailbox for these.
+ * The buyer owns the agent's identity and pays for its licence; absorbing that cost
+ * onto the platform is a leak that grows with every customer who has not bought
+ * seats. Failing the hire tells the buyer exactly what to fix.
+ */
+export class BuyerTenantProvisioningError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BuyerTenantProvisioningError";
+  }
+}
+
+/**
+ * Service plans that actually provision an Exchange Online mailbox.
+ *
+ * EXCHANGE_S_FOUNDATION is deliberately absent. It is a directory-only plan that
+ * ships with free SKUs such as FLOW_FREE, and assigning it succeeds — the user
+ * looks licensed, but Exchange never builds a mailbox and every Graph mail call
+ * returns 404 MailboxNotEnabledForRESTAPI forever. Selecting a licence on spare
+ * seats alone is therefore not safe; it has to be selected on this capability.
+ */
+const MAILBOX_SERVICE_PLANS = new Set([
+  "EXCHANGE_S_STANDARD",
+  "EXCHANGE_S_ENTERPRISE",
+  "EXCHANGE_S_DESKLESS",
+  "EXCHANGE_S_STANDARD_MIDMARKET",
+  "EXCHANGE_S_ARCHIVE_ADDON",
+]);
+
+/** A licence is only usable for an agent mailbox if it grants Exchange and has a free seat. */
+type TenantSku = {
+  skuId: string;
+  skuPartNumber: string;
+  consumedUnits: number;
+  capabilityStatus?: string;
+  prepaidUnits: { enabled: number };
+  servicePlans?: Array<{
+    servicePlanName: string;
+    provisioningStatus?: string;
+    appliesTo?: string;
+  }>;
+};
+
+/**
+ * Three independent signals have to agree before we trust a licence to yield a mailbox.
+ * The original bug came from trusting a single proxy (spare seats), so a name allowlist
+ * alone would repeat the mistake in a slower way — Microsoft adds SKUs, and the list goes
+ * stale. `appliesTo` is the structural tell: a real mailbox plan applies to a User, while
+ * EXCHANGE_S_FOUNDATION applies to the Company, which is exactly how FLOW_FREE slipped
+ * through. An unknown new SKU now fails closed with a clear error rather than silently
+ * producing an agent that can never receive mail.
+ */
+function grantsMailbox(sku: TenantSku): boolean {
+  if (sku.capabilityStatus && sku.capabilityStatus !== "Enabled") return false;
+  return (sku.servicePlans ?? []).some(
+    (p) =>
+      MAILBOX_SERVICE_PLANS.has(p.servicePlanName) &&
+      p.appliesTo === "User" &&
+      p.provisioningStatus === "Success",
+  );
+}
+
+function hasFreeSeat(sku: TenantSku): boolean {
+  return sku.consumedUnits < sku.prepaidUnits.enabled;
+}
+
+/**
+ * Preference order, cheapest-adequate first, so a tenant holding both an SMB and an
+ * enterprise licence spends the cheaper seat. Enterprise SKUs are listed because real
+ * buyers are far likelier to hold E1/E3/E5 than Business Basic, which caps at 300 seats.
+ * Anything else carrying a User-scoped Exchange plan still works via the fallback.
+ */
+const PREFERRED_SKUS = [
+  "EXCHANGESTANDARD",           // Exchange Online Plan 1 — mailbox only, cheapest
+  "EXCHANGEENTERPRISE",         // Exchange Online Plan 2
+  "O365_BUSINESS_ESSENTIALS",   // Microsoft 365 Business Basic
+  "SMB_BUSINESS_ESSENTIALS",
+  "O365_BUSINESS_PREMIUM",      // Business Standard
+  "SPB",                        // Business Premium
+  "STANDARDPACK",               // Office 365 E1
+  "ENTERPRISEPACK",             // Office 365 E3
+  "ENTERPRISEPREMIUM",          // Office 365 E5
+  "SPE_E3",                     // Microsoft 365 E3
+  "SPE_E5",                     // Microsoft 365 E5
+];
+
+/** Friendly names — skuPartNumber is not something a buyer should have to decode. */
+const SKU_DISPLAY_NAMES: Record<string, string> = {
+  EXCHANGESTANDARD: "Exchange Online (Plan 1)",
+  EXCHANGEENTERPRISE: "Exchange Online (Plan 2)",
+  O365_BUSINESS_ESSENTIALS: "Microsoft 365 Business Basic",
+  SMB_BUSINESS_ESSENTIALS: "Microsoft 365 Business Basic",
+  O365_BUSINESS_PREMIUM: "Microsoft 365 Business Standard",
+  SPB: "Microsoft 365 Business Premium",
+  STANDARDPACK: "Office 365 E1",
+  ENTERPRISEPACK: "Office 365 E3",
+  ENTERPRISEPREMIUM: "Office 365 E5",
+  SPE_E3: "Microsoft 365 E3",
+  SPE_E5: "Microsoft 365 E5",
+  FLOW_FREE: "Power Automate Free",
+};
+
+export function skuDisplayName(partNumber: string): string {
+  return SKU_DISPLAY_NAMES[partNumber] ?? partNumber;
+}
+
+/** Service plans behind the optional capabilities, keyed by what the buyer would call them. */
+const ONEDRIVE_PLANS = ["SHAREPOINTSTANDARD", "SHAREPOINTENTERPRISE", "SHAREPOINTWAC"];
+const TEAMS_PLANS = ["TEAMS1", "TEAMS_ENTERPRISE", "MCOSTANDARD"];
+
+function hasAnyPlan(sku: TenantSku, names: string[]): boolean {
+  return (sku.servicePlans ?? []).some((p) => names.includes(p.servicePlanName));
+}
+
+export type AgentCapabilities = {
+  /** Read its inbox, reply, send, forward. Requires the Exchange plan. */
+  email: boolean;
+  /** List/create/update/delete events. Part of Exchange. */
+  calendar: boolean;
+  /** Shared SharePoint site files. Granted by the platform app, not the buyer's licence. */
+  sharepoint: boolean;
+  /** The agent's own OneDrive — needs a SharePoint plan on its licence. */
+  onedrive: boolean;
+  /** Direct messages in Teams — needs a Teams plan on its licence. */
+  teams: boolean;
+};
+
+export type TenantLicensing = {
+  all: TenantSku[];
+  /** Mailbox-capable with a spare seat, in preference order. */
+  usable: Array<{ skuId: string; skuPartNumber: string; displayName: string; seatsFree: number }>;
+  /** Mailbox-capable but full — surfaced so the buyer knows which one to add seats to. */
+  exhausted: Array<{ skuPartNumber: string; displayName: string; seatsUsed: number; seatsTotal: number }>;
+  selected: { skuId: string; skuPartNumber: string; displayName: string; seatsFree: number } | null;
+  capabilities: AgentCapabilities;
+};
+
+/**
+ * Inspect a buyer tenant and report which licence an agent would consume and what it
+ * would then be able to do.
+ *
+ * Provisioning and the hire-time preview both call this, deliberately. If the UI derived
+ * its own answer the two would drift, and the buyer would be shown a licence or a
+ * capability set that provisioning does not actually produce.
+ */
+export async function describeTenantLicensing(tenantId: string): Promise<TenantLicensing> {
+  const skus = (await graphRequestForTenant(tenantId, "GET", "/subscribedSkus")) as { value: TenantSku[] };
+  const all = skus.value ?? [];
+
+  const mailboxCapable = all.filter(grantsMailbox);
+  const withSeats = mailboxCapable.filter(hasFreeSeat);
+
+  const rank = (s: TenantSku) => {
+    const i = PREFERRED_SKUS.indexOf(s.skuPartNumber);
+    return i === -1 ? PREFERRED_SKUS.length : i;
+  };
+  const ordered = [...withSeats].sort((a, b) => rank(a) - rank(b));
+
+  const toUsable = (s: TenantSku) => ({
+    skuId: s.skuId,
+    skuPartNumber: s.skuPartNumber,
+    displayName: skuDisplayName(s.skuPartNumber),
+    seatsFree: s.prepaidUnits.enabled - s.consumedUnits,
+  });
+
+  const chosen = ordered[0] ?? null;
+
+  return {
+    all,
+    usable: ordered.map(toUsable),
+    exhausted: mailboxCapable
+      .filter((s) => !hasFreeSeat(s))
+      .map((s) => ({
+        skuPartNumber: s.skuPartNumber,
+        displayName: skuDisplayName(s.skuPartNumber),
+        seatsUsed: s.consumedUnits,
+        seatsTotal: s.prepaidUnits.enabled,
+      })),
+    selected: chosen ? toUsable(chosen) : null,
+    capabilities: {
+      // Email and calendar both come from the Exchange plan that made it selectable.
+      email: !!chosen,
+      calendar: !!chosen,
+      // Shared SharePoint runs on the platform's application permissions, so it works
+      // for every buyer regardless of what they bought.
+      sharepoint: true,
+      onedrive: !!chosen && hasAnyPlan(chosen, ONEDRIVE_PLANS),
+      teams: !!chosen && hasAnyPlan(chosen, TEAMS_PLANS),
+    },
+  };
+}
+
+/**
+ * Best-effort cleanup used only on the failure paths below. Both swallow their errors:
+ * the caller is already throwing a more useful message, and a failed tidy-up should not
+ * replace the real reason the hire failed.
+ */
+async function releaseLicenceQuietly(tenantId: string, userId: string, skuId: string | null) {
+  if (!skuId) return;
+  try {
+    await graphRequestForTenant(tenantId, "POST", `/users/${userId}/assignLicense`, {
+      addLicenses: [],
+      removeLicenses: [skuId],
+    });
+    console.log(`[microsoft] Released licence seat back after failed provision`);
+  } catch (err: any) {
+    console.warn(`[microsoft] Could not release licence seat: ${err.message}`);
+  }
+}
+
+async function deleteUserQuietly(tenantId: string, userId: string) {
+  try {
+    await graphRequestForTenant(tenantId, "DELETE", `/users/${userId}`);
+    console.log(`[microsoft] Removed partially provisioned user after failed provision`);
+  } catch (err: any) {
+    console.warn(`[microsoft] Could not remove partially provisioned user: ${err.message}`);
+  }
+}
+
+/**
  * Create a shared mailbox in the buyer's Microsoft 365 tenant.
  *
  * Shared mailboxes are free (no license required) and appear as regular mailboxes
@@ -423,50 +646,96 @@ export async function createSharedMailbox(
   }
 
   // Step 2: Assign a license so Exchange Online provisions a mailbox.
-  // Discover available SKU from the buyer's tenant.
   let skuId: string | null = null;
+  let allSkus: TenantSku[] = [];
   try {
-    const skus = await graphRequestForTenant(tenantId, "GET", "/subscribedSkus") as {
-      value: Array<{ skuId: string; skuPartNumber: string; consumedUnits: number; prepaidUnits: { enabled: number } }>;
-    };
-    // Prefer Business Basic (cheapest with Exchange), fall back to any SKU with available licenses
-    const preferred = ["O365_BUSINESS_ESSENTIALS", "SMB_BUSINESS_ESSENTIALS", "EXCHANGESTANDARD", "STANDARDPACK", "ENTERPRISEPACK"];
-    for (const pref of preferred) {
-      const sku = skus.value?.find((s) => s.skuPartNumber === pref && s.consumedUnits < s.prepaidUnits.enabled);
-      if (sku) { skuId = sku.skuId; break; }
-    }
-    if (!skuId) {
-      const anySku = skus.value?.find((s) => s.consumedUnits < s.prepaidUnits.enabled);
-      if (anySku) skuId = anySku.skuId;
-    }
+    const licensing = await describeTenantLicensing(tenantId);
+    allSkus = licensing.all;
+    skuId = licensing.selected?.skuId ?? null;
   } catch (err: any) {
-    console.warn(`[microsoft] Could not discover tenant SKUs: ${err.message}`);
+    throw new Error(
+      `[microsoft] Could not read licences from buyer tenant ${tenantId}, so no mailbox can be provisioned: ${err.message}`,
+    );
   }
 
-  if (skuId) {
+  if (!skuId) {
+    // Fail here rather than continuing. Proceeding without a mailbox-bearing licence
+    // produces a deployment that reaches ACTIVE but can never send or receive mail,
+    // which is worse than a visible provisioning failure.
+    const mailboxCapable = allSkus.filter(grantsMailbox);
+    const detail = mailboxCapable.length
+      ? mailboxCapable
+          .map((s) => `${skuDisplayName(s.skuPartNumber)} (${s.consumedUnits}/${s.prepaidUnits.enabled} seats used)`)
+          .join(", ")
+      : "none";
+    await deleteUserQuietly(tenantId, user.id);
+    throw new BuyerTenantProvisioningError(
+      `No Microsoft 365 licence with a free seat is available in your tenant, so the agent ` +
+        `cannot be given a mailbox. Mailbox-capable licences found: ${detail}. Add a seat to ` +
+        `one of them (Microsoft 365 Business Basic is the cheapest) and hire again. Note that ` +
+        `free licences such as FLOW_FREE carry EXCHANGE_S_FOUNDATION only and never provision ` +
+        `a mailbox, so they cannot be used.`,
+    );
+  }
+
+  try {
+    await graphRequestForTenant(tenantId, "POST", `/users/${user.id}/assignLicense`, {
+      addLicenses: [{ skuId }],
+      removeLicenses: [],
+    });
+    const chosen = allSkus.find((s) => s.skuId === skuId);
+    console.log(`[microsoft] Assigned license ${chosen?.skuPartNumber ?? skuId} to ${userPrincipalName}`);
+  } catch (err: any) {
+    throw new Error(`[microsoft] License assignment failed for ${userPrincipalName}: ${err.message}`);
+  }
+
+  // Step 3a: Wait until Exchange has actually built the mailbox.
+  //
+  // These are two different failures and they carry very different weight, so they
+  // are no longer collapsed into one retry loop. A missing mailbox is fatal — the
+  // agent could never send or receive. A failed *conversion* only costs a licence
+  // seat, and the agent still works, so it is a warning.
+  //
+  // Exchange routinely takes well over ten minutes to provision after a licence is
+  // assigned. The previous budget was five attempts totalling ~2m10s, which gave up
+  // long before Exchange was finished and then reported success anyway.
+  const MAILBOX_WAIT_MS = 20 * 60_000;
+  const POLL_INTERVAL_MS = 30_000;
+  const deadline = Date.now() + MAILBOX_WAIT_MS;
+  let mailboxReady = false;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     try {
-      await graphRequestForTenant(tenantId, "POST", `/users/${user.id}/assignLicense`, {
-        addLicenses: [{ skuId }],
-        removeLicenses: [],
-      });
-      console.log(`[microsoft] Assigned license (${skuId}) to ${userPrincipalName}`);
+      await graphRequestForTenant(tenantId, "GET", `/users/${user.id}/mailFolders/inbox`);
+      mailboxReady = true;
+      break;
     } catch (err: any) {
-      console.warn(`[microsoft] License assignment failed: ${err.message}`);
+      const remaining = Math.round((deadline - Date.now()) / 60_000);
+      console.log(`[microsoft] Mailbox for ${userPrincipalName} not ready yet (${remaining}m budget left)`);
     }
-  } else {
-    console.warn(`[microsoft] No available license SKU found in buyer tenant — Exchange mailbox may not provision`);
   }
 
-  // Step 3: Wait for Exchange to provision the mailbox, then convert to shared.
-  // Exchange needs the licensed user to propagate (30-90s typically).
-  const MAX_RETRIES = 5;
-  const RETRY_DELAYS = [30_000, 20_000, 20_000, 30_000, 30_000];
-  let converted = false;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const delay = RETRY_DELAYS[attempt]!;
-    console.log(`[microsoft] Waiting ${delay / 1000}s for Exchange mailbox provisioning${attempt > 0 ? ` (attempt ${attempt + 1}/${MAX_RETRIES})` : ""}...`);
-    await new Promise((r) => setTimeout(r, delay));
+  if (!mailboxReady) {
+    // Release the seat and remove the half-built user before giving up, so a retry
+    // starts from the same licence position rather than one seat worse off.
+    await releaseLicenceQuietly(tenantId, user.id, skuId);
+    await deleteUserQuietly(tenantId, user.id);
+    throw new BuyerTenantProvisioningError(
+      `Microsoft 365 did not finish creating the agent's mailbox within ` +
+        `${MAILBOX_WAIT_MS / 60_000} minutes. The licence was assigned successfully, so this ` +
+        `is usually Exchange being slow rather than anything misconfigured. The partially ` +
+        `created account has been cleaned up — try hiring again.`,
+    );
+  }
+  console.log(`[microsoft] Mailbox ready for ${userPrincipalName}`);
 
+  // Step 3b: Convert to a shared mailbox so the licence seat can be handed back.
+  // Shared mailboxes under 50GB need no licence, which is what keeps the per-agent
+  // cost at zero. If this fails the agent still works — it just keeps consuming a seat.
+  let converted = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 30_000));
     try {
       const exchangeToken = await mintExchangeTokenForTenant(tenantId);
       const exchangeResp = await fetch(
@@ -485,17 +754,20 @@ export async function createSharedMailbox(
         converted = true;
         break;
       }
-      const errText = await exchangeResp.text();
-      const isNotFound = errText.includes("NotFound") || errText.includes("couldn't be found");
-      if (isNotFound && attempt < MAX_RETRIES - 1) {
-        console.log(`[microsoft] Exchange mailbox not yet available, will retry...`);
-        continue;
-      }
-      console.warn(`[microsoft] Exchange shared mailbox conversion failed (${exchangeResp.status}): ${errText}`);
+      console.warn(
+        `[microsoft] Shared mailbox conversion attempt ${attempt + 1}/3 failed ` +
+          `(${exchangeResp.status}): ${(await exchangeResp.text()).slice(0, 300)}`,
+      );
     } catch (err: any) {
       console.warn(`[microsoft] Exchange API call failed: ${err.message}`);
-      if (attempt < MAX_RETRIES - 1) continue;
     }
+  }
+
+  if (!converted) {
+    console.warn(
+      `[microsoft] ${userPrincipalName} stays a licensed user — it will keep consuming a ` +
+        `licence seat. The agent works; convert it manually to reclaim the seat.`,
+    );
   }
 
   // Step 4: Remove the license — shared mailboxes don't need one.

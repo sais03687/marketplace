@@ -10,7 +10,7 @@ import {
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
-import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain, installTeamsAppForTenant } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
@@ -47,6 +47,13 @@ async function withRetry<T>(
       return result;
     } catch (err: any) {
       const duration = Date.now() - start;
+      // Not retryable: no amount of retrying creates a licence seat, and the mailbox
+      // wait is already 20 minutes on its own — retrying it would stall the hire for
+      // an hour before failing with the same message.
+      if (err instanceof BuyerTenantProvisioningError) {
+        await log(opts.deploymentId, opts.step, "failed", attempt, duration, err.message);
+        throw err;
+      }
       if (attempt < maxRetries) {
         await log(opts.deploymentId, opts.step, "retrying", attempt, duration, err.message);
         // Exponential backoff: 2s, 4s, 8s
@@ -219,6 +226,14 @@ export async function provisionJob(
           console.warn(`[provision] Teams app auto-install failed (non-fatal): ${teamsErr.message}`);
         }
       } catch (err: any) {
+        // A licence or mailbox failure in the buyer's tenant fails the hire outright.
+        // Falling back to a platform mailbox would move the licence cost onto us for
+        // every buyer who has not bought seats, and would hand the buyer an agent whose
+        // identity lives outside their tenant without them ever choosing that.
+        if (err instanceof BuyerTenantProvisioningError) {
+          console.error(`[provision] Buyer tenant cannot host this agent: ${err.message}`);
+          throw err;
+        }
         console.warn(`[provision] Buyer-org shared mailbox creation failed: ${err.message}`);
         // Fall back to platform user
         console.log(`[provision] Falling back to platform Microsoft user...`);
@@ -562,7 +577,7 @@ export async function provisionJob(
 
   // 4b. Set up Microsoft Graph inbox webhook + SharePoint folder (Microsoft path only)
   if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
-    const webhookUrl = `${config.approvalWebhookUrl}/webhooks/microsoft`;
+    const webhookUrl = `${config.publicUrl}/webhooks/microsoft`;
     console.log(`[provision] Registering Microsoft Graph webhook at: ${webhookUrl}`);
     // Wait for M365 user to propagate across Microsoft's directory before subscribing
     await new Promise((r) => setTimeout(r, 20_000));

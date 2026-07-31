@@ -30,7 +30,7 @@ import {
 } from "botbuilder";
 import { ConnectorClient, MicrosoftAppCredentials } from "botframework-connector";
 import { prisma } from "@marketplace/db";
-import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail } from "./clients/microsoft-workspace.js";
+import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeTenantLicensing } from "./clients/microsoft-workspace.js";
 import { config } from "./config.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
@@ -744,6 +744,31 @@ export function startProxyServer() {
     // agent container. Vercel can't reach Docker containers directly — this
     // endpoint bridges the gap since the provisioning service runs on the same
     // host as the containers.
+    // Which licence would an agent consume in this tenant, and what could it then do?
+    // Backs the hire-flow preview. Deliberately shares describeTenantLicensing() with
+    // provisioning so the preview cannot promise something provisioning won't deliver.
+    if (req.method === "GET" && req.url?.startsWith("/internal/tenant-licensing")) {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      const tenantId = new URL(req.url, "http://localhost").searchParams.get("tenantId");
+      if (!tenantId) {
+        return send(res, 400, { error: "tenantId is required" });
+      }
+      try {
+        const licensing = await describeTenantLicensing(tenantId);
+        return send(res, 200, {
+          selected: licensing.selected,
+          usable: licensing.usable,
+          exhausted: licensing.exhausted,
+          capabilities: licensing.capabilities,
+        });
+      } catch (err: any) {
+        return send(res, 502, { error: `Could not read licences from tenant: ${err.message}` });
+      }
+    }
+
     if (req.method === "POST" && req.url === "/internal/forward-resolve") {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

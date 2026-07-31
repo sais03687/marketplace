@@ -10,6 +10,11 @@ export const config = {
   agentMailApiBase: process.env.AGENTMAIL_API_BASE || "https://api.agentmail.to/v0",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
   approvalWebhookUrl: process.env.MARKETPLACE_APPROVAL_WEBHOOK || "http://localhost:3002",
+  // Public base URL of *this* service, for callbacks Microsoft has to reach.
+  // Distinct from approvalWebhookUrl, which is the web app: /webhooks/microsoft is
+  // served by server.ts here, not by Next.js, so pointing Graph at the web app makes
+  // subscription validation fail with 404 and no push notifications are ever delivered.
+  publicUrl: process.env.PROVISIONING_PUBLIC_URL || "https://api.agentstore.it.com",
   approvalWebhookToken: process.env.APPROVAL_WEBHOOK_TOKEN || "",
   agentPackagePath: process.env.AGENT_PACKAGE_PATH || "../../agents/v5-agent-package",
   customStarterPath: process.env.CUSTOM_STARTER_PATH || "../../agents/langchain-starter",
