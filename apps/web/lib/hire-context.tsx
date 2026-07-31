@@ -17,11 +17,10 @@ export interface HireState {
   roleTitle: string;
   // Step 3
   slackConnected: boolean;
-  workspaceProvider: "GOOGLE" | "MICROSOFT" | "NONE";
+  workspaceProvider: "MICROSOFT";
   buyerMicrosoftTenantId: string | null;
   mailboxLocation: "platform" | "buyer_org";
   // Step 4
-  approvalManagerEmail: string;
   managerEmail: string;
   // Step 5 — interview answers collected during hire
   onboardingAnswers: Record<string, string>;
@@ -70,10 +69,9 @@ export function HireProvider({
       hireName: agentName.split("—")[0].trim(),
       roleTitle: "AI Operations Assistant",
       slackConnected: false,
-      workspaceProvider: "NONE",
+      workspaceProvider: "MICROSOFT",
       buyerMicrosoftTenantId: null,
       mailboxLocation: "buyer_org",
-      approvalManagerEmail: "",
       managerEmail: "",
       onboardingAnswers: {},
       deploymentId: null,

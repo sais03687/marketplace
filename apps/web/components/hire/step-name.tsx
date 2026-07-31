@@ -8,7 +8,11 @@ import { Mail } from "lucide-react";
 export function StepName() {
   const { state, updateState, setStep } = useHire();
 
-  const emailPreview = `${state.hireName.toLowerCase().replace(/\s+/g, ".")}@agentmail.to`;
+  // Indicative only. The real address is assigned during provisioning and also carries
+  // the buyer org and a unique suffix, e.g. data-analyst-acme-corp-xqdya5i3@agents…,
+  // so this shows the shape and domain rather than promising an exact address.
+  const emailSlug = state.hireName.trim().toLowerCase().replace(/\s+/g, "-") || "your-agent";
+  const emailPreview = `${emailSlug}-<your-org>@agents.agentstore.it.com`;
 
   return (
     <div className="space-y-6">
@@ -38,6 +42,10 @@ export function StepName() {
           <span className="text-muted-foreground">Email address:</span>
           <span className="font-mono text-xs">{emailPreview}</span>
         </div>
+        <p className="mt-1 pl-6 text-xs text-muted-foreground">
+          A Microsoft 365 mailbox. You&apos;ll see the exact address once your
+          agent finishes setting up.
+        </p>
       </div>
 
       <div className="flex gap-2">

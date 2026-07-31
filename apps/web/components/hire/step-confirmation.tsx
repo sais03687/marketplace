@@ -33,7 +33,6 @@ export function StepConfirmation() {
           agentName: state.hireName,
           roleTitle: state.roleTitle,
           managerEmail: state.managerEmail || undefined,
-          approvalManagerEmail: state.approvalManagerEmail || undefined,
           workspaceProvider: state.workspaceProvider,
           buyerMicrosoftTenantId: state.buyerMicrosoftTenantId || undefined,
           mailboxLocation: state.mailboxLocation,
@@ -158,13 +157,7 @@ export function StepConfirmation() {
         </div>
         <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">Workspace</span>
-          <span>
-            {state.workspaceProvider === "GOOGLE"
-              ? "Google Workspace"
-              : state.workspaceProvider === "MICROSOFT"
-              ? "Microsoft 365"
-              : "None"}
-          </span>
+          <span>Microsoft 365</span>
         </div>
         {state.workspaceProvider === "MICROSOFT" && state.buyerMicrosoftTenantId && (
           <div className="flex justify-between text-sm">
@@ -172,12 +165,10 @@ export function StepConfirmation() {
             <span>Your Microsoft 365 tenant</span>
           </div>
         )}
-        {state.approvalManagerEmail && (
+        {state.managerEmail && (
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Approvals</span>
-            <span className="font-mono text-xs">
-              {state.approvalManagerEmail}
-            </span>
+            <span className="font-mono text-xs">{state.managerEmail}</span>
           </div>
         )}
       </div>

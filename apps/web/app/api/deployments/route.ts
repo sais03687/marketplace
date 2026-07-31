@@ -14,7 +14,6 @@ const createDeploymentSchema = z.object({
   agentName: z.string().min(1).max(100),
   roleTitle: z.string().optional(),
   managerEmail: z.string().email().optional(),
-  approvalManagerEmail: z.string().email().optional(),
   slackBotToken: z.string().optional(),
   slackAppToken: z.string().optional(),
   // Onboarding answers collected during the hire wizard (skips INTERVIEW stage)

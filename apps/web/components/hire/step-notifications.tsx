@@ -14,24 +14,10 @@ export function StepNotifications() {
       </p>
 
       <div>
-        <label className="text-sm font-medium">Approval Manager Email</label>
-        <p className="text-xs text-muted-foreground mb-1">
-          This person will receive approval requests from your AI employee.
-        </p>
-        <Input
-          type="email"
-          value={state.approvalManagerEmail}
-          onChange={(e) =>
-            updateState({ approvalManagerEmail: e.target.value })
-          }
-          placeholder="manager@company.com"
-        />
-      </div>
-
-      <div>
         <label className="text-sm font-medium">Manager Email</label>
         <p className="text-xs text-muted-foreground mb-1">
-          The manager who will receive approval notifications and agent updates.
+          Receives approval requests and agent updates. This address can always
+          email the agent, even before you add anyone to its allowlist.
         </p>
         <Input
           type="email"
