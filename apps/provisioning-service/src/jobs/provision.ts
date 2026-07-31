@@ -10,7 +10,7 @@ import {
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
-import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createSharedMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 async function log(
@@ -198,12 +198,12 @@ export async function provisionJob(
     const buyerTenantId = (deployment as any).buyerMicrosoftTenantId as string | null;
 
     if (buyerTenantId) {
-      // ── Buyer-org mode: create shared mailbox in buyer's tenant ──
+      // ── Buyer-org mode: create the agent's licensed mailbox in the buyer's tenant ──
       try {
         const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
         const mailbox = await withRetry(
-          () => createSharedMailbox(buyerTenantId, `${agentName} (Agent)`, username),
-          { step: "create_shared_mailbox_buyer", deploymentId },
+          () => createAgentMailbox(buyerTenantId, `${agentName} (Agent)`, username),
+          { step: "create_agent_mailbox_buyer", deploymentId },
         );
         workspaceEmail = mailbox.email;
         workspaceUserId = mailbox.id;
@@ -216,7 +216,7 @@ export async function provisionJob(
             workspaceScope: "buyer_org",
           },
         });
-        console.log(`[provision] Buyer-org shared mailbox created: ${mailbox.email}`);
+        console.log(`[provision] Buyer-org agent mailbox created: ${mailbox.email}`);
 
         // Auto-install Teams app into buyer's org catalog (non-fatal)
         try {
@@ -234,7 +234,7 @@ export async function provisionJob(
           console.error(`[provision] Buyer tenant cannot host this agent: ${err.message}`);
           throw err;
         }
-        console.warn(`[provision] Buyer-org shared mailbox creation failed: ${err.message}`);
+        console.warn(`[provision] Buyer-org agent mailbox creation failed: ${err.message}`);
         // Fall back to platform user
         console.log(`[provision] Falling back to platform Microsoft user...`);
         try {

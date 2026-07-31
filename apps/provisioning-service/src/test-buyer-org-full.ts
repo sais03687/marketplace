@@ -18,8 +18,8 @@ import { config } from "./config.js";
 import {
   mintTokenForTenant,
   getBuyerDomain,
-  createSharedMailbox,
-  deleteSharedMailbox,
+  createAgentMailbox,
+  deleteAgentMailbox,
   provisionOneDrive,
 } from "./clients/microsoft-workspace.js";
 
@@ -179,7 +179,7 @@ async function run() {
   console.log(`\n  Creating shared mailbox: ${alias}@${domain}...`);
 
   const mailboxCreated = await test("0d. Create shared mailbox (license → convert → unlicense)", async () => {
-    const result = await createSharedMailbox(TENANT, "Test Buyer Full Agent", alias);
+    const result = await createAgentMailbox(TENANT, "Test Buyer Full Agent", alias);
     testUserId = result.id;
     testUserEmail = result.email;
     return { ok: !!testUserId && !!testUserEmail, detail: `${testUserEmail} (id: ${testUserId.slice(0, 12)}...)` };
@@ -610,7 +610,7 @@ async function run() {
 
   // Delete the shared mailbox user (the big cleanup)
   await test("7c. Delete shared mailbox user", async () => {
-    await deleteSharedMailbox(TENANT, testUserId);
+    await deleteAgentMailbox(TENANT, testUserId);
     return { ok: true, detail: `deleted ${testUserEmail}` };
   });
 
@@ -634,7 +634,7 @@ run().catch((err) => {
   // Try cleanup even on fatal error
   if (testUserId) {
     console.log(`\nAttempting cleanup of ${testUserEmail}...`);
-    deleteSharedMailbox(TENANT, testUserId)
+    deleteAgentMailbox(TENANT, testUserId)
       .then(() => console.log("Cleaned up."))
       .catch(() => console.log("Cleanup failed — manually delete via Azure Portal."))
       .finally(() => process.exit(1));

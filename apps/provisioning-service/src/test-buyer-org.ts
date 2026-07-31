@@ -9,9 +9,9 @@ import { config } from "./config.js";
 import {
   mintTokenForTenant,
   getBuyerDomain,
-  createSharedMailbox,
-  getSharedMailbox,
-  deleteSharedMailbox,
+  createAgentMailbox,
+  getAgentMailbox,
+  deleteAgentMailbox,
 } from "./clients/microsoft-workspace.js";
 
 const TENANT_ID = config.microsoftTenantId;
@@ -39,13 +39,13 @@ async function run() {
     console.log(`   FAIL — ${err.message}\n`);
   }
 
-  // Test 3: createSharedMailbox
+  // Test 3: createAgentMailbox
   const testAlias = `test-buyer-org-${Date.now().toString(36)}`;
-  console.log(`3. createSharedMailbox (alias: ${testAlias})...`);
+  console.log(`3. createAgentMailbox (alias: ${testAlias})...`);
   let mailboxId = "";
   let mailboxEmail = "";
   try {
-    const result = await createSharedMailbox(TENANT_ID, "Test Buyer Org Agent", testAlias);
+    const result = await createAgentMailbox(TENANT_ID, "Test Buyer Org Agent", testAlias);
     mailboxId = result.id;
     mailboxEmail = result.email;
     console.log(`   PASS — created: ${result.email} (id: ${result.id})`);
@@ -54,11 +54,11 @@ async function run() {
     console.log(`   FAIL — ${err.message}\n`);
   }
 
-  // Test 4: getSharedMailbox
+  // Test 4: getAgentMailbox
   if (mailboxEmail) {
-    console.log(`4. getSharedMailbox (${mailboxEmail})...`);
+    console.log(`4. getAgentMailbox (${mailboxEmail})...`);
     try {
-      const result = await getSharedMailbox(TENANT_ID, mailboxEmail);
+      const result = await getAgentMailbox(TENANT_ID, mailboxEmail);
       if (result) {
         console.log(`   PASS — found: ${result.userPrincipalName} (id: ${result.id})\n`);
       } else {
@@ -69,11 +69,11 @@ async function run() {
     }
   }
 
-  // Test 5: deleteSharedMailbox (cleanup)
+  // Test 5: deleteAgentMailbox (cleanup)
   if (mailboxId) {
-    console.log(`5. deleteSharedMailbox (${mailboxId})...`);
+    console.log(`5. deleteAgentMailbox (${mailboxId})...`);
     try {
-      await deleteSharedMailbox(TENANT_ID, mailboxId);
+      await deleteAgentMailbox(TENANT_ID, mailboxId);
       console.log(`   PASS — deleted\n`);
     } catch (err: any) {
       console.log(`   FAIL — ${err.message}\n`);
@@ -82,7 +82,7 @@ async function run() {
     // Verify deletion
     console.log(`6. Verify deletion...`);
     try {
-      const result = await getSharedMailbox(TENANT_ID, mailboxEmail);
+      const result = await getAgentMailbox(TENANT_ID, mailboxEmail);
       if (result === null) {
         console.log(`   PASS — confirmed deleted\n`);
       } else {

@@ -329,7 +329,7 @@ export async function deleteMicrosoftUser(userId: string): Promise<void> {
   }
 }
 
-// ─── Buyer-Org Shared Mailbox ──────────────────────────────────────────────
+// ─── Buyer-Org Agent Mailbox ───────────────────────────────────────────────
 
 /**
  * Graph request scoped to a specific tenant (buyer's tenant).
@@ -597,18 +597,26 @@ async function deleteUserQuietly(tenantId: string, userId: string) {
 }
 
 /**
- * Create a shared mailbox in the buyer's Microsoft 365 tenant.
+ * Create the agent's mailbox in the buyer's Microsoft 365 tenant.
  *
- * Shared mailboxes are free (no license required) and appear as regular mailboxes
- * in Graph API. They're created as disabled user accounts with a shared mailbox type
- * set via Exchange Online.
+ * The agent is a normal licensed user on one of the buyer's own seats, and it stays
+ * that way. An earlier design converted it to a free shared mailbox and handed the
+ * seat back, which is cheaper but wrong for this product:
  *
- * The approach: create a user via Graph with accountEnabled=false (shared mailbox pattern),
- * then convert to shared mailbox type via Exchange Admin REST API.
+ *   - Capability. An unlicensed shared mailbox has no OneDrive, no Teams, and no
+ *     licensed calendar. `describeTenantLicensing()` reports those capabilities to the
+ *     buyer during hiring based on the licence the agent will consume, so releasing the
+ *     seat would make that promise false the moment provisioning succeeded.
+ *   - Control. The hiring organisation owns the seat, so their admins can audit, apply
+ *     policy to, and revoke the agent like any other account in their directory.
+ *
+ * The seat is the buyer's cost, not the platform's, so there is nothing for us to save
+ * here — only functionality to lose. If no mailbox-capable seat is free we fail the hire
+ * outright rather than provisioning a degraded agent.
  *
  * Returns the mailbox email address and user object ID.
  */
-export async function createSharedMailbox(
+export async function createAgentMailbox(
   tenantId: string,
   displayName: string,
   emailAlias: string,
@@ -619,8 +627,8 @@ export async function createSharedMailbox(
   let user: { id: string; userPrincipalName: string };
 
   try {
-    // Step 1: Create an enabled user with a license so Exchange provisions a mailbox.
-    // We'll convert it to a shared mailbox (free) and remove the license afterward.
+    // Step 1: Create an enabled user. The licence assigned in step 2 is what makes
+    // Exchange build a mailbox, and the agent keeps both for its lifetime.
     user = await graphRequestForTenant(tenantId, "POST", "/users", {
       accountEnabled: true,
       displayName,
@@ -635,7 +643,7 @@ export async function createSharedMailbox(
     console.log(`[microsoft] Created user ${userPrincipalName} in buyer tenant ${tenantId}`);
   } catch (err: any) {
     if (err.message?.includes("ObjectConflict") || err.message?.includes("already exists")) {
-      console.log(`[microsoft] Shared mailbox user ${userPrincipalName} already exists, reusing`);
+      console.log(`[microsoft] Agent mailbox user ${userPrincipalName} already exists, reusing`);
       const existing = await graphRequestForTenant(
         tenantId, "GET",
         `/users/${encodeURIComponent(userPrincipalName)}?$select=id,userPrincipalName`,
@@ -689,12 +697,9 @@ export async function createSharedMailbox(
     throw new Error(`[microsoft] License assignment failed for ${userPrincipalName}: ${err.message}`);
   }
 
-  // Step 3a: Wait until Exchange has actually built the mailbox.
-  //
-  // These are two different failures and they carry very different weight, so they
-  // are no longer collapsed into one retry loop. A missing mailbox is fatal — the
-  // agent could never send or receive. A failed *conversion* only costs a licence
-  // seat, and the agent still works, so it is a warning.
+  // Step 3: Wait until Exchange has actually built the mailbox. A missing mailbox is
+  // fatal — the agent could never send or receive, so we clean up and fail the hire
+  // rather than let it reach ACTIVE in a state that can never work.
   //
   // Exchange routinely takes well over ten minutes to provision after a licence is
   // assigned. The previous budget was five attempts totalling ~2m10s, which gave up
@@ -730,114 +735,14 @@ export async function createSharedMailbox(
   }
   console.log(`[microsoft] Mailbox ready for ${userPrincipalName}`);
 
-  // Step 3b: Convert to a shared mailbox so the licence seat can be handed back.
-  // Shared mailboxes under 50GB need no licence, which is what keeps the per-agent
-  // cost at zero. If this fails the agent still works — it just keeps consuming a seat.
-  let converted = false;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 30_000));
-    try {
-      const exchangeToken = await mintExchangeTokenForTenant(tenantId);
-      const exchangeResp = await fetch(
-        `https://outlook.office365.com/adminapi/beta/${tenantId}/Mailbox('${user.id}')`,
-        {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${exchangeToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ Type: "Shared" }),
-        },
-      );
-      if (exchangeResp.ok) {
-        console.log(`[microsoft] Converted ${userPrincipalName} to shared mailbox`);
-        converted = true;
-        break;
-      }
-      console.warn(
-        `[microsoft] Shared mailbox conversion attempt ${attempt + 1}/3 failed ` +
-          `(${exchangeResp.status}): ${(await exchangeResp.text()).slice(0, 300)}`,
-      );
-    } catch (err: any) {
-      console.warn(`[microsoft] Exchange API call failed: ${err.message}`);
-    }
-  }
-
-  if (!converted) {
-    console.warn(
-      `[microsoft] ${userPrincipalName} stays a licensed user — it will keep consuming a ` +
-        `licence seat. The agent works; convert it manually to reclaim the seat.`,
-    );
-  }
-
-  // Step 4: Remove the license — shared mailboxes don't need one.
-  // Also disable the account (shared mailboxes shouldn't be sign-in-able).
-  if (converted && skuId) {
-    try {
-      await graphRequestForTenant(tenantId, "POST", `/users/${user.id}/assignLicense`, {
-        addLicenses: [],
-        removeLicenses: [skuId],
-      });
-      console.log(`[microsoft] Removed license from shared mailbox ${userPrincipalName}`);
-    } catch (err: any) {
-      console.warn(`[microsoft] License removal failed (non-fatal): ${err.message}`);
-    }
-    try {
-      await graphRequestForTenant(tenantId, "PATCH", `/users/${user.id}`, {
-        accountEnabled: false,
-      });
-    } catch { /* non-fatal */ }
-  }
-
-  if (!converted) {
-    console.warn(`[microsoft] Shared mailbox conversion did not succeed — user created but mailbox may not be shared. Can be converted manually.`);
-  }
-
   return { email: user.userPrincipalName, id: user.id };
 }
 
 /**
- * Mint an Exchange Online Admin API token for a specific tenant.
- * Exchange Admin API uses a different scope than Graph API.
- */
-async function mintExchangeTokenForTenant(tenantId: string): Promise<string> {
-  const cacheKey = `exchange:${tenantId}`;
-  const cached = _tokenCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now() + 60_000) {
-    return cached.value;
-  }
-
-  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id: config.microsoftClientId,
-    client_secret: config.microsoftClientSecret,
-    scope: "https://outlook.office365.com/.default",
-  });
-
-  const resp = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Exchange token request failed for tenant ${tenantId}: ${resp.status} ${await resp.text()}`);
-  }
-
-  const data = await resp.json() as { access_token: string; expires_in: number };
-  _tokenCache.set(cacheKey, {
-    value: data.access_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
-  });
-  return data.access_token;
-}
-
-/**
- * Check if a shared mailbox already exists in the buyer's tenant.
+ * Check if the agent's mailbox already exists in the buyer's tenant.
  * Returns the user/mailbox object if found, null otherwise.
  */
-export async function getSharedMailbox(
+export async function getAgentMailbox(
   tenantId: string,
   emailAddress: string,
 ): Promise<{ id: string; userPrincipalName: string } | null> {
@@ -854,16 +759,16 @@ export async function getSharedMailbox(
 }
 
 /**
- * Delete a shared mailbox from the buyer's tenant.
+ * Delete the agent's mailbox from the buyer's tenant, releasing its licence seat.
  * Used during deprovisioning or disconnect cleanup.
  */
-export async function deleteSharedMailbox(
+export async function deleteAgentMailbox(
   tenantId: string,
   userId: string,
 ): Promise<void> {
   try {
     await graphRequestForTenant(tenantId, "DELETE", `/users/${userId}`);
-    console.log(`[microsoft] Deleted shared mailbox user ${userId} from tenant ${tenantId}`);
+    console.log(`[microsoft] Deleted agent mailbox user ${userId} from tenant ${tenantId}`);
   } catch (err: any) {
     if (err.message?.includes("404") || err.message?.includes("Request_ResourceNotFound")) return;
     throw err;
