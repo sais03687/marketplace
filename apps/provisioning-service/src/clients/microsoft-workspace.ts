@@ -759,19 +759,66 @@ export async function getAgentMailbox(
 }
 
 /**
- * Delete the agent's mailbox from the buyer's tenant, releasing its licence seat.
- * Used during deprovisioning or disconnect cleanup.
+ * Delete the agent's identity and genuinely give the licence seat back.
+ *
+ * Deleting a user is NOT enough on its own. Graph soft-deletes it into a 30-day
+ * recycle bin where it keeps consuming its licence, so a naive DELETE leaves the
+ * buyer paying for a fired agent for a month. Confirmed against a live tenant on
+ * 2026-07-31: four deletes moved Business Basic 3/1 → 3/1, and only purging the
+ * recycle bin moved it to 2/1.
+ *
+ * So the order matters, and each step is independently useful:
+ *   1. strip the licences   — frees the seat immediately, even if a later step fails
+ *   2. delete the user      — revokes sign-in and stops mail delivery
+ *   3. purge the recycle bin— stops the deleted object holding anything
+ *
+ * `tenantId` is the buyer's tenant. Pass null only for legacy deployments whose
+ * identity lives in the platform tenant.
  */
-export async function deleteAgentMailbox(
-  tenantId: string,
+export async function deleteAgentIdentity(
+  tenantId: string | null,
   userId: string,
 ): Promise<void> {
+  const req = (method: string, path: string, body?: unknown) =>
+    tenantId
+      ? graphRequestForTenant(tenantId, method, path, body)
+      : graphRequest(method, path, body);
+  const where = tenantId ? `tenant ${tenantId}` : "platform tenant";
+  const gone = (err: any) =>
+    err?.message?.includes("404") || err?.message?.includes("Request_ResourceNotFound");
+
+  // 1. Release the seat.
   try {
-    await graphRequestForTenant(tenantId, "DELETE", `/users/${userId}`);
-    console.log(`[microsoft] Deleted agent mailbox user ${userId} from tenant ${tenantId}`);
+    const user = await req("GET", `/users/${userId}?$select=assignedLicenses`) as
+      { assignedLicenses?: { skuId: string }[] };
+    const skuIds = (user.assignedLicenses ?? []).map((l) => l.skuId).filter(Boolean);
+    if (skuIds.length) {
+      await req("POST", `/users/${userId}/assignLicense`, { addLicenses: [], removeLicenses: skuIds });
+      console.log(`[microsoft] Released ${skuIds.length} licence seat(s) from ${userId}`);
+    }
   } catch (err: any) {
-    if (err.message?.includes("404") || err.message?.includes("Request_ResourceNotFound")) return;
-    throw err;
+    if (!gone(err)) console.warn(`[microsoft] Could not release licences from ${userId}: ${err.message}`);
+  }
+
+  // 2. Delete the user.
+  try {
+    await req("DELETE", `/users/${userId}`);
+    console.log(`[microsoft] Deleted agent user ${userId} from ${where}`);
+  } catch (err: any) {
+    if (!gone(err)) throw err;
+  }
+
+  // 3. Purge the soft-deleted object so nothing lingers for 30 days.
+  try {
+    await req("DELETE", `/directory/deletedItems/${userId}`);
+    console.log(`[microsoft] Purged ${userId} from the recycle bin`);
+  } catch (err: any) {
+    if (!gone(err)) {
+      console.warn(
+        `[microsoft] Could not purge ${userId} from the recycle bin: ${err.message}. ` +
+          `The licence was already released in step 1, so the seat is free either way.`,
+      );
+    }
   }
 }
 

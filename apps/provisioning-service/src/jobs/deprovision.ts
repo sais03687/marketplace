@@ -4,7 +4,7 @@ import { deleteInbox } from "../clients/agentmail.js";
 import { stopContainer, removeAgentNetwork } from "../clients/docker.js";
 import { deleteDeploymentServiceAccount } from "../clients/google-iam.js";
 import { deleteGoogleWorkspaceUser } from "../clients/google-workspace.js";
-import { deleteMicrosoftUser } from "../clients/microsoft-workspace.js";
+import { deleteAgentIdentity } from "../clients/microsoft-workspace.js";
 import { stopMcpSidecars } from "../mcp/sidecar-manager.js";
 
 export async function deprovisionJob(deploymentId: string): Promise<void> {
@@ -67,11 +67,27 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
       console.warn(`[deprovision] Failed to delete Google Workspace user: ${err.message}`);
     }
   } else if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
+    // Scope the delete to the tenant the identity actually lives in. Using the
+    // platform Graph client here only worked because platform and buyer tenant are
+    // the same during testing — against a real buyer it would 404 and silently
+    // leave them paying for a fired agent.
+    const buyerTenantId = (deployment as any).buyerMicrosoftTenantId as string | null;
     try {
-      await deleteMicrosoftUser(workspaceUserId);
-      console.log(`[deprovision] Deleted Microsoft 365 user: ${workspaceUserId}`);
+      await deleteAgentIdentity(buyerTenantId ?? null, workspaceUserId);
+      // Clear the pointers so the nightly reconciliation job doesn't retry a
+      // deletion that already succeeded.
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: { workspaceUserId: null, workspaceEmail: null },
+      });
+      console.log(`[deprovision] Deleted Microsoft 365 identity and released its seat: ${workspaceUserId}`);
     } catch (err: any) {
-      console.warn(`[deprovision] Failed to delete Microsoft 365 user: ${err.message}`);
+      // Left in place deliberately: the nightly cleanup job re-reads FIRED
+      // deployments that still have a workspaceUserId and will try again.
+      console.warn(
+        `[deprovision] Failed to delete Microsoft 365 user ${workspaceUserId}: ${err.message}. ` +
+          `Its seat is still consumed; the nightly cleanup job will retry.`,
+      );
     }
   } else {
     // Legacy path: delete per-deployment GCP IAM service account

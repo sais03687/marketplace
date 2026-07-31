@@ -11,7 +11,7 @@ import {
   getBuyerDomain,
   createAgentMailbox,
   getAgentMailbox,
-  deleteAgentMailbox,
+  deleteAgentIdentity,
 } from "./clients/microsoft-workspace.js";
 
 const TENANT_ID = config.microsoftTenantId;
@@ -69,11 +69,11 @@ async function run() {
     }
   }
 
-  // Test 5: deleteAgentMailbox (cleanup)
+  // Test 5: deleteAgentIdentity (cleanup)
   if (mailboxId) {
-    console.log(`5. deleteAgentMailbox (${mailboxId})...`);
+    console.log(`5. deleteAgentIdentity (${mailboxId})...`);
     try {
-      await deleteAgentMailbox(TENANT_ID, mailboxId);
+      await deleteAgentIdentity(TENANT_ID, mailboxId);
       console.log(`   PASS — deleted\n`);
     } catch (err: any) {
       console.log(`   FAIL — ${err.message}\n`);

@@ -19,7 +19,7 @@ import {
   mintTokenForTenant,
   getBuyerDomain,
   createAgentMailbox,
-  deleteAgentMailbox,
+  deleteAgentIdentity,
   provisionOneDrive,
 } from "./clients/microsoft-workspace.js";
 
@@ -610,7 +610,7 @@ async function run() {
 
   // Delete the shared mailbox user (the big cleanup)
   await test("7c. Delete shared mailbox user", async () => {
-    await deleteAgentMailbox(TENANT, testUserId);
+    await deleteAgentIdentity(TENANT, testUserId);
     return { ok: true, detail: `deleted ${testUserEmail}` };
   });
 
@@ -634,7 +634,7 @@ run().catch((err) => {
   // Try cleanup even on fatal error
   if (testUserId) {
     console.log(`\nAttempting cleanup of ${testUserEmail}...`);
-    deleteAgentMailbox(TENANT, testUserId)
+    deleteAgentIdentity(TENANT, testUserId)
       .then(() => console.log("Cleaned up."))
       .catch(() => console.log("Cleanup failed — manually delete via Azure Portal."))
       .finally(() => process.exit(1));
