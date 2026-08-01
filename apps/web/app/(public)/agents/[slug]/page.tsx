@@ -136,10 +136,10 @@ export default async function AgentListingPage({
               <div className="rounded-lg border p-4">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <MessageSquare className="h-4 w-4 text-primary" />
-                  Slack Notifications
+                  Approval in Teams
                 </div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Get notified in Slack when your AI employee needs approval.
+                  Approvals arrive as cards in Microsoft Teams and resolve in place.
                 </p>
               </div>
             </div>
@@ -283,11 +283,11 @@ export default async function AgentListingPage({
                   <p className="font-medium text-foreground">Requirements:</p>
                   <div className="flex items-center gap-1">
                     <Mail className="h-3 w-3" />
-                    Email access (AgentMail)
+                    Microsoft 365 admin consent
                   </div>
                   <div className="flex items-center gap-1">
                     <MessageSquare className="h-3 w-3" />
-                    Slack workspace
+                    A free licence seat with Exchange Online
                   </div>
                 </div>
               </CardContent>

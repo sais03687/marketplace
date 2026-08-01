@@ -357,9 +357,11 @@ export function StepConnect() {
               <p className="font-medium mb-1">Microsoft 365 connected</p>
               <p>
                 {state.hireName} will operate entirely within your organization{"'"}s
-                Microsoft 365 — SharePoint files, Outlook calendar, and a shared
-                mailbox on your domain (e.g.{" "}
-                <span className="font-mono">{state.agentSlug}@yourcompany.com</span>
+                Microsoft 365 — SharePoint files, Outlook calendar, and its own
+                licensed mailbox (e.g.{" "}
+                <span className="font-mono">
+                  {state.agentSlug}-&lt;your-org&gt;@agents.agentstore.it.com
+                </span>
                 ). All data stays in your tenant.
               </p>
             </div>
