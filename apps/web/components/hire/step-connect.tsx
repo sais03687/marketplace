@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useSearchParams, usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useHire } from "@/lib/hire-context";
@@ -31,6 +31,15 @@ type Licensing = {
 };
 
 /**
+ * What the licence check means for whether the buyer may proceed.
+ *
+ * "error" is deliberately not blocking: that is us failing to read their tenant, not
+ * them lacking a seat, and provisioning re-checks anyway. Refusing the sale because
+ * our own call failed would be the wrong way round.
+ */
+type LicensingStatus = "loading" | "ok" | "no-seat" | "error";
+
+/**
  * Shows which licence the agent will consume and what it will be able to do.
  *
  * Buyers were previously given no visibility here at all: a hire could quietly consume a
@@ -38,7 +47,15 @@ type Licensing = {
  * explain either. Showing it before the money is spent turns a support ticket into a
  * decision the buyer makes knowingly.
  */
-function LicensingSummary({ tenantId, agentName }: { tenantId: string | null; agentName: string }) {
+function LicensingSummary({
+  tenantId,
+  agentName,
+  onStatusChange,
+}: {
+  tenantId: string | null;
+  agentName: string;
+  onStatusChange: (status: LicensingStatus) => void;
+}) {
   const [data, setData] = useState<Licensing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,19 +64,30 @@ function LicensingSummary({ tenantId, agentName }: { tenantId: string | null; ag
     if (!tenantId) return;
     let cancelled = false;
     setLoading(true);
+    onStatusChange("loading");
     fetch(`/api/microsoft/licensing?tenantId=${encodeURIComponent(tenantId)}`)
       .then(async (r) => {
         const body = await r.json();
         if (cancelled) return;
-        if (!r.ok) setError(body.error ?? "We couldn't check your Microsoft 365 licences.");
-        else setData(body);
+        if (!r.ok) {
+          setError(body.error ?? "We couldn't check your Microsoft 365 licences.");
+          onStatusChange("error");
+        } else {
+          setData(body);
+          onStatusChange(body?.selected ? "ok" : "no-seat");
+        }
       })
-      .catch(() => !cancelled && setError("We couldn't check your Microsoft 365 licences."))
+      .catch(() => {
+        if (cancelled) return;
+        setError("We couldn't check your Microsoft 365 licences.");
+        onStatusChange("error");
+      })
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [tenantId]);
+    // onStatusChange is a stable useCallback in the parent.
+  }, [tenantId, onStatusChange]);
 
   if (loading) {
     return (
@@ -108,9 +136,41 @@ function LicensingSummary({ tenantId, agentName }: { tenantId: string | null; ag
           )}
         </p>
         <p>
-          Add a seat in the Microsoft 365 admin center — Business Basic is the cheapest that
-          works — then come back. Free licences such as Power Automate Free can&apos;t be used,
-          because they don&apos;t include a mailbox.
+          Add a seat in the Microsoft 365 admin center, then come back — we re-check
+          automatically.
+        </p>
+
+        <div className="grid gap-3 sm:grid-cols-2 pt-1">
+          <div>
+            <p className="font-medium flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3 shrink-0" />
+              These work
+            </p>
+            <ul className="mt-1 space-y-0.5 list-disc pl-4">
+              <li>Exchange Online Plan 1 or 2 — cheapest, mailbox only</li>
+              <li>Microsoft 365 Business Basic, Standard or Premium</li>
+              <li>Office 365 E1, E3 or E5</li>
+              <li>Microsoft 365 E3 or E5</li>
+            </ul>
+          </div>
+          <div>
+            <p className="font-medium flex items-center gap-1">
+              <XCircle className="h-3 w-3 shrink-0" />
+              These don&apos;t
+            </p>
+            <ul className="mt-1 space-y-0.5 list-disc pl-4">
+              <li>Power Automate Free, Power Apps Free</li>
+              <li>Microsoft Teams Essentials or Exploratory</li>
+              <li>Any free or trial plan without Exchange Online</li>
+            </ul>
+          </div>
+        </div>
+
+        <p className="text-[10px]">
+          The rule is simply whether the licence includes an Exchange Online mailbox.
+          Free plans often look valid in the admin center because they carry a
+          directory-only Exchange entry, but no mailbox is ever created — so we check
+          for a real one rather than trusting the licence name.
         </p>
       </div>
     );
@@ -144,8 +204,9 @@ function LicensingSummary({ tenantId, agentName }: { tenantId: string | null; ag
       </ul>
 
       <p className="text-[10px] text-muted-foreground">
-        One seat is used while your agent is set up. SharePoint access comes from the
-        Marketplace app rather than this licence, so it works on any plan.
+        Your agent keeps this seat for as long as it works for you, and releases it when
+        you fire it. SharePoint access comes from the Marketplace app rather than this
+        licence, so it works on any plan.
       </p>
     </div>
   );
@@ -156,6 +217,22 @@ export function StepConnect() {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const [msConnected, setMsConnected] = useState(!!state.buyerMicrosoftTenantId);
+  const [licensingStatus, setLicensingStatusRaw] = useState<LicensingStatus>("loading");
+  // Stable identity so the child's effect doesn't refire on every parent render.
+  const setLicensingStatus = useCallback((s: LicensingStatus) => setLicensingStatusRaw(s), []);
+
+  // Nothing past this step is recoverable: the next step takes payment, and an agent
+  // with no mailbox-capable seat cannot be provisioned no matter what is paid. This
+  // used to be a warning the buyer could click straight past, which meant they could
+  // be charged for a hire that was already guaranteed to fail.
+  const blockedReason: string | null =
+    state.workspaceProvider !== "MICROSOFT" || !msConnected
+      ? "Connect your Microsoft 365 organization to continue — your agent needs a mailbox in your tenant."
+      : licensingStatus === "loading"
+        ? "Checking your Microsoft 365 licences…"
+        : licensingStatus === "no-seat"
+          ? "Add a Microsoft 365 seat before continuing — the hire cannot complete without one."
+          : null;
 
   // After OAuth callback, read microsoftTenantId from URL and store in hire state
   useEffect(() => {
@@ -291,16 +368,25 @@ export function StepConnect() {
       )}
 
       {state.workspaceProvider === "MICROSOFT" && msConnected && (
-        <LicensingSummary tenantId={state.buyerMicrosoftTenantId} agentName={state.hireName} />
+        <LicensingSummary
+          tenantId={state.buyerMicrosoftTenantId}
+          agentName={state.hireName}
+          onStatusChange={setLicensingStatus}
+        />
       )}
 
-      <div className="flex gap-2">
-        <Button variant="outline" onClick={() => setStep(2)}>
-          Back
-        </Button>
-        <Button className="flex-1" onClick={() => setStep(4)}>
-          Continue
-        </Button>
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setStep(2)}>
+            Back
+          </Button>
+          <Button className="flex-1" onClick={() => setStep(4)} disabled={blockedReason !== null}>
+            Continue
+          </Button>
+        </div>
+        {blockedReason && (
+          <p className="text-xs text-muted-foreground text-center">{blockedReason}</p>
+        )}
       </div>
     </div>
   );
