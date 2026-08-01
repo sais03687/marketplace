@@ -84,13 +84,21 @@ export function startWorker(): Worker<ProvisionJobData> {
   // which meant a dropped deprovision could leave a fired agent running, and its
   // seat billed, for a full day.
   //
-  // Hourly, not faster: Neon scales to zero after 5 minutes idle and charges for
-  // the wake-up rather than the query, so a poll costs ~5 minutes of compute no
-  // matter how cheap it is. Hourly is ~60 compute-hours/month; every 15 minutes
-  // is ~240 and exceeds the quota — which is what exhausted it on 2026-07-24.
-  // The fast paths are the queue and the HTTP fallback; this only has to be
-  // faster than "never".
-  const RECONCILE_INTERVAL_MS = 60 * 60 * 1000;
+  // Six-hourly is the knee of the cost curve. Neon scales to zero after 5 minutes
+  // idle and charges for the wake-up rather than the query, so every poll costs
+  // ~5 minutes of compute however cheap it is:
+  //
+  //   hourly     ~60 compute-hours/month     6-hourly  ~10
+  //   12-hourly   ~5                         daily      ~2.5
+  //
+  // Going hourly -> 6-hourly saves 50 hours; going 6 -> 12 saves 5 while doubling
+  // the window in which a fired agent is still running. Past this point you stop
+  // buying anything but delay. (Every 15 minutes would be ~240 and exceed the
+  // quota outright, which is what exhausted it on 2026-07-24 — see 1e4bf9f.)
+  //
+  // The fast paths are the queue and the HTTP fallback; this only has to beat
+  // "never".
+  const RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
   queue.add(
     "cleanup_ms_users",
     { type: "cleanup_ms_users" },
