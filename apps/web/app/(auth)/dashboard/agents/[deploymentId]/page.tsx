@@ -138,7 +138,7 @@ export default function AgentOverviewPage({
       if (body?.data?.cleanupQueued === false) {
         setConfirmFire(false);
         setActing(false);
-        setFireWarning(body.data.cleanupNote ?? "Cleanup could not be started and will run automatically within 24 hours.");
+        setFireWarning(body.data.cleanupNote ?? "Cleanup could not be started and will run automatically within the hour.");
         return;
       }
     } catch {

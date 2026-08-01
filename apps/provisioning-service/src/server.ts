@@ -769,6 +769,51 @@ export function startProxyServer() {
       }
     }
 
+    // ─── Deprovision Fallback ──────────────────────────────────────────────
+    // Second bridge for teardown. The web app normally hands deprovision to the
+    // BullMQ queue, but Redis is a single point of failure there — an Upstash
+    // `read ECONNRESET` on 2026-07-31 dropped the job silently and the agent kept
+    // running. This path reaches the same work over HTTPS instead, so one
+    // transport being down no longer means cleanup waits for the hourly sweep.
+    //
+    // Runs the job inline rather than re-queueing it: re-queueing would depend on
+    // the very thing that just failed.
+    if (req.method === "POST" && req.url === "/internal/deprovision") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let raw = "";
+      req.on("data", (chunk: string) => { raw += chunk; });
+      req.on("end", async () => {
+        let deploymentId: string | undefined;
+        try {
+          ({ deploymentId } = JSON.parse(raw) as { deploymentId?: string });
+        } catch {
+          return send(res, 400, { error: "Invalid JSON body" });
+        }
+        if (!deploymentId) {
+          return send(res, 400, { error: "deploymentId is required" });
+        }
+        // Answer immediately — teardown takes 30-60s and the caller is a serverless
+        // function that should not be held open for it. Failures here are still
+        // caught by the reconciliation sweep.
+        send(res, 202, { accepted: true, deploymentId });
+        const id = deploymentId;
+        try {
+          const { deprovisionJob } = await import("./jobs/deprovision.js");
+          await deprovisionJob(id);
+          console.log(`[server] Deprovision via HTTP fallback completed for ${id}`);
+        } catch (err: any) {
+          console.error(
+            `[server] Deprovision via HTTP fallback failed for ${id}: ${err.message}. ` +
+              `The reconciliation sweep will retry.`,
+          );
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/forward-resolve") {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

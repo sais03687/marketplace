@@ -1,7 +1,10 @@
 import Dockerode from "dockerode";
 import { config } from "../config.js";
 
-const docker = new Dockerode();
+// Exported so the reconciliation sweep can enumerate and remove orphaned
+// containers by name, including ones under naming schemes the targeted teardown
+// helpers no longer match.
+export const docker = new Dockerode();
 
 // ─── Per-Deployment Network Isolation ───────────────────────────────────────
 

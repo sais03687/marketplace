@@ -77,11 +77,24 @@ export function startWorker(): Worker<ProvisionJobData> {
     console.warn("[worker] Failed to schedule renew_ms_webhooks repeatable job:", err.message);
   });
 
-  // Schedule Microsoft orphan cleanup — runs daily to delete M365 users from failed/fired deployments
+  // Reconciliation sweep for fired agents that were never torn down — releases
+  // licence seats and stops orphaned containers.
+  //
+  // Hourly, not daily: this used to inherit the 24h cadence above by copy-paste,
+  // which meant a dropped deprovision could leave a fired agent running, and its
+  // seat billed, for a full day.
+  //
+  // Hourly, not faster: Neon scales to zero after 5 minutes idle and charges for
+  // the wake-up rather than the query, so a poll costs ~5 minutes of compute no
+  // matter how cheap it is. Hourly is ~60 compute-hours/month; every 15 minutes
+  // is ~240 and exceeds the quota — which is what exhausted it on 2026-07-24.
+  // The fast paths are the queue and the HTTP fallback; this only has to be
+  // faster than "never".
+  const RECONCILE_INTERVAL_MS = 60 * 60 * 1000;
   queue.add(
     "cleanup_ms_users",
     { type: "cleanup_ms_users" },
-    { repeat: { every: 24 * 60 * 60 * 1000 }, jobId: "cleanup_ms_users_repeatable" },
+    { repeat: { every: RECONCILE_INTERVAL_MS }, jobId: "cleanup_ms_users_repeatable" },
   ).catch((err) => {
     console.warn("[worker] Failed to schedule cleanup_ms_users repeatable job:", err.message);
   });

@@ -93,10 +93,43 @@ export async function POST(
     }
   }
 
+  // Redis is only one way to reach the provisioning service. When it is down, ask
+  // the service directly over HTTPS — a separate transport, so a single outage no
+  // longer defers cleanup to the reconciliation sweep.
+  if (!cleanupQueued) {
+    console.error(`[fire] Could not enqueue deprovision for ${id} after 3 attempts: ${lastError}`);
+    // Both names are in use: the licensing route reads PROVISIONING_SERVICE_URL,
+    // while PROVISIONING_URL is what is actually set in the Vercel project. Accept
+    // either, and fall back to the public host so this never silently no-ops.
+    const base =
+      process.env.PROVISIONING_SERVICE_URL ||
+      process.env.PROVISIONING_URL ||
+      "https://api.agentstore.it.com";
+    const secret = process.env.PROVISIONING_SECRET;
+    if (base && secret) {
+      try {
+        const resp = await fetch(`${base.replace(/\/$/, "")}/internal/deprovision`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+          body: JSON.stringify({ deploymentId: id }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (resp.ok) {
+          cleanupQueued = true;
+          console.log(`[fire] Deprovision accepted over HTTP fallback for ${id}`);
+        } else {
+          console.error(`[fire] HTTP deprovision fallback returned ${resp.status} for ${id}`);
+        }
+      } catch (err: any) {
+        console.error(`[fire] HTTP deprovision fallback failed for ${id}: ${err.message}`);
+      }
+    }
+  }
+
   if (!cleanupQueued) {
     console.error(
-      `[fire] Could not enqueue deprovision for ${id} after 3 attempts: ${lastError}. ` +
-        `The nightly cleanup job will delete the Microsoft 365 user and release its seat.`,
+      `[fire] Both the queue and the HTTP fallback failed for ${id}. The reconciliation ` +
+        `sweep will delete the Microsoft 365 user, release its seat, and remove the container.`,
     );
   }
 
@@ -109,7 +142,7 @@ export async function POST(
     cleanupQueued,
     cleanupNote: cleanupQueued
       ? "Cleanup is running now."
-      : "Cleanup could not be started immediately and will run automatically within 24 hours. " +
+      : "Cleanup could not be started immediately and will run automatically within the hour. " +
         "The Microsoft 365 account and its licence seat are released then.",
   });
 }
