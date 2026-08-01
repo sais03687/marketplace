@@ -809,16 +809,32 @@ export async function deleteAgentIdentity(
   }
 
   // 3. Purge the soft-deleted object so nothing lingers for 30 days.
-  try {
-    await req("DELETE", `/directory/deletedItems/${userId}`);
-    console.log(`[microsoft] Purged ${userId} from the recycle bin`);
-  } catch (err: any) {
-    if (!gone(err)) {
-      console.warn(
-        `[microsoft] Could not purge ${userId} from the recycle bin: ${err.message}. ` +
-          `The licence was already released in step 1, so the seat is free either way.`,
-      );
+  //
+  // Retry, because the deleted object does not appear under /directory/deletedItems
+  // immediately — a purge fired straight after step 2 gets a 404 from replication
+  // lag, not because the work is done. Observed live on 2026-07-31: the purge 404'd
+  // during deprovision, then succeeded with 204 moments later. Treating that first
+  // 404 as "already gone" silently left the object sitting in the bin.
+  let purged = false;
+  for (let attempt = 1; attempt <= 4 && !purged; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 5_000));
+    try {
+      await req("DELETE", `/directory/deletedItems/${userId}`);
+      purged = true;
+      console.log(`[microsoft] Purged ${userId} from the recycle bin`);
+    } catch (err: any) {
+      if (!gone(err)) {
+        console.warn(`[microsoft] Purge attempt ${attempt}/4 for ${userId} failed: ${err.message}`);
+      }
     }
+  }
+  if (!purged) {
+    // Not escalated: step 1 already handed the seat back, so the only cost is a
+    // directory object that Entra removes by itself after 30 days.
+    console.warn(
+      `[microsoft] Could not purge ${userId} from the recycle bin. Its licence was ` +
+        `already released, so the seat is free; the object expires on its own in 30 days.`,
+    );
   }
 }
 
