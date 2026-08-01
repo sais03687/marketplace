@@ -80,10 +80,28 @@ _mcp_tools_md = (_here / "MCP_TOOLS.md").read_text() if (_here / "MCP_TOOLS.md")
 # ─── Actions that require manager approval before execution ──────────────────
 
 BLOCKED_ACTIONS = {
+    # Writes — irreversible changes to the buyer's data.
     "excel_write",
     "excel_append",
     "drive_upload",
     "calendar_delete",
+    # Sharing — grants another person access to a file. These matter at least as
+    # much as the writes above, and were ungated until 2026-08-01.
+    #
+    # The agent authenticates with *application* Graph permissions, so Graph
+    # enforces the app's rights and never the asker's. There is no per-user
+    # document isolation underneath: anyone the allowlist admits can ask for any
+    # file in the tenant. The allowlist governs who may talk to the agent, not
+    # what they may be given. Sharing is therefore the one action that can move
+    # data out of the tenant, and it is the action approvals exist for.
+    #
+    # The agent also cannot read existing permissions on a file, so it grants
+    # access blind — it has no way to know whether a recipient already had it.
+    # Until it can, a human has to be the check.
+    "drive_share",
+    "drive_create_link",
+    "my_drive_share",
+    "my_drive_create_link",
 }
 
 # ─── Thread-local function registry ─────────────────────────────────────────

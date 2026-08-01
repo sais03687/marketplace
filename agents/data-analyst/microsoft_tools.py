@@ -489,13 +489,16 @@ async def my_drive_share(item_id: str, recipients: list[str], role: str = "read"
         return resp.json()
 
 
-async def my_drive_create_link(item_id: str, link_type: str = "view", scope: str = "anonymous") -> dict:
+async def my_drive_create_link(item_id: str, link_type: str = "view", scope: str = "organization") -> dict:
     """Create a sharing link for an OneDrive file/folder.
 
     Args:
         item_id: The file or folder ID.
         link_type: "view" (read-only) or "edit". Default "view".
-        scope: "anonymous" (anyone with link) or "organization" (org only). Default "anonymous".
+        scope: "organization" (only people signed in to this company) or "anonymous"
+            (ANYONE holding the link, no sign-in). Default "organization".
+            Only pass "anonymous" if the requester has explicitly asked for a link
+            that works outside the company — it can be forwarded to anyone.
 
     Returns:
         dict with the sharing link URL.
