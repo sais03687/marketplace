@@ -26,6 +26,7 @@ import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
 import { removeAgentNetwork } from "../clients/docker.js";
 import { stopMcpSidecars } from "../mcp/sidecar-manager.js";
+import { startNetgate, stopEgressProxy, netgateName } from "../clients/egress-proxy.js";
 import { startPoller, stopPoller } from "./poller-manager.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -231,15 +232,45 @@ export async function spawnCustomAgent(
       }
     }
 
+    // The netgate must exist before the agent: it publishes the gateway port on
+    // the agent's behalf (Docker will not publish for a container on an Internal
+    // network) and is the only route off the host. Started first so the agent has
+    // somewhere to send its very first request.
+    if (!networkName) {
+      throw new Error(
+        `[custom-runner] ${deploymentId} has no isolated network. Refusing to start on the ` +
+          `default bridge, which would give the agent unrestricted outbound access.`,
+      );
+    }
+    const { proxyUrl, hostPort: gatewayPort } = await startNetgate(
+      deploymentId,
+      networkName,
+      containerName,
+    );
+
     const container = await docker.createContainer({
       Image: imageName,
       name: containerName,
-      Env: containerEnvArray,
+      Env: [
+        ...containerEnvArray,
+        // Ordinary HTTP clients read these and find the one way out. They are a
+        // convenience, not the control — the Internal network is what makes
+        // ignoring them useless.
+        `HTTP_PROXY=${proxyUrl}`,
+        `HTTPS_PROXY=${proxyUrl}`,
+        `http_proxy=${proxyUrl}`,
+        `https_proxy=${proxyUrl}`,
+        // Sidecars and the netgate share the agent's network; proxying to reach a
+        // neighbour would loop.
+        `NO_PROXY=localhost,127.0.0.1,${netgateName(deploymentId)},mcp-python-sandbox-${deploymentId.slice(0, 8)}`,
+        `no_proxy=localhost,127.0.0.1,${netgateName(deploymentId)},mcp-python-sandbox-${deploymentId.slice(0, 8)}`,
+      ],
       ExposedPorts: { "4000/tcp": {} },
       HostConfig: {
-        PortBindings: {
-          "4000/tcp": [{ HostPort: "0" }], // random available port
-        },
+        // No PortBindings: the netgate publishes this agent's gateway instead.
+        // Docker silently declines to map ports for containers on an Internal
+        // network, which would leave the agent unreachable with nothing logged.
+        NetworkMode: networkName,
         RestartPolicy: { Name: "unless-stopped" },
         Binds: [
           // Mount a data volume for resolutions
@@ -251,33 +282,26 @@ export async function spawnCustomAgent(
         NanoCpus: 1_000_000_000,           // 1 CPU core
         PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
         SecurityOpt: ["no-new-privileges"],
+        // Kept so name resolution matches the platform's URLs, but it no longer
+        // grants a path: an Internal network has no route to the host gateway.
+        // Traffic to the platform goes through the netgate like everything else.
         ExtraHosts: ["host.docker.internal:host-gateway"],
       },
     });
 
-    // Connect to MCP sidecar network (in addition to default bridge)
-    // Must happen before start so sidecars are reachable immediately.
-    if (networkName) {
-      try {
-        const network = docker.getNetwork(networkName);
-        await network.connect({ Container: container.id });
-        console.log(`[custom-runner] Connected ${containerName} to network ${networkName}`);
-      } catch (err: any) {
-        console.warn(`[custom-runner] Failed to connect to network ${networkName}: ${err.message}`);
-      }
-    }
+    // The agent joins only its own Internal network — NetworkMode above already
+    // placed it there, so there is no second attachment and no default bridge.
 
     await container.start();
 
-    // Get the mapped port
     const info = await container.inspect();
-    const portBindings = info.NetworkSettings.Ports["4000/tcp"];
-    if (!portBindings || portBindings.length === 0) {
-      throw new Error(`No port binding found for container ${containerName}`);
-    }
-    const hostPort = parseInt(portBindings[0].HostPort, 10);
+    // The agent publishes nothing itself; the netgate published this port and
+    // forwards it inward, so that is the address the platform must use.
+    const hostPort = gatewayPort;
 
-    console.log(`[custom-runner] Container ${containerName} started on port ${hostPort}`);
+    console.log(
+      `[custom-runner] Container ${containerName} started; reachable on host port ${hostPort} via the netgate`,
+    );
 
     startPoller({
       deploymentId,
@@ -330,8 +354,12 @@ export async function stopCustomAgent(deploymentId: string): Promise<void> {
     console.warn(`[custom-runner] Failed to stop container ${containerName}: ${err.message}`);
   }
 
-  // Stop MCP sidecars and remove the isolated network
+  // Stop MCP sidecars, the netgate, and remove the isolated network. The netgate
+  // must go too: it publishes a host port and holds the only bridge to this
+  // deployment's network, so one left running is a listening socket for an agent
+  // that no longer exists.
   await stopMcpSidecars(deploymentId);
+  await stopEgressProxy(deploymentId);
   await removeAgentNetwork(deploymentId);
 
   customProcesses.delete(deploymentId);

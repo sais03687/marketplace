@@ -36,7 +36,7 @@ async function orphanContainersFor(deploymentId: string): Promise<string[]> {
       // sidecars used `mcp-<id>-<integration>`, which the suffix match in
       // stopMcpSidecars never caught. Match the id anywhere in the name so the
       // legacy ones are reaped too.
-      .filter((name) => name.includes(short) && /^(custom-agent-|mcp-)/.test(name));
+      .filter((name) => name.includes(short) && /^(custom-agent-|mcp-|netgate-)/.test(name));
   } catch (err: any) {
     console.warn(`[cleanup] Could not list containers: ${err.message}`);
     return [];

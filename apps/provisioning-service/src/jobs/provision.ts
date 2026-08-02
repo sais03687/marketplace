@@ -486,9 +486,11 @@ export async function provisionJob(
 
     // Create isolated Docker network for this deployment (agent + sidecars)
     // Custom runtime also needs a network when MCP sidecars are required.
-    if (requiredIntegrations.length > 0) {
-      agentNetworkName = await createAgentNetwork(deploymentId);
-    }
+    // Every agent gets its isolated network now, not only those with sidecars.
+    // The network is Internal, so it is what denies the container a route off the
+    // host — an agent without one would keep the default bridge and full
+    // outbound access, which is the thing being removed.
+    agentNetworkName = await createAgentNetwork(deploymentId);
 
     // Spawn MCP sidecars if the agent needs them
     if (requiredIntegrations.length > 0 && agentNetworkName) {
