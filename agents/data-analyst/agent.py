@@ -900,6 +900,7 @@ async def run_agent(
     search_fn=None,
     use_fn=None,
     mcp_fn=None,
+    graph_fn=None,
     thread_id: str = "",
 ) -> dict:
     """Entry point called by the platform adapter for every incoming message.
@@ -911,6 +912,11 @@ async def run_agent(
         search_fn: Async fn to search AgentMind for relevant knowledge.
         use_fn: Async fn to report which contributions were used.
         mcp_fn: Async fn to call MCP sidecar tools.
+        graph_fn: Async fn provided by the platform for all Microsoft Graph calls.
+            This agent has no Graph credential of its own — the platform holds it
+            and applies the buyer's approval policy before anything is written or
+            shared. Absent it, the Microsoft tools raise rather than falling back
+            to direct access.
         thread_id: Unique thread ID for checkpointing (enables interrupt/resume).
 
     Returns:
@@ -918,6 +924,12 @@ async def run_agent(
         if the graph was interrupted waiting for approval.
     """
     tid = thread_id or "default"
+
+    # Hand the platform's Graph transport to the tool module. Done per call rather
+    # than at import because the adapter owns the credential and decides when to
+    # provide it.
+    if graph_fn is not None and _mt is not None:
+        _mt.set_graph_fn(graph_fn)
 
     # Store functions in module-level registry (not in state — can't be serialized)
     _thread_fns[tid] = {

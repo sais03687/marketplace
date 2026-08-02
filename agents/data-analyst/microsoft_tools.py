@@ -1,14 +1,11 @@
 """
 Microsoft 365 tools for the LangGraph agent.
 
-Uses the Microsoft Graph API with app-only client credentials.
-
-Supports two modes:
-  1. Platform-tenant mode (WORKSPACE_SCOPE=platform or unset):
-     Agent uses platform's own M365 tenant with direct client credentials.
-  2. Buyer-org mode (WORKSPACE_SCOPE=buyer_org):
-     Agent fetches tokens from the provisioning service's token proxy.
-     No Microsoft secrets in the container — only TOKEN_ENDPOINT_URL and DEPLOYMENT_ID.
+Every call goes through the platform adapter, which holds the Graph credential
+and applies the buyer's approval policy before anything mutates or is shared.
+This module has no way to reach Microsoft on its own, by design: agent code
+deciding for itself what needed approval is what let a file be shared with an
+outsider while the buyer's policy said "always ask".
 
 - Calendar + email are scoped to the agent's workspace identity via
   /users/{WORKSPACE_EMAIL}/...
@@ -26,21 +23,20 @@ import httpx
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
-_TENANT_ID = os.environ.get("MICROSOFT_TENANT_ID", "")
-_CLIENT_ID = os.environ.get("MICROSOFT_CLIENT_ID", "")
-_CLIENT_SECRET = os.environ.get("MICROSOFT_CLIENT_SECRET", "")
 _WORKSPACE_EMAIL = os.environ.get("WORKSPACE_EMAIL", "")
 _SP_FOLDER = os.environ.get("SHAREPOINT_FOLDER", "default")
-_WORKSPACE_SCOPE = os.environ.get("WORKSPACE_SCOPE", "platform")
-_TOKEN_ENDPOINT = os.environ.get("TOKEN_ENDPOINT_URL", "")
-_DEPLOYMENT_ID = os.environ.get("DEPLOYMENT_ID", "")
-_AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
+_DEPLOYMENT_ID = os.environ.get("DEPLOYMENT_ID", "")  # an identifier, not a credential
 
-# Available if either direct credentials OR token proxy is configured
-AVAILABLE = bool(
-    (_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET and _WORKSPACE_EMAIL)
-    or (_WORKSPACE_SCOPE == "buyer_org" and _TOKEN_ENDPOINT and _DEPLOYMENT_ID)
-)
+# Microsoft credentials are deliberately absent from this module now. They are
+# not read from the environment because they are no longer there to read: the
+# platform strips them before this code runs, and supplies a transport instead.
+#
+# AVAILABLE must therefore key off the agent having an identity rather than off
+# credentials being present. Keying it off the old MICROSOFT_* / TOKEN_ENDPOINT
+# vars would have silently disabled every Microsoft tool the moment those were
+# scrubbed — the tools would simply stop being offered, with no error to explain
+# why.
+AVAILABLE = bool(_WORKSPACE_EMAIL)
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 
@@ -48,58 +44,87 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 
 _token_cache: dict[str, Any] = {}  # {"token": str, "expires_at": float}
 
+# ─── Platform-mediated Graph transport ───────────────────────────────────────
+#
+# This module used to hold a Graph token and call Microsoft itself, which meant
+# the buyer's approval policy only governed whatever this file chose to route
+# through it. The platform now owns the credential and inspects every request,
+# classifying it from the method and path so a share cannot be passed off as a
+# read.
+#
+# The adapter injects its graph_request here at startup. _GraphClient presents
+# the small slice of the httpx.AsyncClient interface this file already used, so
+# the tool functions below are unchanged — they simply no longer decide for
+# themselves what reaches Microsoft.
+
+_graph_fn = None  # set by set_graph_fn(); provided by the platform adapter
+
+
+def set_graph_fn(fn) -> None:
+    """Called once by the agent entry point with the adapter's graph_request."""
+    global _graph_fn
+    _graph_fn = fn
+
+
+class _GraphClient:
+    """Stands in for httpx.AsyncClient, routing every call through the platform."""
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self) -> "_GraphClient":
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        return None
+
+    async def request(self, method: str, url: str, **kw):
+        if _graph_fn is None:
+            raise RuntimeError(
+                "Microsoft access is not available: the platform did not provide a "
+                "Graph transport. This agent cannot call Microsoft directly."
+            )
+        path = url[len(GRAPH):] if url.startswith(GRAPH) else url
+        return await _graph_fn(
+            method,
+            path,
+            json_body=kw.get("json"),
+            params=kw.get("params"),
+            content=kw.get("content"),
+            headers=kw.get("headers"),
+            raw=True,
+        )
+
+    async def get(self, url: str, **kw):
+        return await self.request("GET", url, **kw)
+
+    async def post(self, url: str, **kw):
+        return await self.request("POST", url, **kw)
+
+    async def put(self, url: str, **kw):
+        return await self.request("PUT", url, **kw)
+
+    async def patch(self, url: str, **kw):
+        return await self.request("PATCH", url, **kw)
+
+    async def delete(self, url: str, **kw):
+        return await self.request("DELETE", url, **kw)
+
 
 async def _get_access_token() -> str:
-    """Return a valid Graph API access token, fetching from proxy or direct."""
-    cached = _token_cache.get("ms")
-    if cached and cached["expires_at"] > time.time() + 60:
-        return cached["token"]
+    """Retained so the tool functions below need no edits — returns nothing useful.
 
-    # Buyer-org mode: fetch token from provisioning service. AGENT_TOKEN identifies
-    # this deployment — the endpoint used to accept a bare deploymentId, which let
-    # any container request any company's token.
-    if _WORKSPACE_SCOPE == "buyer_org" and _TOKEN_ENDPOINT:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                _TOKEN_ENDPOINT,
-                json={"deploymentId": _DEPLOYMENT_ID},
-                headers={"Authorization": f"Bearer {_AGENT_TOKEN}"} if _AGENT_TOKEN else {},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        token = data["access_token"]
-        expires_in = data.get("expires_in", 3600)
-        _token_cache["ms"] = {"token": token, "expires_at": time.time() + expires_in}
-        return token
-
-    # Platform-tenant mode: direct client_credentials
-    if not (_TENANT_ID and _CLIENT_ID and _CLIENT_SECRET):
-        raise RuntimeError(
-            "Microsoft 365 not configured. Need either TOKEN_ENDPOINT_URL (buyer_org) "
-            "or MICROSOFT_TENANT_ID/CLIENT_ID/CLIENT_SECRET (platform)."
-        )
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(
-            f"https://login.microsoftonline.com/{_TENANT_ID}/oauth2/v2.0/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": _CLIENT_ID,
-                "client_secret": _CLIENT_SECRET,
-                "scope": "https://graph.microsoft.com/.default",
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-    token = data["access_token"]
-    expires_in = data.get("expires_in", 3600)
-    _token_cache["ms"] = {"token": token, "expires_at": time.time() + expires_in}
-    return token
+    Acquiring a Graph token is the platform's job now. This module no longer has
+    the means to get one: the adapter attaches the credential itself and discards
+    any Authorization a caller supplies, precisely so that agent code cannot
+    choose what it authenticates as.
+    """
+    return ""
 
 
 def _auth_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    """Content-Type only. Authorization is set by the platform and stripped here."""
+    return {"Content-Type": "application/json"}
 
 
 def _user_url(path: str) -> str:
@@ -121,7 +146,7 @@ async def calendar_list(days_ahead: int = 7) -> list[dict]:
     token = await _get_access_token()
     now_iso = _iso_now()
     end_iso = _iso_offset(days_ahead * 86400)
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _user_url("calendarView"),
             headers=_auth_headers(token),
@@ -157,7 +182,7 @@ async def calendar_create(
         event["attendees"] = [
             {"emailAddress": {"address": a}, "type": "required"} for a in attendees
         ]
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _user_url("events"),
             headers=_auth_headers(token),
@@ -170,7 +195,7 @@ async def calendar_create(
 async def calendar_update(event_id: str, **fields: Any) -> dict:
     """Update fields on an existing calendar event."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.patch(
             _user_url(f"events/{event_id}"),
             headers=_auth_headers(token),
@@ -183,7 +208,7 @@ async def calendar_update(event_id: str, **fields: Any) -> dict:
 async def calendar_delete(event_id: str) -> None:
     """Delete a calendar event."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.delete(
             _user_url(f"events/{event_id}"),
             headers=_auth_headers(token),
@@ -198,7 +223,7 @@ async def calendar_delete(event_id: str) -> None:
 async def drive_ensure_folder() -> dict:
     """Create the agent's folder on SharePoint if it doesn't exist. Returns folder metadata."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _drive_url("root/children"),
             headers=_auth_headers(token),
@@ -223,7 +248,7 @@ async def drive_ensure_folder() -> dict:
 async def drive_upload(filename: str, content: bytes, content_type: str = "application/octet-stream") -> dict:
     """Upload a file to the agent's SharePoint folder. Overwrites if exists."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with _GraphClient() as client:
         resp = await client.put(
             _drive_url(f"root:/{_SP_FOLDER}/{filename}:/content"),
             headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
@@ -242,7 +267,7 @@ async def drive_list(subfolder: str = "") -> list[dict]:
     # my_drive_list() avoids this by testing truthiness; do the same here.
     subfolder = subfolder or ""
     path = f"{_SP_FOLDER}/{subfolder}".rstrip("/")
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _drive_url(f"root:/{path}:/children"),
             headers=_auth_headers(token),
@@ -255,7 +280,7 @@ async def drive_list(subfolder: str = "") -> list[dict]:
 async def drive_search(query: str, limit: int = 10) -> list[dict]:
     """Search SharePoint site drive for files matching a query string."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _drive_url("root/search(q='{}')".format(query.replace("'", "''"))),
             headers=_auth_headers(token),
@@ -271,7 +296,7 @@ async def drive_search(query: str, limit: int = 10) -> list[dict]:
 async def drive_get_file(item_id: str) -> dict:
     """Get metadata for a specific SharePoint drive item."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _drive_url(f"items/{item_id}"),
             headers=_auth_headers(token),
@@ -283,7 +308,7 @@ async def drive_get_file(item_id: str) -> dict:
 async def drive_read_text(item_id: str) -> str:
     """Download and return the text content of a SharePoint file."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _drive_url(f"items/{item_id}/content"),
             headers={"Authorization": f"Bearer {token}"},
@@ -295,7 +320,7 @@ async def drive_read_text(item_id: str) -> str:
 async def drive_delete(item_id: str) -> None:
     """Delete a file or folder from the SharePoint site drive."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.delete(
             _drive_url(f"items/{item_id}"),
             headers={"Authorization": f"Bearer {token}"},
@@ -325,7 +350,7 @@ async def drive_share(item_id: str, recipients: list[str], role: str = "read", m
     }
     if message:
         payload["message"] = message
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _drive_url(f"items/{item_id}/invite"),
             headers=_auth_headers(token),
@@ -347,7 +372,7 @@ async def drive_create_link(item_id: str, link_type: str = "view", scope: str = 
         dict with the sharing link URL.
     """
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _drive_url(f"items/{item_id}/createLink"),
             headers=_auth_headers(token),
@@ -374,7 +399,7 @@ async def my_drive_list(subfolder: str = "") -> list[dict]:
         url = _my_drive_url(f"root:/{subfolder}:/children")
     else:
         url = _my_drive_url("root/children")
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             url,
             headers=_auth_headers(token),
@@ -388,7 +413,7 @@ async def my_drive_upload(filename: str, content: bytes, folder: str = "", conte
     """Upload a file to the agent's own OneDrive. Overwrites if exists."""
     token = await _get_access_token()
     path = f"{folder}/{filename}" if folder else filename
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with _GraphClient() as client:
         resp = await client.put(
             _my_drive_url(f"root:/{path}:/content"),
             headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
@@ -401,7 +426,7 @@ async def my_drive_upload(filename: str, content: bytes, folder: str = "", conte
 async def my_drive_read_text(item_id: str) -> str:
     """Download and return the text content of a file from the agent's OneDrive."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _my_drive_url(f"items/{item_id}/content"),
             headers={"Authorization": f"Bearer {token}"},
@@ -413,7 +438,7 @@ async def my_drive_read_text(item_id: str) -> str:
 async def my_drive_search(query: str, limit: int = 10) -> list[dict]:
     """Search the agent's own OneDrive for files matching a query."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _my_drive_url("root/search(q='{}')".format(query.replace("'", "''"))),
             headers=_auth_headers(token),
@@ -429,7 +454,7 @@ async def my_drive_search(query: str, limit: int = 10) -> list[dict]:
 async def my_drive_ensure_folder(folder_name: str) -> dict:
     """Create a folder in the agent's OneDrive if it doesn't exist."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _my_drive_url("root/children"),
             headers=_auth_headers(token),
@@ -453,7 +478,7 @@ async def my_drive_ensure_folder(folder_name: str) -> dict:
 async def my_drive_delete(item_id: str) -> None:
     """Delete a file or folder from the agent's OneDrive."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.delete(
             _my_drive_url(f"items/{item_id}"),
             headers={"Authorization": f"Bearer {token}"},
@@ -483,7 +508,7 @@ async def my_drive_share(item_id: str, recipients: list[str], role: str = "read"
     }
     if message:
         payload["message"] = message
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _my_drive_url(f"items/{item_id}/invite"),
             headers=_auth_headers(token),
@@ -508,7 +533,7 @@ async def my_drive_create_link(item_id: str, link_type: str = "view", scope: str
         dict with the sharing link URL.
     """
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _my_drive_url(f"items/{item_id}/createLink"),
             headers=_auth_headers(token),
@@ -525,7 +550,7 @@ async def my_drive_create_link(item_id: str, link_type: str = "view", scope: str
 async def excel_list_sheets(item_id: str) -> list[str]:
     """List all worksheet names in an Excel workbook on SharePoint."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _drive_url(f"items/{item_id}/workbook/worksheets"),
             headers=_auth_headers(token),
@@ -538,7 +563,7 @@ async def excel_list_sheets(item_id: str) -> list[str]:
 async def excel_read(item_id: str, sheet: str, range_addr: str = "A1:Z100") -> list[list]:
     """Read a range from an Excel workbook on SharePoint."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/range(address='{range_addr}')"),
             headers=_auth_headers(token),
@@ -551,7 +576,7 @@ async def excel_read(item_id: str, sheet: str, range_addr: str = "A1:Z100") -> l
 async def excel_write(item_id: str, sheet: str, range_addr: str, values: list[list]) -> None:
     """Write values to a range in an Excel workbook on SharePoint."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.patch(
             _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/range(address='{range_addr}')"),
             headers=_auth_headers(token),
@@ -563,7 +588,7 @@ async def excel_write(item_id: str, sheet: str, range_addr: str, values: list[li
 async def excel_append(item_id: str, sheet: str, values: list[list]) -> dict:
     """Append rows to a used range in an Excel worksheet on SharePoint."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         # Get used range to find next empty row
         ur_resp = await client.get(
             _drive_url(f"items/{item_id}/workbook/worksheets/{sheet}/usedRange"),
@@ -668,7 +693,7 @@ async def inbox_list(limit: int = 10, unread_only: bool = True) -> list[dict]:
     }
     if unread_only:
         params["$filter"] = "isRead eq false"
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _user_url("mailFolders/Inbox/messages"),
             headers=_auth_headers(token),
@@ -695,7 +720,7 @@ async def inbox_list(limit: int = 10, unread_only: bool = True) -> list[dict]:
 async def inbox_read(message_id: str) -> dict:
     """Read the full content of a specific email message."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _user_url(f"messages/{message_id}"),
             headers=_auth_headers(token),
@@ -738,7 +763,7 @@ async def inbox_read(message_id: str) -> dict:
 async def inbox_search(query: str, limit: int = 10) -> list[dict]:
     """Search the agent's Outlook mailbox by keyword, sender, or subject."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.get(
             _user_url("messages"),
             headers=_auth_headers(token),
@@ -783,7 +808,7 @@ async def email_send(
     }
     if cc:
         payload["cc"] = cc
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(_OUTLOOK_SEND_URL, json=payload)
         resp.raise_for_status()
     return resp.json()
@@ -797,7 +822,7 @@ async def email_reply(
     """Reply to an existing email thread via the agent's Outlook mailbox."""
     if not _OUTLOOK_SEND_URL:
         raise RuntimeError("OUTLOOK_SEND_URL not configured — cannot send via Outlook")
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _OUTLOOK_SEND_URL,
             json={
@@ -816,7 +841,7 @@ async def email_forward(message_id: str, to: str | list[str], comment: str = "")
     """Forward an email to another recipient."""
     token = await _get_access_token()
     recipients = [to] if isinstance(to, str) else to
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with _GraphClient() as client:
         resp = await client.post(
             _user_url(f"messages/{message_id}/forward"),
             headers=_auth_headers(token),
@@ -834,7 +859,7 @@ async def email_forward(message_id: str, to: str | list[str], comment: str = "")
 async def email_mark_read(message_id: str, is_read: bool = True) -> None:
     """Mark an email as read or unread."""
     token = await _get_access_token()
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with _GraphClient() as client:
         resp = await client.patch(
             _user_url(f"messages/{message_id}"),
             headers=_auth_headers(token),

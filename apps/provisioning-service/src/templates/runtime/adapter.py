@@ -12,6 +12,7 @@ import os
 import re
 import time
 import asyncio
+from typing import Any
 from pathlib import Path
 
 import httpx
@@ -33,6 +34,14 @@ _SECRETS_TO_SCRUB = [
     "GEMINI_API_KEY",
     "APPROVAL_WEBHOOK_TOKEN",
     "MARKETPLACE_APPROVAL_WEBHOOK",
+    # Microsoft access. Without these three removed, everything above is a
+    # convention rather than a control: agent code could ignore graph_request,
+    # mint its own token and call Graph directly, and the buyer's approval policy
+    # would never see the request. Read into _secrets first so this module can
+    # still use them; creator code, which imports after, cannot.
+    "AGENT_TOKEN",
+    "TOKEN_ENDPOINT_URL",
+    "MICROSOFT_CLIENT_SECRET",
 ]
 
 _secrets: dict[str, str] = {}
@@ -912,6 +921,163 @@ def _should_require_action_approval(
 
 
 
+# ─── Platform-mediated Microsoft Graph ───────────────────────────────────────
+#
+# Agent packages used to hold a Graph token and call Microsoft directly, which
+# meant the buyer's approval policy could only reach whatever the creator chose
+# to route through it. Graph now goes through here, and the credential lives on
+# this side of the boundary.
+#
+# The action is inferred from the request rather than declared by the caller.
+# A caller that could label its own request would simply label a share as a read.
+# Method and path are what Microsoft acts on, so they are what we classify.
+
+_GRAPH = "https://graph.microsoft.com/v1.0"
+# Read from _secrets, not os.environ: these were popped out of the environment at
+# import so creator code cannot see them. Reading the environment here would find
+# them already gone and silently disable Microsoft access.
+_MS_TOKEN_ENDPOINT = _secrets.get("TOKEN_ENDPOINT_URL", "")
+_MS_AGENT_TOKEN = _secrets.get("AGENT_TOKEN", "")
+_ms_token_cache: dict[str, Any] = {}
+
+
+class ApprovalRejected(RuntimeError):
+    """Raised when a gated Graph call is rejected, or times out awaiting a human."""
+
+
+async def _ms_token() -> str:
+    cached = _ms_token_cache.get("t")
+    if cached and cached["expires_at"] > time.time() + 60:
+        return cached["token"]
+    if not (_MS_TOKEN_ENDPOINT and DEPLOYMENT_ID):
+        raise RuntimeError("Microsoft 365 is not configured for this deployment")
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(
+            _MS_TOKEN_ENDPOINT,
+            json={"deploymentId": DEPLOYMENT_ID},
+            headers={"Authorization": f"Bearer {_MS_AGENT_TOKEN}"} if _MS_AGENT_TOKEN else {},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    _ms_token_cache["t"] = {
+        "token": data["access_token"],
+        "expires_at": time.time() + data.get("expires_in", 3600),
+    }
+    return data["access_token"]
+
+
+def _classify_graph_call(method: str, path: str) -> str | None:
+    """Name the action a Graph request performs, or None if it only reads.
+
+    Deliberately matches on what the request does to Microsoft, not on anything
+    the caller says about itself.
+    """
+    m = method.upper()
+    p = path.lower()
+
+    # Sharing — grants another party access. Checked before the generic write
+    # rules because these are POSTs and would otherwise look like ordinary ones.
+    if m == "POST" and "/invite" in p:
+        return "my_drive_share" if "/me/drive" in p or "/users/" in p else "drive_share"
+    if m == "POST" and "/createlink" in p:
+        return "my_drive_create_link" if "/me/drive" in p or "/users/" in p else "drive_create_link"
+    if m in ("POST", "PATCH", "PUT") and "/permissions" in p:
+        return "drive_share"
+
+    # Writes.
+    if "/workbook/" in p and m in ("POST", "PATCH", "PUT"):
+        return "excel_append" if "/rows" in p or "/add" in p else "excel_write"
+    if m in ("PUT", "POST") and (":/content" in p or "/content" in p):
+        return "drive_upload"
+    if m == "DELETE" and "/events/" in p:
+        return "calendar_delete"
+
+    # Anything else that mutates is unknown rather than safe. _should_require_
+    # action_approval fails those toward a human, which is the point: a Graph
+    # capability nobody has classified should not execute unattended.
+    if m in ("POST", "PATCH", "PUT", "DELETE"):
+        return f"graph_{m.lower()}:{p.split('?')[0][:80]}"
+
+    return None  # GET / HEAD — reads are not gated here.
+
+
+async def graph_request(
+    method: str,
+    path: str,
+    json_body: dict | None = None,
+    params: dict | None = None,
+    *,
+    content: bytes | None = None,
+    headers: dict | None = None,
+    raw: bool = False,
+    reasoning: str = "",
+    thread_id: str | None = None,
+    risk_assessment: dict | None = None,
+) -> Any:
+    """Call Microsoft Graph, applying the buyer's approval policy first.
+
+    `path` is relative to the Graph v1.0 root. Reads pass straight through;
+    anything that mutates or shares is classified and checked, and blocks on a
+    human when the buyer's policy says so.
+    """
+    action = _classify_graph_call(method, path)
+
+    if action:
+        args = dict(json_body or {})
+        # Surface recipients wherever Graph puts them so the policy can read them.
+        if "recipients" in args and isinstance(args["recipients"], list):
+            args["recipients"] = [
+                r.get("email") if isinstance(r, dict) else r for r in args["recipients"]
+            ]
+        needs, reason = _should_require_action_approval(action, args, risk_assessment)
+        print(f"[graph] {action}: {'approval required' if needs else 'auto'} — {reason}", flush=True)
+
+        if needs:
+            detail = json.dumps(args, default=str)[:800] if args else path
+            approval_id = await queue_for_approval(
+                task_type=action,
+                channel="system",
+                draft=f"{action}\n\n{detail}",
+                reasoning=reasoning or reason,
+                stakes=8.0 if action in SHARING_ACTIONS else 5.0,
+                ambiguity=3.0,
+                reversibility=9.0 if action in SHARING_ACTIONS else 5.0,
+                thread_id=thread_id,
+            )
+            resolution = await wait_for_resolution(approval_id)
+            status = (resolution or {}).get("status", "REJECTED")
+            if status not in ("APPROVED", "EDITED"):
+                why = (resolution or {}).get("rejectionReason") or "rejected by manager"
+                raise ApprovalRejected(f"{action} was not approved: {why}")
+
+    token = await _ms_token()
+    # Callers may set Content-Type (binary uploads); never Authorization — the
+    # credential is the platform's and is attached here.
+    sent = {k: v for k, v in (headers or {}).items() if k.lower() != "authorization"}
+    sent["Authorization"] = f"Bearer {token}"
+    sent.setdefault("Content-Type", "application/json")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(
+            method.upper(),
+            f"{_GRAPH}{path if path.startswith('/') else '/' + path}",
+            headers=sent,
+            json=json_body if content is None else None,
+            content=content,
+            params=params,
+        )
+
+    # raw lets existing tool code keep inspecting status codes itself (a 409 from
+    # "folder already exists" is a normal outcome, not a failure), so the calling
+    # convention does not have to change to route through here.
+    if raw:
+        return resp
+    if resp.status_code == 204 or not resp.content:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
 # ─── Return Contract Validator ────────────────────────────────────────────────
 
 _VALID_ACTIONS = {"send_email", "reply_email", "resolve_approval", "none"}
@@ -1665,6 +1831,7 @@ async def receive_teams_message(request: Request):
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
             use_fn=report_usage,
+            graph_fn=graph_request,
             thread_id=thread_id,
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
         )
@@ -1712,6 +1879,7 @@ async def receive_teams_message(request: Request):
                 contribute_fn=contribute_knowledge,
                 search_fn=search_knowledge,
                 use_fn=report_usage,
+                graph_fn=graph_request,
                 thread_id=retry_thread_id,
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             )
@@ -1878,6 +2046,7 @@ async def _handle_message(message: str, context: dict):
             contribute_fn=contribute_knowledge,
             search_fn=search_knowledge,
             use_fn=report_usage,
+            graph_fn=graph_request,
             thread_id=thread_id,
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
         )
@@ -2074,6 +2243,7 @@ async def _handle_message(message: str, context: dict):
                     contribute_fn=contribute_knowledge,
                     search_fn=search_knowledge,
                     use_fn=report_usage,
+                    graph_fn=graph_request,
                     thread_id=retry_thread_id,
                     **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
                 )

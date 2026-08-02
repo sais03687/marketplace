@@ -99,9 +99,12 @@ export interface ContainerEnv {
   WORKSPACE_PROVIDER?: string;      // "GOOGLE" | "MICROSOFT" | "NONE"
   WORKSPACE_EMAIL?: string;         // e.g., alex@agents.[platform-domain].com
   GOOGLE_WORKSPACE_SA_KEY?: string; // Platform SA JSON with DWD (same for all Google deployments)
-  MICROSOFT_TENANT_ID?: string;
-  MICROSOFT_CLIENT_ID?: string;
-  MICROSOFT_CLIENT_SECRET?: string;
+  // Microsoft credentials are deliberately NOT part of a container's environment.
+  // A container once held the platform's own Azure client secret — the whole
+  // tenant, not one deployment — where creator code could read it. Containers
+  // reach Graph through the provisioning service instead, authenticating with
+  // AGENT_TOKEN below. Removed from this type rather than merely left unset, so
+  // that putting them back fails to compile.
   // Buyer-org Microsoft: agent fetches tokens via proxy instead of direct credentials
   WORKSPACE_SCOPE?: string;           // "buyer_org" | "platform"
   TOKEN_ENDPOINT_URL?: string;        // e.g., http://host.docker.internal:3003/internal/microsoft-token

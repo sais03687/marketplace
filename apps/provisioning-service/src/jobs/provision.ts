@@ -435,10 +435,15 @@ export async function provisionJob(
             OUTLOOK_SEND_URL: "http://host.docker.internal:3003/internal/outlook-send",
           }
         : {
-            // Platform-tenant mode: inject secrets directly
-            MICROSOFT_TENANT_ID: config.microsoftTenantId,
-            MICROSOFT_CLIENT_ID: config.microsoftClientId,
-            MICROSOFT_CLIENT_SECRET: config.microsoftClientSecret,
+            // Platform-tenant fallback. It no longer ships the client secret: a
+            // container held the platform's own Azure credential, which is the
+            // whole tenant rather than one deployment, and creator code could
+            // read it straight out of the environment. The token endpoint serves
+            // this path too — it falls back to the platform tenant when a
+            // deployment has no buyer tenant of its own.
+            WORKSPACE_SCOPE: "platform",
+            TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
+            AGENT_TOKEN: agentTokenFor(deploymentId, config.provisioningSecret),
             SHAREPOINT_FOLDER: agentSlug,
             // Outlook email via Graph API
             EMAIL_MODE: "outlook",
