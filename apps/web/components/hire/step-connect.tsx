@@ -20,6 +20,13 @@ const WORKSPACE_OPTIONS: Array<{
 
 type Licensing = {
   selected: { skuPartNumber: string; displayName: string; seatsFree: number } | null;
+  /**
+   * Every mailbox-capable licence with a seat free, cheapest-adequate first.
+   * The API has always returned this and the UI used to discard it, so a buyer
+   * holding both Business Basic and E3 was shown one name with no indication
+   * that a choice had been made on their behalf, or that they could influence it.
+   */
+  usable: Array<{ skuPartNumber: string; displayName: string; seatsFree: number }>;
   exhausted: Array<{ displayName: string; seatsUsed: number; seatsTotal: number }>;
   capabilities: {
     email: boolean;
@@ -176,38 +183,96 @@ function LicensingSummary({
     );
   }
 
+  const name = agentName || "Your agent";
+  const included = caps.filter(([, on]) => on);
+  const missing = caps.filter(([, on]) => !on);
+  const alternatives = (data.usable ?? []).filter(
+    (s) => s.skuPartNumber !== data.selected!.skuPartNumber,
+  );
+
   return (
-    <div className="rounded-lg border p-3 space-y-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <p className="text-xs font-medium">Licence {agentName || "your agent"} will use</p>
-        <span className="text-[10px] text-muted-foreground">
-          {data.selected.seatsFree} seat{data.selected.seatsFree === 1 ? "" : "s"} free
-        </span>
+    <div className="rounded-lg border overflow-hidden">
+      {/* The licence is the headline: it is what gets consumed and what decides
+          everything below it. Previously it was set in the same small type as the
+          surrounding help text, which read as a footnote rather than a decision. */}
+      <div className="border-b bg-muted/40 px-4 py-3">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Licence {name} will use
+        </p>
+        <div className="mt-0.5 flex items-baseline justify-between gap-3">
+          <p className="text-base font-semibold">{data.selected.displayName}</p>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {data.selected.seatsFree} seat{data.selected.seatsFree === 1 ? "" : "s"} free
+          </span>
+        </div>
+
+        {/* Say why this one. The platform picks cheapest-adequate from the licences
+            that can actually carry a mailbox, and a buyer who is not told that has
+            no way to know a choice was made, or that buying differently would
+            change it. */}
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          {alternatives.length > 0 ? (
+            <>
+              Chosen because it is the least expensive of your{" "}
+              {(data.usable?.length ?? 1)} licences that include a mailbox. Also
+              available:{" "}
+              <span className="text-foreground">
+                {alternatives.map((s) => s.displayName).join(", ")}
+              </span>
+              .
+            </>
+          ) : (
+            <>This is the only licence in your organization that includes a mailbox.</>
+          )}
+        </p>
       </div>
-      <p className="text-sm font-medium">{data.selected.displayName}</p>
 
-      <ul className="space-y-1">
-        {caps.map(([label, enabled, desc]) => (
-          <li key={label} className="flex items-start gap-2 text-xs">
-            {enabled ? (
-              <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-green-600" />
-            ) : (
-              <XCircle className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-            )}
-            <span className={enabled ? "" : "text-muted-foreground"}>
-              <span className="font-medium">{label}</span>
-              <span className="text-muted-foreground"> — {desc}</span>
-              {!enabled && <span className="text-muted-foreground"> (not in this licence)</span>}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <div className="px-4 py-3 space-y-3">
+        <div>
+          <p className="text-xs font-medium mb-1.5">What {name} will be able to do</p>
+          <ul className="space-y-1">
+            {included.map(([label, , desc]) => (
+              <li key={label} className="flex items-start gap-2 text-xs">
+                <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-green-600" />
+                <span>
+                  <span className="font-medium">{label}</span>
+                  <span className="text-muted-foreground"> — {desc}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
 
-      <p className="text-[10px] text-muted-foreground">
-        Your agent keeps this seat for as long as it works for you, and releases it when
-        you fire it. SharePoint access comes from the Marketplace app rather than this
-        licence, so it works on any plan.
-      </p>
+        {/* Only rendered when something is actually missing. An empty "cannot do"
+            heading reads as a warning where there is nothing to warn about. */}
+        {missing.length > 0 && (
+          <div>
+            <p className="text-xs font-medium mb-1.5 text-muted-foreground">
+              Not included in this licence
+            </p>
+            <ul className="space-y-1">
+              {missing.map(([label, , desc]) => (
+                <li key={label} className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>
+                    <span className="font-medium">{label}</span> — {desc}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              {name} still works without these. To include them, assign a licence that
+              carries them and reconnect.
+            </p>
+          </div>
+        )}
+
+        <p className="text-[11px] text-muted-foreground border-t pt-2">
+          {name} keeps this seat for as long as it works for you, and releases it when you
+          fire it. SharePoint access comes from the Marketplace app rather than this
+          licence, so it works on any plan.
+        </p>
+      </div>
     </div>
   );
 }
