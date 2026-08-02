@@ -19,7 +19,15 @@ export async function createAgentNetwork(deploymentId: string): Promise<string> 
     await docker.createNetwork({
       Name: name,
       Driver: "bridge",
-      Internal: false, // agent needs external access (Graph API, AgentMail, etc.)
+      // Internal removes the default gateway, so a container on this network has
+      // no route off the host — not to an address, not by ignoring HTTP_PROXY,
+      // not over a raw socket. The only way out is the egress proxy, which sits
+      // on this network and on the default bridge, and forwards to an allowlist.
+      //
+      // This is the control. The proxy environment variables are a convenience so
+      // ordinary HTTP clients find it; the absent route is what makes exfiltration
+      // impossible rather than merely discouraged.
+      Internal: true,
       Labels: { "marketplace.deployment": deploymentId },
     });
     console.log(`[docker] Created network ${name}`);
