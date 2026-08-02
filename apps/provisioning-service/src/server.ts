@@ -149,6 +149,7 @@ async function getAllowlist(deploymentId: string): Promise<Allowlist | null> {
   if (cached && Date.now() - cached.cachedAt < ALLOWLIST_TTL_MS) return cached.list;
   try {
     const res = await fetch(`${MARKETPLACE_URL}/api/deployments/${deploymentId}/allowlist`, {
+      headers: SECRET ? { Authorization: `Bearer ${SECRET}` } : {},
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -593,8 +594,14 @@ export function startProxyServer() {
           // could ask for any deployment's token, across companies. Containers now
           // present a token derived from their own id, so the credential they hold
           // is only valid for themselves.
+          // Two kinds of caller. Agent containers hold only their own derived
+          // token. Platform components that run on this host — the mail pollers —
+          // hold PROVISIONING_SECRET already and are not creator-controlled, so
+          // they are accepted directly rather than being issued a second
+          // credential.
           const presented = String(req.headers["authorization"] ?? "").replace(/^Bearer\s+/i, "");
-          if (!agentTokenMatches(presented, deploymentId, SECRET)) {
+          const isPlatformCaller = !!SECRET && presented === SECRET;
+          if (!isPlatformCaller && !agentTokenMatches(presented, deploymentId, SECRET)) {
             console.warn(`[microsoft-token] Rejected unauthenticated request for ${deploymentId}`);
             return send(res, 401, { error: "Unauthorized" });
           }

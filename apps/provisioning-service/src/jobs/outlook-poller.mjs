@@ -36,6 +36,7 @@ const HOOKS_TOKEN = process.env.OPENCLAW_HOOKS_TOKEN;
 const INBOX = process.env.POLLER_INBOX || OUTLOOK_AGENT_EMAIL;
 const GATEWAY_URL = process.env.POLLER_GATEWAY_URL || "http://127.0.0.1:18789";
 const MARKETPLACE_URL = process.env.MARKETPLACE_URL || "http://localhost:3002";
+const PROVISIONING_SECRET = process.env.PROVISIONING_SECRET || "";
 const AGENT_ID = process.env.AGENT_ID || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const POLL_INTERVAL_S = 5;
@@ -62,9 +63,15 @@ let graphTokenExpiry = 0;
 async function getGraphToken() {
   if (graphToken && Date.now() < graphTokenExpiry) return graphToken;
 
+  // The token endpoint authenticates callers since 2026-08-01. The poller runs
+  // on the host as a child of the provisioning service, so it presents the
+  // platform secret it already inherits.
   const res = await fetch(OUTLOOK_TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(PROVISIONING_SECRET ? { Authorization: `Bearer ${PROVISIONING_SECRET}` } : {}),
+    },
     body: JSON.stringify({ deploymentId: DEPLOYMENT_ID }),
   });
 
@@ -311,6 +318,7 @@ async function ensureAllowlist({ force = false } = {}) {
   allowlistAttemptedAt = now;
   try {
     const res = await fetch(`${MARKETPLACE_URL}/api/deployments/${DEPLOYMENT_ID}/allowlist`, {
+      headers: PROVISIONING_SECRET ? { Authorization: `Bearer ${PROVISIONING_SECRET}` } : {},
       signal: AbortSignal.timeout(5000),
     });
     if (res.ok) {

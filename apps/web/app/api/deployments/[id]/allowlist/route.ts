@@ -7,16 +7,37 @@ const allowlistSchema = z.object({
 });
 
 /**
- * GET — public (deployment ID is effectively a secret cuid).
- * Used by the agentmail poller to fetch the allowlist at startup.
- * Returns the allowlist plus the company domain so the poller can
- * always permit intra-company emails without explicit listing.
+ * GET — the mail pollers read this to decide which senders may reach an agent.
+ *
+ * This was public, on the reasoning that the deployment id is itself a secret.
+ * It is not: ids appear in dashboard URLs, in logs, and in anything that lists
+ * deployments, and every creator knows their own. Anyone holding one could read
+ * another company's allowlist, domain, and manager's email address — which is
+ * personal data belonging to a third party. Confirmed against production on
+ * 2026-08-01 with no session at all.
+ *
+ * Callers are either the platform (the provisioning service and the pollers,
+ * which already hold PROVISIONING_SECRET) or a signed-in member of the owning
+ * org. Nothing else has a reason to read it.
  */
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+
+  const presented = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+  const secret = process.env.PROVISIONING_SECRET ?? "";
+  const isPlatformCaller = !!secret && presented === secret;
+
+  if (!isPlatformCaller) {
+    const orgResult = await requireOrg();
+    if ("error" in orgResult) return orgResult.error;
+    const access = await requireDeploymentAccess(id, orgResult.company.id);
+    // Same shape as every other deployment route: absent and not-yours are
+    // indistinguishable, so this cannot be used to test whether an id exists.
+    if ("error" in access) return access.error;
+  }
 
   const deployment = await prisma.deployment.findUnique({
     where: { id },
