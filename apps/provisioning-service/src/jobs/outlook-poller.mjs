@@ -432,7 +432,10 @@ async function listUnreadMessages(token) {
   const userEnc = encodeURIComponent(OUTLOOK_AGENT_EMAIL);
   const filter = encodeURIComponent("isRead eq false");
   const orderby = encodeURIComponent("receivedDateTime asc");
-  const select = "id,subject,body,from,toRecipients,ccRecipients,conversationId,receivedDateTime,hasAttachments,internetMessageId";
+  // internetMessageHeaders is requested for bounce detection: Graph omits it unless
+  // explicitly selected, so without it the header checks in isBounceMessage() would
+  // read undefined and never fire — coverage that looks present and is not.
+  const select = "id,subject,body,from,toRecipients,ccRecipients,conversationId,receivedDateTime,hasAttachments,internetMessageId,internetMessageHeaders";
   const url = `${GRAPH_BASE}/users/${userEnc}/mailFolders/Inbox/messages?$filter=${filter}&$orderby=${orderby}&$top=10&$select=${select}`;
 
   const res = await fetch(url, {
@@ -478,6 +481,46 @@ async function fetchAttachments(token, messageId) {
 /**
  * Mark a message as read via PATCH.
  */
+/**
+ * Is this a delivery-failure notification rather than a message from a person?
+ *
+ * Checked on three independent signals because no single one is reliable across
+ * providers: the envelope sender, the subject, and the MIME report type. Exchange
+ * uses "Undeliverable:", most others use a postmaster or MAILER-DAEMON sender, and
+ * RFC 3464 reports carry multipart/report; report-type=delivery-status.
+ *
+ * Deliberately conservative — it only has to catch machine-generated failures, and
+ * a false positive would silently drop a real person's mail.
+ */
+function isBounceMessage(msg, fromAddr) {
+  const from = String(fromAddr || "").toLowerCase();
+  // postmaster and mailer-daemon are unambiguous. no-reply@ is deliberately NOT
+  // here: it means "do not answer me", not "delivery failed", and a buyer may well
+  // forward system alerts from such an address for the agent to act on.
+  if (/^(postmaster|mailer-daemon)@/.test(from)) return true;
+
+  const subject = String(msg?.subject || "").toLowerCase();
+  if (
+    subject.startsWith("undeliverable:") ||
+    subject.startsWith("delivery status notification") ||
+    subject.startsWith("returned mail") ||
+    subject.startsWith("mail delivery failed") ||
+    subject.startsWith("delivery has failed")
+  ) {
+    return true;
+  }
+
+  const headers = msg?.internetMessageHeaders || [];
+  for (const h of headers) {
+    const name = String(h?.name || "").toLowerCase();
+    const value = String(h?.value || "").toLowerCase();
+    if (name === "content-type" && value.includes("report-type=delivery-status")) return true;
+    // Set by Exchange and others on system-generated mail; a human reply never has it.
+    if (name === "auto-submitted" && value.includes("auto-replied")) return true;
+  }
+  return false;
+}
+
 async function markAsRead(token, messageId) {
   const userEnc = encodeURIComponent(OUTLOOK_AGENT_EMAIL);
   const msgEnc = encodeURIComponent(messageId);
@@ -675,6 +718,24 @@ async function poll() {
       let attachments = [];
       if (msg.hasAttachments) {
         attachments = await fetchAttachments(token, msgId);
+      }
+
+      // Bounces are not tasks. A delivery failure handed to the agent reads as an
+      // ordinary email, so it drafts a reply to the postmaster — which is useless,
+      // burns a run, and raises an approval a human then has to dismiss. It can
+      // also loop: replying to a bounce can bounce.
+      //
+      // Observed 2026-08-02, when Gmail rejected the agent's introduction email and
+      // the resulting "Undeliverable:" notice became a pending approval addressed
+      // to a mail daemon.
+      if (isBounceMessage(msg, fromAddr)) {
+        console.log(
+          `  [bounce] From: ${fromFormatted} | Subject: ${msg.subject} — delivery failure, not forwarded`,
+        );
+        // Marked read so it is not re-examined every poll. It stays in the mailbox,
+        // where the owner can still see that a message did not get through.
+        await markAsRead(token, msgId);
+        continue;
       }
 
       console.log(`  [new] From: ${fromFormatted} | Subject: ${msg.subject}`);
