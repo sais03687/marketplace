@@ -494,10 +494,13 @@ async function fetchAttachments(token, messageId) {
  */
 function isBounceMessage(msg, fromAddr) {
   const from = String(fromAddr || "").toLowerCase();
-  // postmaster and mailer-daemon are unambiguous. no-reply@ is deliberately NOT
-  // here: it means "do not answer me", not "delivery failed", and a buyer may well
-  // forward system alerts from such an address for the agent to act on.
+  // postmaster and mailer-daemon are unambiguous. Exchange does not use either —
+  // its NDRs come from a per-tenant system mailbox like
+  // MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e@<domain>, which is the shape
+  // seen in production. no-reply@ is deliberately NOT here: it means "do not answer
+  // me", not "delivery failed", and a buyer may forward system alerts from one.
   if (/^(postmaster|mailer-daemon)@/.test(from)) return true;
+  if (/^microsoftexchange[0-9a-f]{16,}@/.test(from)) return true;
 
   const subject = String(msg?.subject || "").toLowerCase();
   if (
@@ -728,7 +731,7 @@ async function poll() {
       // Observed 2026-08-02, when Gmail rejected the agent's introduction email and
       // the resulting "Undeliverable:" notice became a pending approval addressed
       // to a mail daemon.
-      if (isBounceMessage(msg, fromAddr)) {
+      if (isBounceMessage(msg, fromEmail)) {
         console.log(
           `  [bounce] From: ${fromFormatted} | Subject: ${msg.subject} — delivery failure, not forwarded`,
         );
