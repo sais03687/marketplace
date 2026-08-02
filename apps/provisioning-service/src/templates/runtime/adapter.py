@@ -808,6 +808,109 @@ def _is_internal_recipient(to: str) -> bool:
     return not needs
 
 
+# ─── Action-level approval ───────────────────────────────────────────────────
+#
+# The policy above only ever governed outbound email, because it takes a
+# recipient. Everything else an agent can do — writing a spreadsheet, granting
+# someone access to a file — was gated (or not) by whatever the creator happened
+# to put in their own BLOCKED_ACTIONS. So a buyer on policy="always" could still
+# have a file shared with an outsider without being asked, because their setting
+# was never consulted on that path.
+#
+# These two sets are the platform's opinion about what needs a human, expressed
+# in terms of what the action *does* rather than which tool implements it.
+
+# Grant someone access to data. The recipients are email addresses, so the
+# buyer's own auto-approve / require lists apply to them exactly as they do to
+# mail — "@ourcompany.com is fine, gmail.com is not" needs no new vocabulary.
+SHARING_ACTIONS = {
+    "drive_share",
+    "drive_create_link",
+    "my_drive_share",
+    "my_drive_create_link",
+}
+
+# Change the buyer's data in place. No counterparty, so internal/external does
+# not apply — the question is only whether this buyer wants writes reviewed.
+MUTATING_ACTIONS = {
+    "excel_write",
+    "excel_append",
+    "drive_upload",
+    "calendar_delete",
+}
+
+
+def _should_require_action_approval(
+    action: str,
+    args: dict | None = None,
+    risk_assessment: dict | None = None,
+) -> tuple[bool, str]:
+    """Decide whether a non-email action needs human approval.
+
+    Returns (needs_approval, reason), matching _should_require_approval so both
+    can be logged the same way.
+
+    Unknown actions fail toward approval. A tool this function has never heard of
+    is exactly the case where guessing "probably fine" is wrong.
+    """
+    args = args or {}
+    policy_cfg = _load_policy()
+    policy = policy_cfg["policy"]
+
+    # "never" is an explicit instruction from the buyer to stop asking. Honour it
+    # uniformly rather than letting each tool invent its own exception.
+    if policy == "never":
+        return False, "policy=never"
+
+    if action in SHARING_ACTIONS:
+        # An anonymous link has no recipient to check — it is readable by anyone
+        # who ever receives the URL. There is no allowlist entry that can make
+        # that internal, so it is always external.
+        if str(args.get("scope", "")).lower() == "anonymous":
+            return True, f"{action} creates a link anyone can open"
+
+        recipients = args.get("recipients") or args.get("emails") or []
+        if isinstance(recipients, str):
+            recipients = [recipients]
+        if not recipients:
+            return True, f"{action} with no identifiable recipient (fail-safe)"
+
+        # Fail toward approval: one external recipient in a list taints the batch,
+        # because approving the batch approves that recipient too.
+        for r in recipients:
+            needs, reason = _should_require_approval(r, risk_assessment)
+            if needs:
+                return True, f"{action}: {reason}"
+        return False, f"{action}: all recipients auto-approved"
+
+    if action in MUTATING_ACTIONS:
+        if policy == "always":
+            return True, f"policy=always ({action})"
+        if policy == "risk-based":
+            # No score means we could not assess it, not that it scored zero.
+            # Treating absent data as low risk is how an allowlist that failed to
+            # load once came to mean "allow everyone" — fail toward the human.
+            raw = (risk_assessment or {}).get("combined")
+            if raw is None:
+                return True, f"policy=risk-based but {action} was not scored (fail-safe)"
+            try:
+                combined = float(raw)
+            except (TypeError, ValueError):
+                return True, f"policy=risk-based, unreadable score for {action} (fail-safe)"
+            threshold = policy_cfg["riskThreshold"]
+            if combined >= threshold:
+                return True, f"policy=risk-based, combined={combined:.1f} >= {threshold} ({action})"
+            return False, f"policy=risk-based, combined={combined:.1f} < {threshold} ({action})"
+        # external-only speaks about recipients, and these actions have none, so
+        # it has no opinion here. Default to requiring approval: creators have
+        # gated these unconditionally until now, and moving the gate into the
+        # platform must not quietly hand every existing buyer less protection
+        # than they had. "never" above is the way to opt out.
+        return True, f"policy={policy} has no rule for {action}; writes reviewed by default"
+
+    return True, f"unknown action '{action}' (fail-safe: require approval)"
+
+
 
 # ─── Return Contract Validator ────────────────────────────────────────────────
 
