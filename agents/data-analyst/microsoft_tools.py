@@ -34,6 +34,7 @@ _SP_FOLDER = os.environ.get("SHAREPOINT_FOLDER", "default")
 _WORKSPACE_SCOPE = os.environ.get("WORKSPACE_SCOPE", "platform")
 _TOKEN_ENDPOINT = os.environ.get("TOKEN_ENDPOINT_URL", "")
 _DEPLOYMENT_ID = os.environ.get("DEPLOYMENT_ID", "")
+_AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 
 # Available if either direct credentials OR token proxy is configured
 AVAILABLE = bool(
@@ -54,12 +55,15 @@ async def _get_access_token() -> str:
     if cached and cached["expires_at"] > time.time() + 60:
         return cached["token"]
 
-    # Buyer-org mode: fetch token from provisioning service
+    # Buyer-org mode: fetch token from provisioning service. AGENT_TOKEN identifies
+    # this deployment — the endpoint used to accept a bare deploymentId, which let
+    # any container request any company's token.
     if _WORKSPACE_SCOPE == "buyer_org" and _TOKEN_ENDPOINT:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
                 _TOKEN_ENDPOINT,
                 json={"deploymentId": _DEPLOYMENT_ID},
+                headers={"Authorization": f"Bearer {_AGENT_TOKEN}"} if _AGENT_TOKEN else {},
             )
             resp.raise_for_status()
             data = resp.json()

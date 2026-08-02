@@ -105,6 +105,11 @@ export interface ContainerEnv {
   // Buyer-org Microsoft: agent fetches tokens via proxy instead of direct credentials
   WORKSPACE_SCOPE?: string;           // "buyer_org" | "platform"
   TOKEN_ENDPOINT_URL?: string;        // e.g., http://host.docker.internal:3003/internal/microsoft-token
+  // Per-deployment credential the container presents when calling back into the
+  // provisioning service. Derived from the platform secret and this deployment's
+  // id, so it authenticates as exactly one deployment and cannot be replayed
+  // against another company's.
+  AGENT_TOKEN?: string;
   SHAREPOINT_FOLDER?: string;         // agent slug used as SharePoint folder name
   // Email mode: "outlook" uses Graph API via proxy, "agentmail" (default) uses AgentMail
   EMAIL_MODE?: string;

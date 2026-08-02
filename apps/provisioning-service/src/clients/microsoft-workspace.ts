@@ -301,14 +301,30 @@ export async function renewMicrosoftWebhook(subscriptionId: string): Promise<Dat
  * Create a folder on the SharePoint root site drive for agent file isolation.
  * Each agent gets its own subfolder (named by slug). Idempotent — ignores 409.
  */
-export async function createSharePointFolder(folderName: string): Promise<void> {
+export async function createSharePointFolder(
+  folderName: string,
+  tenantId: string | null,
+): Promise<void> {
+  // Must target the buyer's tenant. This used the platform Graph client, so the
+  // folder was created on AgentStore's own root site while the agent reads and
+  // writes /sites/root/drive in the buyer's — the folder was made somewhere the
+  // agent never looks, and buyers' files were never involved.
+  //
+  // The agent lazily creates the folder on first use (drive_ensure_folder), so
+  // this step is a convenience, not a dependency. It matters because onboarding
+  // tells buyers to share files *before* the agent's first task, and until then
+  // there is nowhere for them to put anything.
+  const req = (method: string, path: string, body?: unknown) =>
+    tenantId
+      ? graphRequestForTenant(tenantId, method, path, body)
+      : graphRequest(method, path, body);
   try {
-    await graphRequest("POST", "/sites/root/drive/root/children", {
+    await req("POST", "/sites/root/drive/root/children", {
       name: folderName,
       folder: {},
       "@microsoft.graph.conflictBehavior": "fail",
     });
-    console.log(`[microsoft] SharePoint folder created: ${folderName}`);
+    console.log(`[microsoft] SharePoint folder created: ${folderName} (tenant ${tenantId ?? "platform"})`);
   } catch (err: any) {
     // 409 = folder already exists, that's fine
     if (err.message?.includes("409")) return;

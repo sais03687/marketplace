@@ -16,6 +16,7 @@ export const config = {
   // subscription validation fail with 404 and no push notifications are ever delivered.
   publicUrl: process.env.PROVISIONING_PUBLIC_URL || "https://api.agentstore.it.com",
   approvalWebhookToken: process.env.APPROVAL_WEBHOOK_TOKEN || "",
+  provisioningSecret: process.env.PROVISIONING_SECRET || "",
   agentPackagePath: process.env.AGENT_PACKAGE_PATH || "../../agents/v5-agent-package",
   customStarterPath: process.env.CUSTOM_STARTER_PATH || "../../agents/langchain-starter",
   customAdapterPath: process.env.CUSTOM_ADAPTER_PATH || "",

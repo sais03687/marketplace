@@ -12,6 +12,7 @@ import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
 import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
+import { agentTokenFor } from "../utils/agent-token.js";
 
 async function log(
   deploymentId: string,
@@ -427,6 +428,7 @@ export async function provisionJob(
             // Buyer-org mode: agent fetches tokens from provisioning service
             WORKSPACE_SCOPE: "buyer_org",
             TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
+            AGENT_TOKEN: agentTokenFor(deploymentId, config.provisioningSecret),
             SHAREPOINT_FOLDER: agentSlug,
             // Outlook email via Graph API
             EMAIL_MODE: "outlook",
@@ -584,7 +586,7 @@ export async function provisionJob(
 
     // Create per-agent SharePoint folder for file storage (Excel tracker, docs, etc.)
     try {
-      await createSharePointFolder(agentSlug);
+      await createSharePointFolder(agentSlug, deployment.buyerMicrosoftTenantId ?? null);
     } catch (err: any) {
       console.warn(`[provision] SharePoint folder creation failed: ${err.message}`);
     }

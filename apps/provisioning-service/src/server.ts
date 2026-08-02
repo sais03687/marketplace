@@ -32,6 +32,7 @@ import { ConnectorClient, MicrosoftAppCredentials } from "botframework-connector
 import { prisma } from "@marketplace/db";
 import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeTenantLicensing } from "./clients/microsoft-workspace.js";
 import { config } from "./config.js";
+import { agentTokenFor, agentTokenMatches } from "./utils/agent-token.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -586,6 +587,17 @@ export function startProxyServer() {
         try {
           const { deploymentId } = JSON.parse(body) as { deploymentId?: string };
           if (!deploymentId) return send(res, 400, { error: "deploymentId required" });
+
+          // This endpoint mints a Graph token for the deployment's tenant, and until
+          // 2026-08-01 it checked nothing at all — any container reaching this host
+          // could ask for any deployment's token, across companies. Containers now
+          // present a token derived from their own id, so the credential they hold
+          // is only valid for themselves.
+          const presented = String(req.headers["authorization"] ?? "").replace(/^Bearer\s+/i, "");
+          if (!agentTokenMatches(presented, deploymentId, SECRET)) {
+            console.warn(`[microsoft-token] Rejected unauthenticated request for ${deploymentId}`);
+            return send(res, 401, { error: "Unauthorized" });
+          }
 
           const tenantId = await resolveTenantId(deploymentId);
           if (!tenantId) {
