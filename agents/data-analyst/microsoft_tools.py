@@ -79,15 +79,24 @@ class _GraphClient:
         return None
 
     async def request(self, method: str, url: str, **kw):
+        # Only Graph goes through the mediated path. This module also calls the
+        # platform's own endpoints — /internal/outlook-send, for instance — and
+        # those are not Graph: the classifier cannot recognise them, so it treated
+        # each one as an unknown mutation and demanded approval, which stalled
+        # every outbound email behind a human. The gate belongs on calls to
+        # Microsoft, not on calls back to the platform that issued the request.
+        if not url.startswith(GRAPH):
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                return await client.request(method, url, **kw)
+
         if _graph_fn is None:
             raise RuntimeError(
                 "Microsoft access is not available: the platform did not provide a "
                 "Graph transport. This agent cannot call Microsoft directly."
             )
-        path = url[len(GRAPH):] if url.startswith(GRAPH) else url
         return await _graph_fn(
             method,
-            path,
+            url[len(GRAPH):],
             json_body=kw.get("json"),
             params=kw.get("params"),
             content=kw.get("content"),

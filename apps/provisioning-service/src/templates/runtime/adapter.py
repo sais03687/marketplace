@@ -1325,10 +1325,33 @@ async def resolve_approval(approval_id: str, body: ApprovalResolution):
     resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
     resolution_path.write_text(json.dumps(resolution))
 
-    # If there's a pending interrupted graph, resume it
+    # If there's a pending interrupted graph, resume it.
+    #
+    # When there is not, say so. _pending_resumes lives in memory, so a restart —
+    # a redeploy, a crash, a re-provision — empties it while the approval itself
+    # survives in the database. This used to answer {"ok": true} regardless, so a
+    # buyer approved an action, saw it succeed, and nothing ever happened. Silence
+    # was the worst part: a rejection at least tells you where you stand.
     if approval_id in _pending_resumes:
         asyncio.create_task(_resume_and_deliver(approval_id, resolution))
-    return {"ok": True}
+        return {"ok": True, "resumed": True}
+
+    print(
+        f"[adapter] Resolution for {approval_id} recorded, but no interrupted run is "
+        f"waiting on it — the agent restarted after this approval was raised, so the "
+        f"work it would have resumed no longer exists.",
+        flush=True,
+    )
+    return {
+        "ok": True,
+        "resumed": False,
+        "reason": "no_pending_run",
+        "detail": (
+            "The decision was recorded, but the agent restarted after this request was "
+            "raised, so the paused work is gone and cannot be continued. Ask the agent "
+            "again to have it redo the task."
+        ),
+    }
 
 
 class ResolveApprovalAlt(BaseModel):
@@ -1349,10 +1372,27 @@ async def resolve_approval_alt(body: ResolveApprovalAlt):
     resolution_path = RESOLUTIONS_DIR / f"{body.approvalId}.json"
     resolution_path.write_text(json.dumps(resolution))
 
-    # If there's a pending interrupted graph, resume it
+    # Same honesty as the endpoint above — this is the one the web app actually
+    # calls, so a silent {"ok": true} here is what the buyer sees as success.
     if body.approvalId in _pending_resumes:
         asyncio.create_task(_resume_and_deliver(body.approvalId, resolution))
-    return {"ok": True}
+        return {"ok": True, "resumed": True}
+
+    print(
+        f"[adapter] Resolution for {body.approvalId} recorded, but no interrupted run "
+        f"is waiting on it — the agent restarted after this approval was raised.",
+        flush=True,
+    )
+    return {
+        "ok": True,
+        "resumed": False,
+        "reason": "no_pending_run",
+        "detail": (
+            "The decision was recorded, but the agent restarted after this request was "
+            "raised, so the paused work is gone and cannot be continued. Ask the agent "
+            "again to have it redo the task."
+        ),
+    }
 
 
 # ─── Resume & Deliver — completes interrupted graph and delivers result ──────
