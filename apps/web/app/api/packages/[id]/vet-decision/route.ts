@@ -79,8 +79,10 @@ export async function POST(
       decision: decision as "MANUALLY_APPROVED" | "FAILED" | "PASSED",
       feedback: feedback || undefined,
     });
-    // Fire-and-forget — never blocks the response
-    sendNotificationEmail({
+    // Awaited despite costing a little latency: not blocking the response means
+    // the send is cancelled with the function on Vercel, and a creator who is
+    // never told their package was rejected is worse than a slower request.
+    await sendNotificationEmail({
       inboxId: platformInboxId,
       to: version.agent.creator.email,
       subject,

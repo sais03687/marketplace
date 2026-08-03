@@ -135,7 +135,12 @@ export async function POST(
     },
   });
 
-  // Send email notification (fire-and-forget)
+  // Awaited, for the same reason the Teams card below is: this runs on Vercel,
+  // where work still in flight when the handler returns is killed with the
+  // function. Left unawaited, whether the buyer heard about an approval came
+  // down to whether the send happened to win a race against the response — it
+  // delivered sometimes and silently vanished other times. sendNotificationEmail
+  // never throws, so waiting on it cannot fail the approval itself.
   if (deployment.managerEmail) {
     const portalUrl = deployment.portalToken
       ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
@@ -146,7 +151,7 @@ export async function POST(
       draftPreview: String(draft || ""),
       portalUrl,
     });
-    sendNotificationEmail({
+    await sendNotificationEmail({
       // Sent from the agent's own mailbox so the buyer can simply reply — the
       // poller watches that mailbox, which is what makes reply-to-approve work.
       deploymentId: deployment.id,

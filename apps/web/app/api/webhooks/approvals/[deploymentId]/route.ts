@@ -104,7 +104,10 @@ export async function POST(
       draftPreview: data.draft,
       portalUrl,
     });
-    sendNotificationEmail({
+    // Awaited: on Vercel an unawaited send is killed when the handler returns,
+    // so the buyer's only warning that their agent is waiting would arrive or
+    // not depending on a race. See the same fix in the approvals route.
+    await sendNotificationEmail({
       deploymentId: deployment.id,
       agentEmail: (deployment as any).workspaceEmail,
       inboxId: deployment.agentEmailInboxId,
