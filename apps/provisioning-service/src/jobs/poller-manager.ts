@@ -8,7 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,53 @@ function resolvePollerScript(name: string = "outlook-poller.mjs"): string {
   throw new Error(
     `Cannot find ${name} (checked ${localPath} and ${srcPath})`,
   );
+}
+
+/**
+ * Every live poller process for a deployment, found by asking the OS rather than
+ * by consulting `pollers`.
+ *
+ * The in-memory map is not a reliable inventory. A poller that outlives the map
+ * entry pointing at it — see the identity check in the `exit` handler below for
+ * how that used to happen — becomes untracked, and an untracked poller cannot be
+ * stopped, only discovered. It keeps polling the mailbox forever alongside its
+ * replacement, and because each poller keeps its own in-memory set of handled
+ * message ids, both forward the same unread mail to the agent. That is what
+ * produced 18 approvals, and 18 buyer notification emails, from a handful of
+ * messages on 2026-08-03.
+ *
+ * Linux-only, by design: it reads /proc. On a developer machine there is no /proc
+ * and this returns nothing, which is correct — pollers only run on the VPS.
+ */
+function findPollerPids(deploymentId: string): number[] {
+  if (!existsSync("/proc")) return [];
+
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return [];
+  }
+
+  const found: number[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    try {
+      // cmdline first: it is the cheap check and rules out almost everything.
+      if (!readFileSync(`/proc/${entry}/cmdline`, "utf8").includes("outlook-poller.mjs")) {
+        continue;
+      }
+      // Exact match on the whole NUL-delimited entry, so deployment id "abc"
+      // cannot match a poller for "abcdef".
+      const environ = readFileSync(`/proc/${entry}/environ`, "utf8").split("\0");
+      if (environ.includes(`DEPLOYMENT_ID=${deploymentId}`)) found.push(pid);
+    } catch {
+      // Process exited between readdir and read, or isn't ours to inspect.
+    }
+  }
+  return found;
 }
 
 export interface PollerOpts {
@@ -89,7 +136,14 @@ export function startPoller(opts: PollerOpts): ChildProcess {
   child.stderr?.on("data", (d: Buffer) => process.stderr.write(`[${label}] ${d}`));
   child.on("exit", (code) => {
     console.log(`[${label}] Exited (code ${code})`);
-    pollers.delete(opts.deploymentId);
+    // Only clear the slot if it still points at *this* child. A SIGTERMed poller
+    // can take long enough to die that its replacement is already spawned and
+    // registered by the time this fires; deleting by key alone then evicted the
+    // healthy replacement from the map, leaving it running but untracked — and so
+    // never stopped by the next startPoller, which happily spawned a third.
+    if (pollers.get(opts.deploymentId) === child) {
+      pollers.delete(opts.deploymentId);
+    }
   });
 
   pollers.set(opts.deploymentId, child);
@@ -97,13 +151,37 @@ export function startPoller(opts: PollerOpts): ChildProcess {
   return child;
 }
 
-/** Kill the poller for a deployment. No-op if none is registered. */
+/**
+ * Kill every poller for a deployment — the registered one and any stray.
+ *
+ * This must leave nothing polling the mailbox by the time it returns, because
+ * startPoller spawns immediately afterwards and two live pollers means every
+ * email is delivered to the agent twice. So the tracked child is asked to stop,
+ * and then anything still alive for this deployment is killed outright.
+ *
+ * SIGKILL is safe here: the poller installs no signal handlers and holds no
+ * unflushed state — its "have I handled this message" record is the isRead flag
+ * in the mailbox, which Graph already has.
+ */
 export function stopPoller(deploymentId: string): void {
+  const short = deploymentId.slice(0, 8);
   const child = pollers.get(deploymentId);
-  if (!child) return;
-  child.kill("SIGTERM");
-  pollers.delete(deploymentId);
-  console.log(`[poller-manager] Stopped poller for ${deploymentId.slice(0, 8)}`);
+  if (child) {
+    child.kill("SIGTERM");
+    pollers.delete(deploymentId);
+    console.log(`[poller-manager] Stopped poller for ${short}`);
+  }
+
+  // Includes the child just signalled, which will not have exited yet. Killing it
+  // again is the point: it guarantees the mailbox is unattended before we respawn.
+  for (const pid of findPollerPids(deploymentId)) {
+    try {
+      process.kill(pid, "SIGKILL");
+      console.log(`[poller-manager] Killed stray poller pid ${pid} for ${short}`);
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 export function getPollerCount(): number {
