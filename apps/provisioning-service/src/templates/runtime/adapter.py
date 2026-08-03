@@ -80,7 +80,26 @@ AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "")
 COMPANY_DOMAIN = os.environ.get("COMPANY_DOMAIN", "")
+# Boot-time value only. The buyer can change the manager address in Settings at
+# any point, and this container's environment is fixed at creation — so treat this
+# as a starting guess and prefer _manager_email(), which tracks the platform.
 MANAGER_EMAIL = os.environ.get("MANAGER_EMAIL", "") or os.environ.get("WEEKLY_DIGEST_EMAIL", "")
+
+# Refreshed from the platform by _load_allowlist(), whose response already carries
+# the current manager address. Kept as a plain module value rather than an async
+# lookup so that synchronous callers — the approval policy in particular — can
+# read it without the whole call chain becoming async.
+_manager_email_live: str = MANAGER_EMAIL
+
+
+def _manager_email() -> str:
+    """The buyer's manager address as it stands now.
+
+    Falls back to the environment when the platform has not been reached yet, so
+    a container that starts while the marketplace is unreachable still behaves as
+    it did before rather than losing its manager entirely.
+    """
+    return (_manager_email_live or MANAGER_EMAIL or "").strip()
 ANTHROPIC_API_KEY = _secrets["ANTHROPIC_API_KEY"]
 MODEL = os.environ.get("MODEL", "sonnet")
 APPROVAL_WEBHOOK = _secrets["MARKETPLACE_APPROVAL_WEBHOOK"] or "http://localhost:3002"
@@ -300,7 +319,6 @@ _EMAIL_PLACEHOLDERS = {
     "{{AGENT_EMAIL}}": AGENT_EMAIL,
     "{{COMPANY_NAME}}": COMPANY_NAME,
     "{{COMPANY_DOMAIN}}": COMPANY_DOMAIN,
-    "{{MANAGER_EMAIL}}": MANAGER_EMAIL,
 }
 
 
@@ -311,6 +329,10 @@ def scrub_placeholders(text: str) -> str:
     for key, value in _EMAIL_PLACEHOLDERS.items():
         if key in text:
             text = text.replace(key, value)
+    # Resolved per call rather than from the table above, because the manager
+    # address can change while the container runs.
+    if "{{MANAGER_EMAIL}}" in text:
+        text = text.replace("{{MANAGER_EMAIL}}", _manager_email())
     return text
 
 
@@ -803,7 +825,8 @@ def _should_require_approval(
 
     # Default: "external-only" (prior hardcoded behavior)
     # Manager and company domain auto-approve; everyone else requires approval.
-    if MANAGER_EMAIL and email == MANAGER_EMAIL.strip().lower():
+    _manager = _manager_email().lower()
+    if _manager and email == _manager:
         return False, f"policy=external-only, recipient is manager ({email})"
     if COMPANY_DOMAIN and email.endswith("@" + COMPANY_DOMAIN.strip().lower()):
         return False, f"policy=external-only, recipient on company domain ({email})"
@@ -1051,6 +1074,20 @@ async def _load_allowlist() -> dict | None:
             data = data.get("data", data) if isinstance(data, dict) else data
         _allowlist_cache["data"] = data
         _allowlist_cache["at"] = now
+        # This response is also the container's only live view of the manager
+        # address, so take it while we have it. Editing Manager Email in Settings
+        # used to update the database and the dashboard while the running agent
+        # kept mailing whoever it was provisioned with, silently and forever.
+        if isinstance(data, dict):
+            fresh = str(data.get("managerEmail") or "").strip()
+            global _manager_email_live
+            if fresh and fresh != _manager_email_live:
+                print(
+                    f"[adapter] Manager email is now {fresh} "
+                    f"(was {_manager_email_live or 'unset'})",
+                    flush=True,
+                )
+                _manager_email_live = fresh
         return data
     except Exception as err:
         # Stale-on-error, like the poller: a transient failure must not blind the
@@ -1832,10 +1869,11 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
             print(f"[adapter] Post-resume email delivery failed: {e}", flush=True)
     else:
         # Agent returned action=none after approval — notify the manager
-        if MANAGER_EMAIL:
+        manager_to = _manager_email()
+        if manager_to:
             try:
                 await send_email(
-                    to=MANAGER_EMAIL,
+                    to=manager_to,
                     subject=f"[{AGENT_NAME}] Approved action completed",
                     text=reply_text,
                 )
@@ -2299,6 +2337,13 @@ async def receive_teams_message(request: Request):
 async def _handle_message(message: str, context: dict):
     """Process a message through the LangGraph agent and act on the result."""
     print(f"[adapter] _handle_message called with session_key={context.get('session_key', '')}", flush=True)
+    # Pick up any Settings change before the approval policy consults the manager
+    # address. Cached for 60s, so this is free on all but the first message in a
+    # burst, and it is the one point every inbound message passes through.
+    try:
+        await _load_allowlist()
+    except Exception:
+        pass  # _load_allowlist already falls back to cache or env
     try:
         # Fix 6: check LLM call budget
         if not _check_and_increment("llm_calls"):
