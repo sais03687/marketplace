@@ -817,6 +817,77 @@ def _is_internal_recipient(to: str) -> bool:
     return not needs
 
 
+async def _clear_email_for_sending(
+    *,
+    draft: str,
+    recipient: str,
+    task_type: str,
+    thread_id: str | None,
+    subject: str,
+    reasoning: str,
+    risk: dict | None,
+    pre_approved: bool,
+) -> tuple[bool, str]:
+    """Apply the buyer's approval policy to one outbound email.
+
+    Returns (may_send, text) — text is the buyer's edit when they amended the
+    draft, otherwise the draft unchanged. A False means the mail must not go out,
+    for any reason: rejected, expired, or a failure to queue at all.
+
+    This exists because the fallback reply path had only a boolean sense of
+    "internal recipient", which collapses two different questions into one. Under
+    policy="always" _is_internal_recipient returns False for *everyone*, since
+    nobody is exempt — so that path sent nothing and queued nothing, and a reply
+    the agent had already written was dropped without a trace. The manager who
+    asked the question got silence, and no approval ever appeared for them to act
+    on. Deciding with _should_require_approval keeps every policy meaningful.
+    """
+    if pre_approved:
+        return True, draft
+
+    needs_approval, reason = _should_require_approval(recipient, risk)
+    if not needs_approval:
+        print(f"[adapter] Auto-approving ({reason})", flush=True)
+        return True, draft
+
+    print(f"[adapter] Requiring approval ({reason})", flush=True)
+    risk = risk or {}
+    try:
+        stakes = float(risk.get("stakes") or 5.0)
+        ambiguity = float(risk.get("ambiguity") or 5.0)
+        reversibility = float(risk.get("reversibility") or 5.0)
+    except (TypeError, ValueError):
+        # Unscored means unknown, and unknown is treated as risky.
+        stakes = ambiguity = reversibility = 5.0
+
+    try:
+        queued_id = await queue_for_approval(
+            task_type=task_type,
+            channel="email",
+            draft=draft,
+            reasoning=reasoning,
+            stakes=stakes,
+            ambiguity=ambiguity,
+            reversibility=reversibility,
+            thread_id=thread_id,
+            original_request=subject,
+        )
+    except Exception as e:
+        # Failing closed: an email nobody approved is worse than a late reply.
+        print(f"[adapter] Failed to queue approval: {e}", flush=True)
+        return False, draft
+
+    print(f"[adapter] Queued approval {queued_id}; waiting for resolution", flush=True)
+    resolution = await wait_for_resolution(queued_id)
+    status = resolution.get("status")
+    if status not in ("APPROVED", "EDITED"):
+        print(f"[adapter] Approval {queued_id} {status} — not sending", flush=True)
+        return False, draft
+    if status == "EDITED" and resolution.get("resolutionAction"):
+        return True, resolution["resolutionAction"]
+    return True, draft
+
+
 # ─── Action-level approval ───────────────────────────────────────────────────
 #
 # The policy above only ever governed outbound email, because it takes a
@@ -1284,7 +1355,7 @@ def _validate_result(result: dict) -> None:
     action = result.get("action")
 
     if action not in _VALID_ACTIONS:
-        logging.warning(
+        _logging.warning(
             "[adapter] run_agent returned unknown action %r — coercing to 'none'. "
             "Valid actions: %s",
             action,
@@ -1295,26 +1366,26 @@ def _validate_result(result: dict) -> None:
 
     if action == "send_email":
         if not result.get("to"):
-            logging.warning(
+            _logging.warning(
                 "[adapter] action='send_email' but 'to' is missing or empty — "
                 "email send will fail. Set result['to'] to the recipient address."
             )
         if not result.get("text"):
-            logging.warning(
+            _logging.warning(
                 "[adapter] action='send_email' but 'text' is missing or empty — "
                 "email will be sent with a blank body."
             )
 
     if action == "reply_email":
         if not result.get("text"):
-            logging.warning(
+            _logging.warning(
                 "[adapter] action='reply_email' but 'text' is missing or empty — "
                 "reply will be sent with a blank body."
             )
 
     if action == "resolve_approval":
         if not result.get("approval_id"):
-            logging.warning(
+            _logging.warning(
                 "[adapter] action='resolve_approval' but 'approval_id' is missing — "
                 "resolution will fail. Make sure run_agent returns the approval_id "
                 "received from the approval system."
@@ -1328,13 +1399,13 @@ def _validate_result(result: dict) -> None:
                 try:
                     fval = float(val)
                     if not (1.0 <= fval <= 10.0):
-                        logging.warning(
+                        _logging.warning(
                             "[adapter] risk_assessment.%s=%r is outside [1, 10] — "
                             "will be clamped by downstream logic.",
                             key, val,
                         )
                 except (TypeError, ValueError):
-                    logging.warning(
+                    _logging.warning(
                         "[adapter] risk_assessment.%s=%r is not numeric — ignoring.",
                         key, val,
                     )
@@ -2502,18 +2573,30 @@ async def _handle_message(message: str, context: dict):
                 print(f"[adapter] Retry returned action={retry_action}", flush=True)
                 if retry_action in ("send_email", "reply_email") and retry_result.get("text"):
                     recipient = retry_result.get("to") or context.get("sender", "")
-                    is_internal = _is_internal_recipient(recipient)
-                    if pre_approved or is_internal:
-                        if _check_and_increment("emails"):
-                            await reply_email(
-                                message_id=retry_result.get("message_id") or context.get("message_id", ""),
-                                text=retry_result["text"],
-                                fallback_to=_extract_email(recipient),
-                                fallback_subject=context.get("subject", ""),
-                                fallback_thread_id=retry_result.get("thread_id") or context.get("thread_id"),
-                            )
-                            print(f"[adapter] Sent retry reply to {_extract_email(recipient)}", flush=True)
-                            return
+                    retry_thread = retry_result.get("thread_id") or context.get("thread_id")
+                    may_send, send_text = await _clear_email_for_sending(
+                        draft=retry_result["text"],
+                        recipient=recipient,
+                        task_type=retry_result.get("task_type", retry_action),
+                        thread_id=retry_thread,
+                        subject=context.get("subject", ""),
+                        reasoning=retry_result.get("reasoning", "Reply composed on fallback retry"),
+                        risk=retry_result.get("risk_assessment"),
+                        pre_approved=pre_approved,
+                    )
+                    if may_send and _check_and_increment("emails"):
+                        await reply_email(
+                            message_id=retry_result.get("message_id") or context.get("message_id", ""),
+                            text=send_text,
+                            fallback_to=_extract_email(recipient),
+                            fallback_subject=context.get("subject", ""),
+                            fallback_thread_id=retry_thread,
+                        )
+                        print(f"[adapter] Sent retry reply to {_extract_email(recipient)}", flush=True)
+                    # Return either way. The agent wrote a real reply, so the
+                    # generic "wasn't sure how to respond" acknowledgement below
+                    # would contradict it — and would go out unapproved.
+                    return
                 # Last-resort acknowledgement for internal recipients only
                 incoming_sender = context.get("sender", "")
                 if _is_internal_recipient(incoming_sender) and _check_and_increment("emails"):

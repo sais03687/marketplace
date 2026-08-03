@@ -10,7 +10,7 @@ import {
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
-import { createMicrosoftUser, setupMicrosoftInboxWebhook, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor } from "../utils/agent-token.js";
 
@@ -584,11 +584,20 @@ export async function provisionJob(
     );
   }
 
-  // 4b. Set up Microsoft Graph inbox webhook + SharePoint folder (Microsoft path only)
+  // 4b. SharePoint folder (Microsoft path only)
+  //
+  // No Graph inbox subscription is created here any more. Nothing consumed the
+  // notifications: /webhooks/microsoft dropped them, because a change
+  // notification carries no message body and so could not deliver mail. Worse,
+  // this ran on every provision and only ever recorded the newest subscription
+  // id, so re-provisioning a deployment left the previous subscription live and
+  // untracked for its full ~3 day lifetime. Each surviving subscription fired on
+  // every incoming email, and each firing cost the buyer a duplicate approval.
+  //
+  // Mail arrives via the Outlook poller — see startPoller below.
   if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
-    const webhookUrl = `${config.publicUrl}/webhooks/microsoft`;
-    console.log(`[provision] Registering Microsoft Graph webhook at: ${webhookUrl}`);
-    // Wait for M365 user to propagate across Microsoft's directory before subscribing
+    // Wait for the M365 user to propagate across Microsoft's directory before
+    // touching resources that hang off it.
     await new Promise((r) => setTimeout(r, 20_000));
 
     // Create per-agent SharePoint folder for file storage (Excel tracker, docs, etc.)
@@ -596,24 +605,6 @@ export async function provisionJob(
       await createSharePointFolder(agentSlug, deployment.buyerMicrosoftTenantId ?? null);
     } catch (err: any) {
       console.warn(`[provision] SharePoint folder creation failed: ${err.message}`);
-    }
-
-    try {
-      const sub = await withRetry(
-        () => setupMicrosoftInboxWebhook(
-          workspaceUserId!,
-          deploymentId,
-          webhookUrl,
-        ),
-        { step: "setup_microsoft_webhook", deploymentId },
-      );
-      await prisma.deployment.update({
-        where: { id: deploymentId },
-        data: { msGraphSubId: sub.subscriptionId },
-      });
-      console.log(`[provision] Microsoft Graph webhook registered: ${sub.subscriptionId}`);
-    } catch (err: any) {
-      console.warn(`[provision] Microsoft Graph webhook setup failed: ${err.message}`);
     }
   }
 

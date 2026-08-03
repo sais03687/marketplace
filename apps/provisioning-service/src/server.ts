@@ -543,39 +543,28 @@ export function startProxyServer() {
         }
       }
     }
-    // POST: incoming change notification (new email arrived at workspace address)
+    // POST: incoming change notification (new email arrived at workspace address).
+    //
+    // Acknowledged and dropped. This used to forward the notification straight to
+    // the container's /hooks/agentmail, but a Graph change notification carries no
+    // message — only a resource id. The adapter reads payload["message"], found
+    // nothing, and handed the agent an email with no sender, subject or body. The
+    // agent reacted the only way it could: it listed its own inbox, rediscovered
+    // the message the poller had already delivered properly, and answered it a
+    // second time — raising a second approval and a second notification email to
+    // the buyer for one incoming message.
+    //
+    // That multiplied, because provisioning created a fresh subscription on every
+    // run while only tracking the newest id, so re-provisioned deployments
+    // accumulated live subscriptions. Six of them existed for one mailbox on
+    // 2026-08-03, and a single email produced six approvals.
+    //
+    // Mail is delivered by the Outlook poller, which is the path that carries the
+    // actual message and applies the sender allowlist, bounce filtering and
+    // attachment handling. A second delivery path could only ever duplicate it.
     if (req.method === "POST" && req.url?.startsWith("/webhooks/microsoft")) {
-      let body = "";
-      req.on("data", (chunk) => { body += chunk; });
-      req.on("end", async () => {
-        try {
-          const payload = JSON.parse(body) as {
-            value?: Array<{ clientState?: string; resourceData?: unknown }>;
-          };
-          const notifications = payload.value ?? [];
-          for (const notification of notifications) {
-            const deploymentId = notification.clientState;
-            if (!deploymentId) continue;
-            const deployment = await prisma.deployment.findUnique({
-              where: { id: deploymentId },
-              select: { containerName: true },
-            });
-            if (!deployment?.containerName) continue;
-            const containerUrl = deployment.containerName.startsWith("http")
-              ? deployment.containerName
-              : `http://localhost:${deployment.containerName}`;
-            // Forward to agent container's agentmail hook (same pipeline as Agentmail)
-            fetch(`${containerUrl}/hooks/agentmail`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ source: "microsoft", notification }),
-            }).catch(() => {});
-          }
-          send(res, 202, { accepted: true });
-        } catch {
-          send(res, 202, { accepted: true }); // always 202 to Graph
-        }
-      });
+      req.on("data", () => {});
+      req.on("end", () => send(res, 202, { accepted: true }));
       return;
     }
 
