@@ -45,6 +45,18 @@ Reached with `mcp_call`, server `python-sandbox`:
 
 - `execute_python` — pandas, matplotlib, numpy, seaborn, openpyxl. 30s timeout.
   `MPLBACKEND=Agg` is already set. Print results to stdout.
+
+**To produce a file, write it to `/tmp/output/`.** That directory is the only way
+anything leaves the sandbox: files written there come back to the platform and are
+attached to your reply automatically. Do not base64 a file yourself and do not try
+to return its bytes — save it to `/tmp/output/` and simply say in your reply that
+it is attached.
+
+```python
+import matplotlib.pyplot as plt
+plt.bar(months, revenue)
+plt.savefig("/tmp/output/revenue.png")   # this is what gets delivered
+```
 - `parse_pdf` — text and tables from a PDF (base64-encoded content)
 - `parse_docx` — text from a Word document (base64-encoded content)
 - `parse_xlsx` — sheet data from Excel as JSON (base64-encoded content)
