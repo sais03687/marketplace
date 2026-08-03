@@ -436,8 +436,100 @@ def render_markdown_email(text: str) -> str:
     return _EMAIL_HTML_WRAPPER.format(body=f"<div>{escaped}</div>")
 
 
-async def send_email(to: str, subject: str, text: str, thread_id: str | None = None, attachments: list | None = None) -> dict:
-    """Send an email through the Outlook Graph proxy."""
+def _graph_mail_recipients(body: dict) -> list[str]:
+    """Every address a Graph mail request would deliver to.
+
+    Covers both shapes Microsoft uses: sendMail nests the recipients under
+    "message", while forward puts them at the top level. To/cc/bcc are all
+    collected — a bcc reaches a person exactly as surely as a to.
+    """
+    found: list[str] = []
+    for container in (body, body.get("message") if isinstance(body.get("message"), dict) else {}):
+        if not isinstance(container, dict):
+            continue
+        for field in ("toRecipients", "ccRecipients", "bccRecipients"):
+            for entry in container.get(field) or []:
+                if isinstance(entry, dict):
+                    addr = (entry.get("emailAddress") or {}).get("address")
+                    if addr:
+                        found.append(str(addr))
+                elif isinstance(entry, str):
+                    found.append(entry)
+    return found
+
+
+async def _refuse_external_mail_recipients(action: str, body: dict) -> None:
+    """Raise unless every recipient of agent-initiated Graph mail is inside."""
+    recipients = _graph_mail_recipients(body if isinstance(body, dict) else {})
+    if not recipients:
+        # Nothing to check. A sendMail with no recipient fails at Microsoft
+        # anyway, and refusing here would only mask that with a worse message.
+        return
+
+    allow = await _load_allowlist()
+    if allow is None:
+        raise ActionRefused(
+            f"{action} was refused: the recipient rules could not be read just now. "
+            f"Try again shortly."
+        )
+
+    outside = [r for r in recipients if not _share_recipient_allowed(r, allow)]
+    if outside:
+        raise ActionRefused(
+            f"{action} was refused: {', '.join(outside)} "
+            f"{'is' if len(outside) == 1 else 'are'} outside this organisation. This "
+            f"agent can only start conversations with people on the company domain "
+            f"or on the buyer's allowlist. Replying to someone who emailed first is "
+            f"always allowed."
+        )
+
+
+async def _refuse_external_email(to: str) -> None:
+    """Raise unless an agent-initiated email stays inside the organisation.
+
+    Fails closed if the allowlist cannot be read, matching sharing: a transient
+    outage is not a reason to start mailing strangers.
+    """
+    address = _extract_email(to)
+    if not address:
+        raise ActionRefused(
+            "send_email was refused: no recipient address could be identified."
+        )
+
+    allow = await _load_allowlist()
+    if allow is None:
+        raise ActionRefused(
+            "send_email was refused: the recipient rules could not be read just now. "
+            "Try again shortly."
+        )
+
+    if not _share_recipient_allowed(address, allow):
+        raise ActionRefused(
+            f"send_email was refused: {address} is outside this organisation. This "
+            f"agent can only start conversations with people on the company domain "
+            f"or on the buyer's allowlist. You can still reply to anyone who emails "
+            f"you first."
+        )
+
+
+async def send_email(to: str, subject: str, text: str, thread_id: str | None = None, attachments: list | None = None, *, is_reply: bool = False) -> dict:
+    """Send an email through the Outlook Graph proxy.
+
+    Agent-initiated mail goes to the organisation only — the buyer's domain, their
+    manager, or an address they put on the allowlist. This is the same boundary
+    sharing uses, for the same reason: the buyer decides who their agent talks to,
+    and that decision belongs on this side of the trust line.
+
+    reply_email is deliberately not restricted this way. Answering someone who
+    wrote to you first is not reaching outside the organisation, and the poller's
+    allowlist already governs who is able to start a conversation. Restricting it
+    here would only produce silence for a person the platform had already let in.
+    """
+    # is_reply marks the reply_email fallback below, which is answering someone
+    # who wrote in first — the one case this restriction should not catch.
+    if not is_reply:
+        await _refuse_external_email(to)
+
     clean_text = scrub_placeholders(text)
     clean_subject = scrub_placeholders(subject)
 
@@ -510,6 +602,7 @@ async def reply_email(
         if not subj.lower().startswith("re:"):
             subj = f"Re: {subj}"
         return await send_email(
+            is_reply=True,
             to=fallback_to,
             subject=subj,
             text=clean_text,
@@ -1005,6 +1098,11 @@ SHARING_ACTIONS = {
     "my_drive_create_link",
 }
 
+# Mail the agent starts, as opposed to mail it sends in answer. Forwarding counts:
+# it puts a message in front of someone who was not in the conversation, which is
+# the thing the organisation boundary is about. email_reply is deliberately absent.
+MAIL_INITIATING_ACTIONS = {"email_send", "email_forward"}
+
 # Change the buyer's data in place. No counterparty, so internal/external does
 # not apply — the question is only whether this buyer wants writes reviewed.
 MUTATING_ACTIONS = {
@@ -1377,6 +1475,20 @@ def _classify_graph_call(method: str, path: str) -> str | None:
     if m in ("POST", "PATCH", "PUT") and "/permissions" in p:
         return "drive_share"
 
+    # Outbound mail. Classified so the organisation boundary can be applied to
+    # recipients; previously these fell through to the generic mutation rule,
+    # which gates them on a human but says nothing about who they reach.
+    #
+    # Replies and reply-alls are named separately because they are not the same
+    # act: they answer a message that already arrived, and the sender allowlist
+    # decides what is allowed to arrive.
+    if m == "POST" and ("/sendmail" in p or "/send" in p and "/messages/" in p):
+        return "email_send"
+    if m == "POST" and ("/replyall" in p or "/reply" in p):
+        return "email_reply"
+    if m == "POST" and "/forward" in p:
+        return "email_forward"
+
     # Writes.
     if "/workbook/" in p and m in ("POST", "PATCH", "PUT"):
         return "excel_append" if "/rows" in p or "/add" in p else "excel_write"
@@ -1489,6 +1601,13 @@ async def graph_request(
         # that a refused share never becomes a request somebody could say yes to.
         if action in SHARING_ACTIONS:
             await _refuse_external_sharing(action, args)
+
+        # The same boundary for mail the agent starts. Enforced here rather than in
+        # send_email because creator code reaches Graph by more than one road — the
+        # data-analyst package sends through its own email_send tool, which never
+        # touches that function. What every road has in common is this one.
+        if action in MAIL_INITIATING_ACTIONS:
+            await _refuse_external_mail_recipients(action, json_body or {})
 
         if _human_approved_action.get() == action:
             # Consumed once. A resume is free to perform further actions, and each
