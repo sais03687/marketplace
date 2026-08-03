@@ -65,6 +65,42 @@ export async function spawnMcpSidecars(
     const port = INTEGRATION_PORTS[integration] || 8080;
     const limits = SIDECAR_LIMITS[integration] || DEFAULT_LIMITS;
 
+    // Reconcile whatever is already there before creating.
+    //
+    // Container names are fixed per deployment, so a re-provision always collides
+    // with the previous run. Docker answered 409, and the catch below then removed
+    // the *existing, working* sidecar without recreating it — so re-provisioning an
+    // agent destroyed the capability it was re-provisioning. That is how this
+    // deployment lost its python-sandbox: started once, and taken away by the
+    // second provision that was supposed to restore it.
+    let adopted = false;
+    try {
+      const existing = docker.getContainer(containerName);
+      const info = await existing.inspect();
+      const onRightNetwork = Boolean(
+        info.NetworkSettings?.Networks && networkName in info.NetworkSettings.Networks,
+      );
+      if (info.State?.Running && onRightNetwork) {
+        console.log(`[mcp-sidecar] Reusing running ${containerName} on ${networkName}`);
+        results.set(integration, {
+          type: integration,
+          containerName,
+          internalUrl: `http://${containerName}:${port}`,
+        });
+        adopted = true;
+      } else {
+        console.log(
+          `[mcp-sidecar] Replacing ${containerName} ` +
+            `(running=${Boolean(info.State?.Running)}, onNetwork=${onRightNetwork})`,
+        );
+        await existing.remove({ force: true });
+      }
+    } catch {
+      // No container by that name — the ordinary first-provision case.
+    }
+    if (adopted) continue;
+
+    let created = false;
     try {
       const container = await docker.createContainer({
         Image: image,
@@ -86,6 +122,7 @@ export async function spawnMcpSidecars(
         },
       });
 
+      created = true;
       await container.start();
 
       // Wait briefly for the sidecar to start
@@ -108,13 +145,16 @@ export async function spawnMcpSidecars(
       results.set(integration, info);
     } catch (err: any) {
       console.error(`[mcp-sidecar] Failed to spawn ${containerName}: ${err.message}`);
-      // Try to clean up on failure
-      try {
-        const existing = docker.getContainer(containerName);
-        await existing.stop({ t: 5 }).catch(() => {});
-        await existing.remove({ force: true }).catch(() => {});
-      } catch {
-        // ignore
+      // Only tidy up what this attempt made. Removing by name regardless is what
+      // turned a name collision into the loss of a working sidecar.
+      if (created) {
+        try {
+          const partial = docker.getContainer(containerName);
+          await partial.stop({ t: 5 }).catch(() => {});
+          await partial.remove({ force: true }).catch(() => {});
+        } catch {
+          // ignore
+        }
       }
     }
   }

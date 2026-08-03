@@ -502,6 +502,22 @@ export async function provisionJob(
         (containerEnv as any)[envKey] = info.internalUrl;
         console.log(`[provision] MCP env: ${envKey}=${info.internalUrl}`);
       }
+
+      // A required integration that did not start is a failed provision, not a
+      // warning. The field is named requiredIntegrations: the creator is saying
+      // the agent does not work without it. Treated as best-effort, the agent
+      // came up missing the capability its own listing sells — data-analyst
+      // advertises "Runs Python (pandas, matplotlib, numpy) for real analysis"
+      // and spent weeks unable to run any, with a single console.error as the
+      // only trace. Better to fail here, where the retry and the provisioning
+      // log both exist, than to hand the buyer a quietly diminished agent.
+      const missing = requiredIntegrations.filter((i) => !mcpSidecars.has(i));
+      if (missing.length > 0) {
+        throw new Error(
+          `Required integration(s) failed to start: ${missing.join(", ")}. ` +
+            `The agent depends on them and would run without the capability.`,
+        );
+      }
     }
 
     const { spawnCustomAgent } = await import("./custom-runner.js");
