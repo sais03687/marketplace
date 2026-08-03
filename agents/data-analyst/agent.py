@@ -367,7 +367,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
         f"- Step {i+1}: {a}" for i, a in enumerate(state.actions_taken)
     )
     results_str = "None yet" if not state.action_results else "\n".join(
-        f"- Result {i+1}: {r[:500]}" for i, r in enumerate(state.action_results)
+        f"- Result {i+1}: {_fmt_result(r)}" for i, r in enumerate(state.action_results)
     )
 
     prompt = REASONING_PROMPT.format(
@@ -540,7 +540,22 @@ async def execute_action(state: AgentState) -> AgentState:
 
         elif action_type in ("sharepoint_read", "drive_list") and _mt:
             files = await _mt.drive_list(params.get("subfolder", ""))
-            result_text = json.dumps([{"name": f.get("name"), "id": f.get("id"), "size": f.get("size")} for f in files[:20]], default=str)
+            # total_files is stated separately and first, so a question like "how
+            # many files are there" is answered from a number rather than from
+            # however much of the list survives formatting. The agent previously
+            # reported six for a folder of ten, having counted the entries it could
+            # see in a truncated payload.
+            result_text = json.dumps(
+                {
+                    "total_files": len(files),
+                    "showing": min(len(files), 20),
+                    "files": [
+                        {"name": f.get("name"), "id": f.get("id"), "size": f.get("size")}
+                        for f in files[:20]
+                    ],
+                },
+                default=str,
+            )
             state.actions_taken.append(f"SharePoint list: {params.get('subfolder', 'root')}")
 
         elif action_type == "drive_search" and _mt:
@@ -892,6 +907,39 @@ _compiled_graph = build_graph().compile(checkpointer=_checkpointer)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
+
+# ─── Tool result formatting ──────────────────────────────────────────────────
+
+# How much of a tool result the model is shown. Results accumulate across
+# iterations, so this is a real budget rather than an arbitrary number: a handful
+# of steps at this size stays well within the context window.
+RESULT_CHAR_LIMIT = 4000
+
+
+def _fmt_result(result: str) -> str:
+    """Render a tool result for the prompt, saying so when it has been cut.
+
+    The cut used to be a bare r[:500] with nothing to mark it. Data arrived
+    chopped mid-token and the model had no way to know, so it answered from the
+    fragment as though it were the whole: asked how many files were in a folder
+    of ten, it read a payload truncated after six and replied "there are 6
+    files", with no hedge. Wrong, confident, and invisible.
+
+    Truncating is still necessary. Being silent about it is not.
+    """
+    text = result if isinstance(result, str) else str(result)
+    if len(text) <= RESULT_CHAR_LIMIT:
+        return text
+    shown = text[:RESULT_CHAR_LIMIT]
+    notice = (
+        f"[TRUNCATED — you are seeing the first {RESULT_CHAR_LIMIT} of {len(text)} "
+        f"characters. This data is INCOMPLETE. Do not state totals, counts or "
+        f"conclusions drawn from it as if they were complete; either narrow the "
+        f"request (a specific file, sheet or range) or tell the user the result "
+        f"was too large to read in full.]"
+    )
+    return shown + "\n" + notice
+
 
 async def run_agent(
     content: str,
