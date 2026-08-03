@@ -233,7 +233,7 @@ Produce a JSON response (no markdown fences):
   "plan": "Overall plan for this task (update if needed)",
   "completed": <true if the task is fully done and the final response is ready>,
   "action": {{
-    "type": "send_email | reply_email | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_list | drive_upload | excel_list_sheets | excel_read | excel_write | excel_append | calendar_create | request_decision | none",
+    "type": "send_email | reply_email | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_list | drive_upload | drive_share | drive_create_link | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_create | request_decision | none",
     "params": {{
       // For send_email/reply_email:
       "to": "recipient email",
@@ -291,6 +291,10 @@ Produce a JSON response (no markdown fences):
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
 | drive_read_text | Read content of plain text files (.txt, .csv, .md, .json). Do NOT use for .xlsx files. | item_id |
 | drive_upload | Upload a file to your SharePoint folder. | filename, content_base64, content_type |
+| drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
+| drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
+| my_drive_share | Same as drive_share, but for a file in your own OneDrive. | item_id, recipients (list of emails), role, message (optional) |
+| my_drive_create_link | Same as drive_create_link, but for your own OneDrive. Defaults to anonymous, so pass scope="organization" unless a public link was actually asked for. | item_id, link_type, scope |
 | excel_list_sheets | List worksheet names in an .xlsx file. ALWAYS call this before excel_read — never guess sheet names. | item_id |
 | excel_read | Read data from a specific sheet+range in an .xlsx file. Returns a 2D array of values. | item_id, sheet, range (default A1:D50) |
 | excel_write | Overwrite a cell range in an .xlsx file. Range must match data dimensions (e.g. A5:D5 for 1 row × 4 cols). | item_id, sheet, range, values |
@@ -328,6 +332,7 @@ Produce a JSON response (no markdown fences):
 - If you cannot find data on SharePoint after trying BOTH drive_list AND drive_search, say so in your reply and ask the manager where to find it.
 - request_decision BLOCKS until the manager responds — only use it when you genuinely need their input
 - When the user explicitly asks you to perform an action (write, upload, append, delete), DO IT DIRECTLY. Do not email the user back to ask for the file, do not use request_decision to clarify, and do not take detours. Execute the requested action using the tools available to you. If the action is blocked, the approval system will handle it automatically.
+- "type" MUST be one of the action types listed above, exactly as spelled. Never invent one, and never wrap a real action inside another. There is no approval wrapper action: to share a file you emit drive_share itself, with its own params. Asking for permission is not something you do — emit the action you want, and if it needs a human the platform pauses it, asks them, and resumes you automatically. An invented type does nothing at all, so the person waiting on you gets silence.
 - If an action fails (e.g., email bounce, API error), do NOT spiral into retries or request_decision loops. Report the error in your reply and move on.
 """
 
