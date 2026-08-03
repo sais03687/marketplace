@@ -945,6 +945,126 @@ class ApprovalRejected(RuntimeError):
     """Raised when a gated Graph call is rejected, or times out awaiting a human."""
 
 
+# ─── Sender allowlist, enforced on reads ─────────────────────────────────────
+#
+# The allowlist used to be applied only by the mail poller, which decides what to
+# forward. That left it trivially bypassable: the agent has inbox_list and
+# inbox_read, so it could open its own mailbox and act on a message the poller had
+# refused. Confirmed in production on 2026-08-02 — the poller logged the message
+# blocked and left it unread, and the agent read it anyway and drafted a reply.
+#
+# Enforcement therefore belongs where the mail is *read*, not where it is
+# forwarded. Every mailbox read from agent code reaches Graph through
+# graph_request, so filtering here covers the agent's own tools and anything a
+# creator writes, without either being able to opt out.
+
+_allowlist_cache: dict[str, Any] = {"data": None, "at": 0.0}
+_ALLOWLIST_TTL_S = 60.0
+
+
+async def _load_allowlist() -> dict | None:
+    """Fetch the deployment's allowlist. None means 'could not determine'."""
+    now = time.time()
+    if _allowlist_cache["data"] is not None and now - _allowlist_cache["at"] < _ALLOWLIST_TTL_S:
+        return _allowlist_cache["data"]
+    if not (APPROVAL_WEBHOOK and DEPLOYMENT_ID):
+        return _allowlist_cache["data"]
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                f"{APPROVAL_WEBHOOK}/api/deployments/{DEPLOYMENT_ID}/allowlist",
+                headers={"Authorization": f"Bearer {_MS_AGENT_TOKEN}"} if _MS_AGENT_TOKEN else {},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            data = data.get("data", data) if isinstance(data, dict) else data
+        _allowlist_cache["data"] = data
+        _allowlist_cache["at"] = now
+        return data
+    except Exception as err:
+        # Stale-on-error, like the poller: a transient failure must not blind the
+        # agent to mail it has already been told it may read.
+        if _allowlist_cache["data"] is not None:
+            print(f"[allowlist] refresh failed, using cached list: {err}", flush=True)
+            return _allowlist_cache["data"]
+        print(f"[allowlist] unavailable and never fetched: {err}", flush=True)
+        return None
+
+
+def _sender_allowed(address: str, allow: dict) -> bool:
+    """Is this sender permitted to reach the agent?
+
+    An empty allowedEmails means no restriction — that is the product's meaning of
+    an unconfigured list, and matches the poller. The manager and the company
+    domain are always permitted.
+    """
+    addr = (address or "").strip().lower()
+    if not addr:
+        return False
+    manager = str(allow.get("managerEmail") or "").strip().lower()
+    domain = str(allow.get("companyDomain") or "").strip().lower()
+    entries = [str(e).strip().lower() for e in (allow.get("allowedEmails") or []) if e]
+
+    if manager and addr == manager:
+        return True
+    if domain and addr.endswith("@" + domain):
+        return True
+    if not entries:
+        return True  # unconfigured means unrestricted
+    for e in entries:
+        if e.startswith("@") and addr.endswith(e):
+            return True
+        if addr == e:
+            return True
+    return False
+
+
+def _message_sender(msg: dict) -> str:
+    try:
+        return str(msg.get("from", {}).get("emailAddress", {}).get("address") or "")
+    except Exception:
+        return ""
+
+
+async def _filter_mail_response(path: str, payload: Any) -> Any:
+    """Strip messages the agent is not permitted to see from a Graph mail read."""
+    if not isinstance(payload, dict):
+        return payload
+
+    allow = await _load_allowlist()
+    if allow is None:
+        # Never fetched. Refuse rather than serve unchecked mail — the poller's
+        # habit of treating "could not find out" as "allow everyone" is exactly
+        # how a non-functioning allowlist went unnoticed for so long.
+        print("[allowlist] no list available — withholding mail from the agent", flush=True)
+        if isinstance(payload.get("value"), list):
+            return {**payload, "value": []}
+        return {}
+
+    if isinstance(payload.get("value"), list):
+        kept, dropped = [], 0
+        for m in payload["value"]:
+            if isinstance(m, dict) and not _sender_allowed(_message_sender(m), allow):
+                dropped += 1
+                continue
+            kept.append(m)
+        if dropped:
+            print(
+                f"[allowlist] withheld {dropped} message(s) from a blocked sender on {path}",
+                flush=True,
+            )
+        return {**payload, "value": kept}
+
+    # A single message fetched by id.
+    if payload.get("from") is not None:
+        if not _sender_allowed(_message_sender(payload), allow):
+            print(f"[allowlist] withheld a single message from a blocked sender on {path}", flush=True)
+            raise PermissionError(
+                "This message is from a sender who is not permitted to contact this agent."
+            )
+    return payload
+
+
 async def _ms_token() -> str:
     cached = _ms_token_cache.get("t")
     if cached and cached["expires_at"] > time.time() + 60:
@@ -999,6 +1119,63 @@ def _classify_graph_call(method: str, path: str) -> str | None:
         return f"graph_{m.lower()}:{p.split('?')[0][:80]}"
 
     return None  # GET / HEAD — reads are not gated here.
+
+
+class _FilteredResponse:
+    """An httpx response with its JSON body replaced by the filtered version.
+
+    Tool code inspects status_code, calls .json(), and calls raise_for_status(),
+    so those are what this has to present. Everything else defers to the real
+    response.
+    """
+
+    def __init__(self, resp, payload):
+        self._resp = resp
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+    @property
+    def status_code(self):
+        return self._resp.status_code
+
+    @property
+    def content(self):
+        return self._resp.content
+
+    @property
+    def text(self):
+        return json.dumps(self._payload)
+
+    def raise_for_status(self):
+        return self._resp.raise_for_status()
+
+    def __getattr__(self, name):
+        return getattr(self._resp, name)
+
+
+class _DeniedResponse:
+    """Stands in for a message the agent may not read, as a 403 it can handle."""
+
+    status_code = 403
+
+    def __init__(self, detail: str):
+        self._detail = detail
+
+    def json(self):
+        return {"error": {"code": "Forbidden", "message": self._detail}}
+
+    @property
+    def content(self):
+        return self.text.encode()
+
+    @property
+    def text(self):
+        return json.dumps(self.json())
+
+    def raise_for_status(self):
+        raise httpx.HTTPStatusError(self._detail, request=None, response=None)
 
 
 async def graph_request(
@@ -1067,15 +1244,28 @@ async def graph_request(
             params=params,
         )
 
-    # raw lets existing tool code keep inspecting status codes itself (a 409 from
-    # "folder already exists" is a normal outcome, not a failure), so the calling
-    # convention does not have to change to route through here.
+    # Mailbox reads are filtered against the sender allowlist before the agent
+    # sees them. This has to happen for raw callers too — the agent's own tools
+    # use raw and call .json() themselves, so filtering only the parsed path would
+    # leave the exact hole this closes.
+    is_mail_read = method.upper() == "GET" and "/messages" in path.lower()
+
     if raw:
+        if is_mail_read and resp.status_code == 200 and resp.content:
+            try:
+                filtered = await _filter_mail_response(path, resp.json())
+            except PermissionError as err:
+                return _DeniedResponse(str(err))
+            return _FilteredResponse(resp, filtered)
         return resp
+
     if resp.status_code == 204 or not resp.content:
         return None
     resp.raise_for_status()
-    return resp.json()
+    payload = resp.json()
+    if is_mail_read:
+        payload = await _filter_mail_response(path, payload)
+    return payload
 
 
 # ─── Return Contract Validator ────────────────────────────────────────────────

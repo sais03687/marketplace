@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, parseBody, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
+import { agentTokenMatches } from "@/lib/agent-token";
 
 const allowlistSchema = z.object({
   allowedEmails: z.array(z.string()).max(200),
@@ -28,7 +29,12 @@ export async function GET(
 
   const presented = (request.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
   const secret = process.env.PROVISIONING_SECRET ?? "";
-  const isPlatformCaller = !!secret && presented === secret;
+  // Three kinds of caller. The provisioning service and pollers hold the platform
+  // secret. An agent container holds only its own derived token — it needs this
+  // list because the platform now filters the agent's own mailbox reads against
+  // it, which is what stops a blocked sender being read directly via inbox_list.
+  const isPlatformCaller =
+    (!!secret && presented === secret) || agentTokenMatches(presented, id, secret);
 
   if (!isPlatformCaller) {
     const orgResult = await requireOrg();
