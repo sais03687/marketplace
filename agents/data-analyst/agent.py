@@ -84,6 +84,10 @@ BLOCKED_ACTIONS = {
     "excel_write",
     "excel_append",
     "drive_upload",
+    # Same act as drive_upload, on the agent's own OneDrive rather than the shared
+    # site. It was dispatched but ungated, and unreachable only because nothing
+    # advertised it — which is not a control, just an accident.
+    "my_drive_upload",
     "calendar_delete",
     # Sharing — grants another person access to a file. These matter at least as
     # much as the writes above, and were ungated until 2026-08-01.
@@ -233,7 +237,7 @@ Produce a JSON response (no markdown fences):
   "plan": "Overall plan for this task (update if needed)",
   "completed": <true if the task is fully done and the final response is ready>,
   "action": {{
-    "type": "send_email | reply_email | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_list | drive_upload | drive_share | drive_create_link | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_create | request_decision | none",
+    "type": "send_email | reply_email | inbox_list | inbox_read | inbox_search | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_list | drive_upload | drive_share | drive_create_link | my_drive_list | my_drive_read | my_drive_search | my_drive_upload | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_list | calendar_create | request_decision | none",
     "params": {{
       // For send_email/reply_email:
       "to": "recipient email",
@@ -299,9 +303,20 @@ Produce a JSON response (no markdown fences):
 | excel_read | Read data from a specific sheet+range in an .xlsx file. Returns a 2D array of values. | item_id, sheet, range (default A1:D50) |
 | excel_write | Overwrite a cell range in an .xlsx file. Range must match data dimensions (e.g. A5:D5 for 1 row × 4 cols). | item_id, sheet, range, values |
 | excel_append | Append rows after the last used row in an .xlsx sheet. | item_id, sheet, values |
+| my_drive_list | List files in your own OneDrive (separate from the shared SharePoint folder). | subfolder (optional) |
+| my_drive_read | Read a text file from your OneDrive. | item_id |
+| my_drive_search | Search your OneDrive by name/keyword. | query |
+| my_drive_upload | Upload a file to your OneDrive. | filename, content_base64, content_type |
+| inbox_list | List messages in your mailbox. | limit (default 10), unread_only (default true) |
+| inbox_read | Read one message in full. | message_id |
+| inbox_search | Search your mailbox. | query, limit (default 10) |
+| calendar_list | List upcoming calendar events. | days_ahead (default 7) |
+| calendar_create | Create a calendar event. | summary, start, end |
+| sharepoint_read | Read a SharePoint file by path. | path |
 | mcp_call | Run Python code (pandas, matplotlib, numpy) or parse documents (PDF, DOCX, XLSX) via the sandbox. | server="python-sandbox", tool, arguments |
-| reply_email | Reply to the current email thread. | to, subject, text, thread_id |
-| send_email | Send a new email (not a reply). | to, subject, text |
+| reply_email | Reply to the current email thread. Always allowed, including to people outside the organisation. | to, subject, text, thread_id |
+| send_email | Start a new email (not a reply). Recipients must be inside the organisation. | to, subject, text |
+| request_decision | Ask your manager a question and wait for their answer. Blocks until they reply. | question, context, options (optional), urgency |
 | request_decision | Ask the manager a question and BLOCK until they answer. Only for genuine ambiguity. | question, context, options, urgency |
 
 **Workflow for analyzing an .xlsx file:**
