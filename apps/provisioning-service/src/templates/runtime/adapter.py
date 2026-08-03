@@ -1032,11 +1032,12 @@ def _should_require_action_approval(
     policy_cfg = _load_policy()
     policy = policy_cfg["policy"]
 
-    # "never" is an explicit instruction from the buyer to stop asking. Honour it
-    # uniformly rather than letting each tool invent its own exception.
-    if policy == "never":
-        return False, "policy=never"
-
+    # Sharing is evaluated before policy, so "never" cannot switch it off.
+    #
+    # A buyer setting never is telling the agent to stop interrupting them about
+    # its ordinary work. Read as covering sharing too, it also silently permitted
+    # publishing a file on a link anyone could open — a consequence nobody picks
+    # a notification preference in order to get, and one that cannot be undone.
     if action in SHARING_ACTIONS:
         # An anonymous link has no recipient to check — it is readable by anyone
         # who ever receives the URL. There is no allowlist entry that can make
@@ -1057,6 +1058,12 @@ def _should_require_action_approval(
             if needs:
                 return True, f"{action}: {reason}"
         return False, f"{action}: all recipients auto-approved"
+
+    # Everything that is not sharing: "never" is an explicit instruction from the
+    # buyer to stop asking, and is honoured uniformly rather than letting each
+    # tool invent its own exception.
+    if policy == "never":
+        return False, "policy=never"
 
     if action in MUTATING_ACTIONS:
         if policy == "always":
@@ -1111,6 +1118,15 @@ class ApprovalRejected(RuntimeError):
     """Raised when a gated Graph call is rejected, or times out awaiting a human."""
 
 
+class ActionRefused(RuntimeError):
+    """Raised when an action is not permitted at all, whatever anyone approves.
+
+    Distinct from ApprovalRejected, which means a human considered this and said
+    no. This means nobody is asked, because the answer cannot be yes — the buyer's
+    configuration puts the action outside what the agent may do.
+    """
+
+
 # ─── Sender allowlist, enforced on reads ─────────────────────────────────────
 #
 # The allowlist used to be applied only by the mail poller, which decides what to
@@ -1123,6 +1139,50 @@ class ApprovalRejected(RuntimeError):
 # forwarded. Every mailbox read from agent code reaches Graph through
 # graph_request, so filtering here covers the agent's own tools and anything a
 # creator writes, without either being able to opt out.
+
+async def _refuse_external_sharing(action: str, args: dict) -> None:
+    """Raise unless every recipient of a share is inside the organisation.
+
+    Fails closed in both directions. An anonymous link has no recipient at all and
+    is readable by anyone who ever sees the URL, so it can never be inside. And if
+    the allowlist cannot be fetched, the answer is no: a transient outage is not a
+    reason to permit an irreversible export.
+    """
+    scope = str(args.get("scope", "")).lower()
+    if scope == "anonymous":
+        raise ActionRefused(
+            f"{action} was refused: an anonymous link can be opened by anyone who "
+            f"receives it, so it cannot be limited to the organisation. Share with "
+            f"named people instead, or use scope=\"organization\"."
+        )
+
+    recipients = args.get("recipients") or args.get("emails") or []
+    if isinstance(recipients, str):
+        recipients = [recipients]
+    if not recipients:
+        raise ActionRefused(
+            f"{action} was refused: no recipient could be identified, so it cannot "
+            f"be shown to be inside the organisation."
+        )
+
+    allow = await _load_allowlist()
+    if allow is None:
+        raise ActionRefused(
+            f"{action} was refused: the recipient rules could not be read just now, "
+            f"and sharing is not something to guess at. Try again shortly."
+        )
+
+    outside = [
+        str(r) for r in recipients if not _share_recipient_allowed(str(r), allow)
+    ]
+    if outside:
+        raise ActionRefused(
+            f"{action} was refused: {', '.join(outside)} "
+            f"{'is' if len(outside) == 1 else 'are'} outside this organisation. "
+            f"This agent can only share with people on the company domain or on the "
+            f"buyer's allowlist. Ask the file's owner to share it directly instead."
+        )
+
 
 _allowlist_cache: dict[str, Any] = {"data": None, "at": 0.0}
 _ALLOWLIST_TTL_S = 60.0
@@ -1169,6 +1229,39 @@ async def _load_allowlist() -> dict | None:
             return _allowlist_cache["data"]
         print(f"[allowlist] unavailable and never fetched: {err}", flush=True)
         return None
+
+
+def _share_recipient_allowed(address: str, allow: dict) -> bool:
+    """May a file be shared with this address?
+
+    Deliberately stricter than _sender_allowed, and not a reuse of it, because the
+    two questions differ where it matters most. An empty allowedEmails means "no
+    restriction" for *senders* — anyone may write to the agent. Read the same way
+    for *recipients* it would mean "share with anyone", so an unconfigured buyer
+    would have the weakest sharing rules rather than the strongest.
+
+    Permitted: the buyer's own domain, the manager, and addresses the buyer put on
+    the allowlist themselves. Everything else is outside the organisation, and
+    sharing is the one action that moves data out of the tenant for good.
+    """
+    addr = (address or "").strip().lower()
+    if not addr:
+        return False
+
+    domain = str(allow.get("companyDomain") or "").strip().lower() or COMPANY_DOMAIN.strip().lower()
+    manager = str(allow.get("managerEmail") or "").strip().lower() or _manager_email().lower()
+    entries = [str(e).strip().lower() for e in (allow.get("allowedEmails") or []) if e]
+
+    if domain and addr.endswith("@" + domain):
+        return True
+    if manager and addr == manager:
+        return True
+    for e in entries:
+        if e.startswith("@") and addr.endswith(e):
+            return True
+        if addr == e:
+            return True
+    return False
 
 
 def _sender_allowed(address: str, allow: dict) -> bool:
@@ -1386,6 +1479,17 @@ async def graph_request(
             args["recipients"] = [
                 r.get("email") if isinstance(r, dict) else r for r in args["recipients"]
             ]
+        # Sharing outside the organisation is refused, not gated.
+        #
+        # Approval is the wrong instrument here: it asks a human to make a
+        # judgement in the moment, on a decision that cannot be undone once a file
+        # has left the tenant. The buyer decides who counts as inside — their
+        # domain, their manager, their allowlist — and nothing the agent proposes
+        # and nobody's click can widen it. This runs before the approval check so
+        # that a refused share never becomes a request somebody could say yes to.
+        if action in SHARING_ACTIONS:
+            await _refuse_external_sharing(action, args)
+
         if _human_approved_action.get() == action:
             # Consumed once. A resume is free to perform further actions, and each
             # of those is a fresh decision the manager has not made yet.
@@ -1771,6 +1875,37 @@ async def resolve_approval_alt(body: ResolveApprovalAlt):
 
 # ─── Resume & Deliver — completes interrupted graph and delivers result ──────
 
+async def _resume_rejected(
+    thread_id: str,
+    channel: str,
+    channel_context: dict,
+    reason: str,
+) -> None:
+    """Unwind a suspended graph that the platform refused, with no human involved.
+
+    The graph is waiting on interrupt() and will wait forever unless something
+    answers it. Handing it a rejection is how it learns the refusal: execute_action
+    records the reason, the run finishes normally, and whoever asked is told why
+    instead of never hearing back.
+
+    Routed through _resume_and_deliver under a synthetic id so refusals travel the
+    same delivery path as real decisions, rather than a parallel one that would
+    drift.
+    """
+    synthetic_id = f"refused-{time.time_ns()}"
+    _remember_pending_resume(synthetic_id, {
+        "thread_id": thread_id,
+        "channel": channel,
+        "channel_context": channel_context,
+        # No action to pre-authorise: nothing here is approved.
+        "action": None,
+    })
+    await _resume_and_deliver(
+        synthetic_id,
+        {"status": "REJECTED", "resolutionAction": None, "rejectionReason": reason},
+    )
+
+
 async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
     """Resume an interrupted LangGraph and deliver the result to the right channel."""
     resume_info = _forget_pending_resume(approval_id)
@@ -2000,6 +2135,31 @@ async def _handle_interrupt(
     params = intr.get("params", {}) if isinstance(intr, dict) else {}
     reasoning = intr.get("reasoning", "") if isinstance(intr, dict) else ""
     risk = intr.get("risk_assessment", {}) if isinstance(intr, dict) else {}
+
+    # Refuse before asking, when the answer could not be yes.
+    #
+    # The creator's own BLOCKED_ACTIONS interrupt runs inside execute_action,
+    # before any tool is called, so it reaches this point ahead of the Graph
+    # transport where external sharing is refused. Without this check the buyer is
+    # shown an approval for a share that the platform will refuse anyway — they
+    # press Approve, and the action fails afterwards for reasons the request never
+    # mentioned. Asking a question whose answer cannot matter is its own kind of
+    # dishonesty, so the refusal is delivered here instead.
+    if action_name in SHARING_ACTIONS:
+        try:
+            await _refuse_external_sharing(action_name, params if isinstance(params, dict) else {})
+        except ActionRefused as refusal:
+            print(f"[adapter] {refusal}", flush=True)
+            # Hand the graph a rejection so it unwinds normally and tells whoever
+            # asked, rather than leaving the run suspended forever.
+            asyncio.create_task(
+                _resume_rejected(thread_id, channel, channel_context, str(refusal))
+            )
+            # Empty on purpose for asynchronous channels. The resumed graph writes
+            # its own reply, and it words the refusal better than this does; saying
+            # it here as well is two messages for one event. Teams is synchronous
+            # and has to answer now, so its call sites substitute a short line.
+            return "" if channel == "email" else str(refusal)
 
     # Build a human-readable draft for the approval portal
     if action_name == "request_decision":
@@ -2519,7 +2679,8 @@ async def _handle_message(message: str, context: dict):
             print(f"[adapter] Email graph interrupted: {approval_msg[:100]}", flush=True)
             # For email, we should notify the sender that their request is pending
             incoming_sender = context.get("sender", "")
-            if incoming_sender and _check_and_increment("emails"):
+            # Empty means the platform refused and the resumed graph is replying instead.
+            if approval_msg and incoming_sender and _check_and_increment("emails"):
                 await reply_email(
                     message_id=context.get("message_id", ""),
                     text=approval_msg,
@@ -2708,8 +2869,9 @@ async def _handle_message(message: str, context: dict):
                         "session_key": session_key,
                     }
                     approval_msg = await _handle_interrupt(retry_result, "email", retry_thread_id, channel_ctx)
-                    # Notify sender that approval is pending
-                    if _check_and_increment("emails"):
+                    # Notify sender that approval is pending. Empty means refused —
+                    # the resumed graph replies instead of us duplicating it.
+                    if approval_msg and _check_and_increment("emails"):
                         await reply_email(
                             message_id=context.get("message_id", ""),
                             text=approval_msg,
@@ -2746,9 +2908,25 @@ async def _handle_message(message: str, context: dict):
                     # generic "wasn't sure how to respond" acknowledgement below
                     # would contradict it — and would go out unapproved.
                     return
-                # Last-resort acknowledgement for internal recipients only
+                # Last-resort acknowledgement.
+                #
+                # Reached only when the agent produced nothing twice — the first
+                # pass and the retry both came back with no reply — so the choice
+                # here is between one fixed sentence and total silence for someone
+                # who emailed a colleague and got nothing back.
+                #
+                # This used to be gated on _is_internal_recipient, which asks "does
+                # policy exempt this recipient from approval" rather than "is this
+                # person one of us". Under policy="always" nobody is exempt, so it
+                # answered False for everyone and the acknowledgement never sent —
+                # for exactly the buyers most careful about their agent's output.
+                #
+                # Sending it unapproved is safe in a way a drafted reply is not: the
+                # text is a constant, holds no model output and no data from the
+                # workspace, and goes only to whoever wrote in — someone the
+                # allowlist already admitted.
                 incoming_sender = context.get("sender", "")
-                if _is_internal_recipient(incoming_sender) and _check_and_increment("emails"):
+                if _extract_email(incoming_sender) and _check_and_increment("emails"):
                     print(f"[adapter] Sending default acknowledgement to {_extract_email(incoming_sender)}", flush=True)
                     await reply_email(
                         message_id=context.get("message_id", ""),
