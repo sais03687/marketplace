@@ -135,7 +135,11 @@ class AgentState(BaseModel):
     actions_taken: list = Field(default_factory=list)
     action_results: list = Field(default_factory=list)
     iteration: int = 0
-    max_iterations: int = 8
+    # A real multi-step task spends five steps before it can even answer:
+    # drive_list, excel_list_sheets, excel_read, mcp_call, reply. At eight, one
+    # wrong turn or a retried tool call left nothing for the reply — the chart
+    # request on 2026-08-03 used nine and finished with none.
+    max_iterations: int = 12
 
     # Output
     result: dict = Field(default_factory=dict)
@@ -384,6 +388,22 @@ async def reason_and_act(state: AgentState) -> AgentState:
 
     message_content = state.enriched_content or state.content
 
+    # The wrap-up pass. Reached only when the step budget ran out mid-task, so the
+    # one thing still needed is the reply itself — said plainly, because a model
+    # that has been told for several turns to pick the next action will otherwise
+    # pick another one.
+    if state.context.get("_wrapping_up"):
+        message_content += (
+            "\n\n[SYSTEM] You have no steps left. Do NOT choose another action — "
+            "set \"completed\": true and \"action\": {\"type\": \"none\"}, and write "
+            "final_response now.\n"
+            "Answer from the results you already have. Say what you found, and if "
+            "some part of the request is unfinished say which part and why, so the "
+            "person knows where things stand. Do not claim to have done anything "
+            "that is not in the results above. A partial answer is useful; silence "
+            "is not."
+        )
+
     # Format actions taken so far
     actions_str = "None yet" if not state.actions_taken else "\n".join(
         f"- Step {i+1}: {a}" for i, a in enumerate(state.actions_taken)
@@ -466,6 +486,19 @@ def route_after_reasoning(state: AgentState) -> str:
     if state.analysis.get("completed", False):
         return "finalize"
     if state.iteration >= state.max_iterations:
+        # Out of steps, but not out of things to say. Going straight to finalize
+        # hands it whatever final_response exists, and mid-task there is none — so
+        # the result was action=none with empty text and the person who asked got
+        # "I wasn't sure how to respond" after the agent had read their data and
+        # built their chart. One more pass, for the reply only.
+        if state.actions_taken and not state.context.get("_wrapping_up"):
+            state.context["_wrapping_up"] = True
+            print(
+                f"[agent] Out of iterations after {len(state.actions_taken)} action(s) "
+                f"— one final pass to write the reply",
+                flush=True,
+            )
+            return "reason_and_act"
         return "finalize"
     action = state.analysis.get("action") or {}
     if isinstance(action, dict) and action.get("type", "none") != "none":
@@ -829,11 +862,29 @@ async def finalize(state: AgentState) -> AgentState:
         return state
 
     # Normal finalization — completed analysis
+    result_action = final.get("action", "none")
+    result_text = final.get("text", "")
+
+    # Last line of defence against silence. If the agent did real work and still
+    # produced no reply — the wrap-up pass above should prevent it, but a model can
+    # always ignore an instruction — say so rather than returning nothing. Someone
+    # is waiting on an answer, and "I got partway" beats no answer at all.
+    if not result_text.strip() and state.actions_taken:
+        steps = "\n".join(f"- {a}" for a in state.actions_taken[-6:])
+        result_text = (
+            "I worked on this but ran out of steps before I could finish, so I do "
+            "not have a complete answer yet.\n\nWhat I did get through:\n"
+            f"{steps}\n\nAsk me again and I'll pick it up from here — narrowing the "
+            "request to one part will usually get it done in a single go."
+        )
+        result_action = "reply_email"
+        print("[agent] No final text after real work — sending a partial-progress reply", flush=True)
+
     state.result = {
-        "action": final.get("action", "none"),
+        "action": result_action,
         "to": final.get("to"),
         "subject": final.get("subject"),
-        "text": final.get("text", ""),
+        "text": result_text,
         "thread_id": final.get("thread_id"),
         "task_type": "data-analysis",
         "risk_assessment": analysis.get("risk_assessment", {}),
