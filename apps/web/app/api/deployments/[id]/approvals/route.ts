@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonSuccess, jsonError, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
 import { sendNotificationEmail, buildApprovalNotificationEmail } from "@/lib/email";
+import { approvalActionUrl } from "@/lib/approval-link";
 
 export async function GET(
   request: Request,
@@ -142,18 +143,29 @@ export async function POST(
   // delivered sometimes and silently vanished other times. sendNotificationEmail
   // never throws, so waiting on it cannot fail the approval itself.
   if (deployment.managerEmail) {
-    const portalUrl = deployment.portalToken
-      ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
-      : null;
+    // Approvals are created by a server-to-server POST from the agent container,
+    // which sends no Origin header — so this fell back to "" and produced a
+    // relative href that no mail client can follow. The configured app URL is the
+    // only reliable base here.
+    const baseUrl = (
+      request.headers.get("origin") || process.env.NEXT_PUBLIC_APP_URL || ""
+    ).replace(/\/$/, "");
+    const portalUrl =
+      baseUrl && deployment.portalToken
+        ? `${baseUrl}/approve/${deployment.portalToken}`
+        : null;
     const { subject, html } = buildApprovalNotificationEmail({
+      approveUrl: baseUrl ? approvalActionUrl(baseUrl, approval.id, "approve") : null,
+      rejectUrl: baseUrl ? approvalActionUrl(baseUrl, approval.id, "reject") : null,
       agentName: deployment.agentName,
       taskType: String(taskType || "unknown"),
       draftPreview: String(draft || ""),
       portalUrl,
     });
     await sendNotificationEmail({
-      // Sent from the agent's own mailbox so the buyer can simply reply — the
-      // poller watches that mailbox, which is what makes reply-to-approve work.
+      // Sent from the agent's own mailbox, so a reply lands somewhere the poller
+      // is watching. The decision itself is made by the buttons above; the poller
+      // only needs to see the reply in order to answer it.
       deploymentId: deployment.id,
       agentEmail: deployment.workspaceEmail,
       inboxId: deployment.agentEmailInboxId,

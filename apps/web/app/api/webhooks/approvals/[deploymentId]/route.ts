@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { sendNotificationEmail, buildApprovalNotificationEmail } from "@/lib/email";
+import { approvalActionUrl } from "@/lib/approval-link";
 import { z } from "zod";
 
 const approvalWebhookSchema = z.object({
@@ -93,12 +94,19 @@ export async function POST(
     },
   });
 
-  // Send email notification (fire-and-forget)
   if (deployment.managerEmail) {
-    const portalUrl = deployment.portalToken
-      ? `${request.headers.get("origin") || ""}/approve/${deployment.portalToken}`
-      : null;
+    // No Origin header on a server-to-server call, so the configured app URL is
+    // the only base that yields a link a mail client can actually follow.
+    const baseUrl = (
+      request.headers.get("origin") || process.env.NEXT_PUBLIC_APP_URL || ""
+    ).replace(/\/$/, "");
+    const portalUrl =
+      baseUrl && deployment.portalToken
+        ? `${baseUrl}/approve/${deployment.portalToken}`
+        : null;
     const { subject, html } = buildApprovalNotificationEmail({
+      approveUrl: baseUrl ? approvalActionUrl(baseUrl, approval.id, "approve") : null,
+      rejectUrl: baseUrl ? approvalActionUrl(baseUrl, approval.id, "reject") : null,
       agentName: deployment.agentName,
       taskType: data.taskType,
       draftPreview: data.draft,

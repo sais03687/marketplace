@@ -314,25 +314,65 @@ interface BuildApprovalNotificationEmailParams {
   taskType: string;
   draftPreview: string;
   portalUrl?: string | null;
+  /** Confirmation-page links for the Approve and Reject buttons. */
+  approveUrl?: string | null;
+  rejectUrl?: string | null;
+}
+
+/**
+ * Everything interpolated below is attacker-influenced: the draft is model
+ * output, and the agent name is set by the buyer. Unescaped, a draft containing
+ * markup would be rendered as markup in the buyer's mail client.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
  * Builds the subject and inline-styled HTML body for an approval notification.
+ *
+ * Carries Approve and Reject buttons rather than asking the buyer to reply. A
+ * button sends the decision as data, so there is no natural language to
+ * interpret and no way to mistake "sure, but change the date" for consent. Both
+ * point at a confirmation page rather than acting directly — mail scanners fetch
+ * links to check them, and a link that resolved on GET would be clicked by the
+ * scanner before the buyer saw it.
  */
 export function buildApprovalNotificationEmail({
   agentName,
   taskType,
   draftPreview,
   portalUrl,
+  approveUrl,
+  rejectUrl,
 }: BuildApprovalNotificationEmailParams): { subject: string; html: string } {
+  // The subject prefix is load-bearing: the poller matches on it to answer
+  // anyone who replies instead of using the buttons. Keep them in step.
   const subject = `Action needed: ${agentName} needs approval for ${taskType}`;
 
-  const truncatedPreview =
-    draftPreview.length > 200
-      ? draftPreview.slice(0, 200) + "..."
-      : draftPreview;
+  const truncatedPreview = escapeHtml(
+    draftPreview.length > 200 ? draftPreview.slice(0, 200) + "..." : draftPreview,
+  );
+  const safeAgentName = escapeHtml(agentName);
+  const safeTaskType = escapeHtml(taskType);
 
   const ctaHref = portalUrl || "/dashboard";
+
+  const button = (href: string, label: string, background: string) =>
+    `<a href="${escapeHtml(href)}" style="display:inline-block;background-color:${background};color:#ffffff;font-size:14px;font-weight:500;text-decoration:none;padding:10px 20px;border-radius:6px;margin:0 8px 8px 0;">${label}</a>`;
+
+  // Falls back to the portal link alone when no signed links were supplied, so a
+  // caller that has not been updated still produces a usable email.
+  const actions = approveUrl && rejectUrl
+    ? button(approveUrl, "Approve", "#15803d") +
+      button(rejectUrl, "Reject", "#b91c1c") +
+      button(ctaHref, "Edit", "#52525b")
+    : button(ctaHref, "Review &amp; Approve", "#18181b");
 
   const html = `
 <!DOCTYPE html>
@@ -346,18 +386,19 @@ export function buildApprovalNotificationEmail({
           <tr>
             <td>
               <h1 style="margin:0 0 16px;font-size:20px;font-weight:600;color:#18181b;">
-                ${agentName} needs your approval
+                ${safeAgentName} needs your approval
               </h1>
               <p style="margin:0 0 8px;font-size:14px;color:#71717a;">
-                <strong style="color:#18181b;">Task type:</strong> ${taskType}
+                <strong style="color:#18181b;">Task type:</strong> ${safeTaskType}
               </p>
               <p style="margin:0 0 24px;font-size:14px;color:#3f3f46;background-color:#f4f4f5;padding:12px;border-radius:6px;line-height:1.5;">
                 ${truncatedPreview}
               </p>
-              <a href="${ctaHref}" style="display:inline-block;background-color:#18181b;color:#ffffff;font-size:14px;font-weight:500;text-decoration:none;padding:10px 20px;border-radius:6px;">
-                Review &amp; Approve
-              </a>
-              <p style="margin:24px 0 0;font-size:12px;color:#a1a1aa;">
+              ${actions}
+              <p style="margin:16px 0 0;font-size:12px;color:#a1a1aa;">
+                Use the buttons above — replying to this email will not approve anything.
+              </p>
+              <p style="margin:12px 0 0;font-size:12px;color:#a1a1aa;">
                 You are receiving this because an agent you hired requires approval to proceed. If you did not expect this, you can safely ignore this email.
               </p>
             </td>

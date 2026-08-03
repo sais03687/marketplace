@@ -524,6 +524,43 @@ function isBounceMessage(msg, fromAddr) {
   return false;
 }
 
+/**
+ * Is this a reply to an approval notification?
+ *
+ * Matches the subject buildApprovalNotificationEmail produces
+ * ("Action needed: <agent> needs approval for <task>") once a mail client has
+ * prefixed it with Re:/RE:/Fwd: and so on. The original notification is sent by
+ * the agent and never arrives in its own inbox, so a match here is always
+ * somebody's reply.
+ *
+ * Kept in step with the subject built in apps/web/lib/email.ts.
+ */
+function isApprovalNotificationReply(msg) {
+  const subject = (msg?.subject || "").trim();
+  if (!subject) return false;
+  // Strip any number of reply/forward prefixes: "RE: FW: Action needed: ..."
+  const stripped = subject.replace(/^((re|fw|fwd|aw|sv|vs)\s*(\[\d+\])?\s*:\s*)+/i, "");
+  return stripped.toLowerCase().startsWith("action needed:");
+}
+
+/** Reply in-thread with a fixed message. No model involved. */
+async function sendCannedReply(token, messageId, text) {
+  const userEnc = encodeURIComponent(OUTLOOK_AGENT_EMAIL);
+  const msgEnc = encodeURIComponent(messageId);
+  try {
+    const res = await fetch(`${GRAPH_BASE}/users/${userEnc}/messages/${msgEnc}/reply`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ comment: text }),
+    });
+    if (!res.ok) {
+      console.error(`  [error] canned reply: ${res.status} ${await res.text()}`);
+    }
+  } catch (err) {
+    console.error(`  [error] canned reply: ${err.message}`);
+  }
+}
+
 async function markAsRead(token, messageId) {
   const userEnc = encodeURIComponent(OUTLOOK_AGENT_EMAIL);
   const msgEnc = encodeURIComponent(messageId);
@@ -737,6 +774,32 @@ async function poll() {
         );
         // Marked read so it is not re-examined every poll. It stays in the mailbox,
         // where the owner can still see that a message did not get through.
+        await markAsRead(token, msgId);
+        continue;
+      }
+
+      // Someone replied to an approval notification instead of using its buttons.
+      //
+      // Answer it here rather than handing it to the agent. The decision travels
+      // by button precisely so that nothing has to interpret prose, and passing
+      // "yes go ahead" to a model that cannot resolve approvals would either do
+      // nothing or do the wrong thing. Silence is not an option either: the sender
+      // believes they have approved, the request sits until it expires 48h later,
+      // and the work quietly dies.
+      //
+      // Structural check on the subject, not the body — it cannot misread intent
+      // because it never looks at intent.
+      if (isApprovalNotificationReply(msg)) {
+        console.log(
+          `  [approval-reply] From: ${fromFormatted} | Subject: ${msg.subject} — answered, not forwarded`,
+        );
+        await sendCannedReply(
+          token,
+          msgId,
+          "Replying to this message doesn't approve anything — I can't act on email replies.\n\n" +
+            "Open the approval email again and use the Approve or Reject button in it. " +
+            "You can also decide from the Approvals page in your dashboard.",
+        );
         await markAsRead(token, msgId);
         continue;
       }
