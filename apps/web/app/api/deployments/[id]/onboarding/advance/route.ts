@@ -52,6 +52,8 @@ export async function POST(
     });
 
     await sendNotificationEmail({
+      deploymentId: deployment.id,
+      agentEmail: (deployment as any).workspaceEmail,
       inboxId: deployment.agentEmailInboxId,
       to: deployment.managerEmail,
       subject,

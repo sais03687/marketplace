@@ -31,10 +31,13 @@ export async function POST(
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
     select: {
+      id: true,
       approvalWebhookToken: true,
       status: true,
       agentName: true,
       agentEmailInboxId: true,
+      // Needed to send the notification from the agent's own mailbox.
+      workspaceEmail: true,
       managerEmail: true,
       portalToken: true,
     },
@@ -102,6 +105,8 @@ export async function POST(
       portalUrl,
     });
     sendNotificationEmail({
+      deploymentId: deployment.id,
+      agentEmail: (deployment as any).workspaceEmail,
       inboxId: deployment.agentEmailInboxId,
       to: deployment.managerEmail,
       subject,

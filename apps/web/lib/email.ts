@@ -1,18 +1,94 @@
-// Thin wrapper around AgentMail API for sending notification emails.
+// Outbound notification email.
+//
+// These used to go exclusively through AgentMail, addressed from a per-deployment
+// AgentMail inbox. When agents moved to Microsoft 365, provisioning stopped
+// creating those inboxes, so agentEmailInboxId became null on every deployment —
+// and the AgentMail helper skips silently when it has no inbox. The result was
+// that no buyer had received an approval notification since the migration, while
+// the documentation told them approvals arrive by email and no dashboard is
+// needed. It failed quietly, in a console.warn nobody reads.
+//
+// Deployment-scoped notifications now send from the agent's own Microsoft mailbox
+// instead. That needs no extra mailbox or licence, it reads correctly to the buyer
+// (the agent is the one asking), and a reply lands in the agent's mailbox — which
+// the poller already watches, so replying to approve works as documented.
 
 interface SendNotificationEmailParams {
-  inboxId: string | undefined | null;
+  /** Preferred: send as this deployment's agent over Graph. */
+  deploymentId?: string | null;
+  agentEmail?: string | null;
+  /** Legacy AgentMail path, still used where there is no agent to send as. */
+  inboxId?: string | undefined | null;
   to: string;
   subject: string;
   html: string;
 }
 
+function provisioningBase(): string {
+  return (
+    process.env.PROVISIONING_SERVICE_URL ||
+    process.env.PROVISIONING_URL ||
+    "https://api.agentstore.it.com"
+  );
+}
+
 /**
- * Fire-and-forget email send via AgentMail API.
- * Gracefully skips if inboxId or API key is missing.
- * Never throws -- catches and logs all errors.
+ * Send as the agent, via the provisioning service's Graph-backed send endpoint.
+ * Returns true when accepted, so the caller can decide whether to fall back.
  */
-export async function sendNotificationEmail({
+async function sendAsAgent(
+  deploymentId: string,
+  agentEmail: string,
+  to: string,
+  subject: string,
+  html: string,
+): Promise<boolean> {
+  const secret = process.env.PROVISIONING_SECRET;
+  if (!secret) {
+    console.warn("[email] No PROVISIONING_SECRET — cannot send as the agent");
+    return false;
+  }
+  try {
+    const res = await fetch(`${provisioningBase().replace(/\/$/, "")}/internal/outlook-send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+      body: JSON.stringify({ deploymentId, agentEmail, to, subject, body: html, bodyType: "html" }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.ok) return true;
+    console.error(`[email] outlook-send returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return false;
+  } catch (err: any) {
+    console.error(`[email] outlook-send failed: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Fire-and-forget notification email. Never throws.
+ *
+ * Prefers the agent's Microsoft mailbox when the caller supplies a deployment,
+ * and falls back to AgentMail for callers that have no agent to send as — creator
+ * vetting decisions, for instance.
+ */
+export async function sendNotificationEmail(params: SendNotificationEmailParams): Promise<void> {
+  const { deploymentId, agentEmail, to, subject, html } = params;
+
+  if (deploymentId && agentEmail) {
+    if (await sendAsAgent(deploymentId, agentEmail, to, subject, html)) return;
+    console.warn(
+      `[email] Falling back to AgentMail for deployment ${deploymentId} — the agent send did not succeed`,
+    );
+  }
+
+  return sendViaAgentMail(params);
+}
+
+/**
+ * Legacy AgentMail path. Retained for callers with no agent mailbox behind them.
+ * Skips when it has no inbox, which is why the failure above went unnoticed.
+ */
+async function sendViaAgentMail({
   inboxId,
   to,
   subject,
@@ -21,7 +97,15 @@ export async function sendNotificationEmail({
   const apiKey = process.env.AGENTMAIL_API_KEY;
 
   if (!inboxId) {
-    console.warn("[email] Skipping send: no inboxId provided");
+    // Deliberately an error, not a warning. This branch quietly swallowed every
+    // approval notification on every Microsoft deployment, and a console.warn on
+    // a serverless platform is indistinguishable from nothing happening. If a
+    // notification cannot be delivered, that is a failure of the product's core
+    // promise and should read like one in the logs.
+    console.error(
+      `[email] NOT SENT to ${to} — no AgentMail inbox and no agent mailbox was supplied. ` +
+        `Subject: "${subject}". The recipient will never learn about this.`,
+    );
     return;
   }
 

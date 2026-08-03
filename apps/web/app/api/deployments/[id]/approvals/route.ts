@@ -73,6 +73,7 @@ export async function POST(
       status: true,
       agentName: true,
       agentEmailInboxId: true,
+      workspaceEmail: true,
       managerEmail: true,
       portalToken: true,
       buyerMicrosoftTenantId: true,
@@ -146,6 +147,10 @@ export async function POST(
       portalUrl,
     });
     sendNotificationEmail({
+      // Sent from the agent's own mailbox so the buyer can simply reply — the
+      // poller watches that mailbox, which is what makes reply-to-approve work.
+      deploymentId: deployment.id,
+      agentEmail: deployment.workspaceEmail,
       inboxId: deployment.agentEmailInboxId,
       to: deployment.managerEmail,
       subject,
