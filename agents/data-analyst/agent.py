@@ -877,7 +877,63 @@ async def maybe_contribute(state: AgentState) -> AgentState:
 
 # ─── Graph ───────────────────────────────────────────────────────────────────
 
-_checkpointer = MemorySaver()
+# Where the graph's suspended state lives between an interrupt and the manager's
+# answer. /data is a Docker volume that outlives the container, so an approval
+# raised before a restart is still resumable after one; MemorySaver kept it in
+# process memory, where every restart silently discarded whatever the agent had
+# been part-way through and the resolution had nothing left to resume.
+CHECKPOINT_DB = os.environ.get(
+    "CHECKPOINT_DB",
+    f"/data/{os.environ.get('DEPLOYMENT_ID', 'agent')}/checkpoints.sqlite",
+)
+
+_compiled_graph = None
+_checkpointer_cm = None
+_graph_init_lock = asyncio.Lock()
+
+
+async def _open_checkpointer():
+    """Open the persistent checkpointer, falling back to in-memory.
+
+    A failure here must not take the agent down with it. If sqlite cannot be
+    opened — missing package, unwritable volume — the agent keeps working exactly
+    as it did before, losing only the ability to resume across a restart.
+    """
+    global _checkpointer_cm
+    try:
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        Path(CHECKPOINT_DB).parent.mkdir(parents=True, exist_ok=True)
+        # from_conn_string is an async context manager, and the graph outlives any
+        # single request, so the context is entered once and deliberately left open
+        # for the process lifetime rather than wrapped around a call.
+        _checkpointer_cm = AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB)
+        saver = await _checkpointer_cm.__aenter__()
+        print(f"[agent] Checkpointing to {CHECKPOINT_DB}", flush=True)
+        return saver
+    except Exception as e:
+        print(
+            f"[agent] Persistent checkpointer unavailable ({e}) — falling back to "
+            f"MemorySaver. Approvals will not survive a restart.",
+            flush=True,
+        )
+        return MemorySaver()
+
+
+async def get_graph():
+    """The compiled graph, built on first use.
+
+    Lazy because the persistent checkpointer has to be opened from async code,
+    and the graph is only ever reached from async entry points anyway.
+    """
+    global _compiled_graph
+    if _compiled_graph is not None:
+        return _compiled_graph
+    async with _graph_init_lock:
+        # Re-check: another coroutine may have built it while we waited.
+        if _compiled_graph is None:
+            _compiled_graph = build_graph().compile(checkpointer=await _open_checkpointer())
+    return _compiled_graph
 
 
 def build_graph() -> StateGraph:
@@ -901,9 +957,6 @@ def build_graph() -> StateGraph:
     graph.add_edge("maybe_contribute", END)
 
     return graph
-
-
-_compiled_graph = build_graph().compile(checkpointer=_checkpointer)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -994,10 +1047,11 @@ async def run_agent(
 
     config = {"configurable": {"thread_id": tid}}
 
-    final_state = await _compiled_graph.ainvoke(initial_state, config=config)
+    graph = await get_graph()
+    final_state = await graph.ainvoke(initial_state, config=config)
 
     # Check for interrupt — graph was suspended waiting for approval
-    graph_state = _compiled_graph.get_state(config)
+    graph_state = await graph.aget_state(config)
     if graph_state.next:  # Non-empty next tuple means graph is interrupted
         # Extract interrupt payloads
         interrupts = []
@@ -1030,8 +1084,24 @@ async def run_agent(
     return {"action": "none"}
 
 
-async def resume_agent(thread_id: str, resolution: dict) -> dict:
+async def resume_agent(
+    thread_id: str,
+    resolution: dict,
+    contribute_fn=None,
+    search_fn=None,
+    use_fn=None,
+    mcp_fn=None,
+    graph_fn=None,
+) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
+
+    The tool functions have to be supplied again. They cannot be checkpointed —
+    msgpack will not serialise a function — so run_agent keeps them in a
+    module-level registry, and that registry is empty in a process that has
+    restarted since the interrupt. The graph itself resumes correctly from its
+    checkpoint and then finds it has no way to reach Microsoft, which surfaced as
+    an approved upload reporting "the platform did not provide a Graph transport"
+    while creating no file.
 
     Args:
         thread_id: The thread_id used in the original run_agent call.
@@ -1042,8 +1112,21 @@ async def resume_agent(thread_id: str, resolution: dict) -> dict:
     """
     config = {"configurable": {"thread_id": thread_id}}
 
+    # Re-arm the tool transport and registry before resuming. Harmless when the
+    # process never restarted — it rewrites the same values run_agent set.
+    if graph_fn is not None and _mt is not None:
+        _mt.set_graph_fn(graph_fn)
+    if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):
+        _thread_fns[thread_id] = {
+            "contribute_fn": contribute_fn,
+            "search_fn": search_fn,
+            "use_fn": use_fn,
+            "mcp_fn": mcp_fn,
+        }
+
     # Check that the graph is actually interrupted for this thread
-    graph_state = _compiled_graph.get_state(config)
+    graph = await get_graph()
+    graph_state = await graph.aget_state(config)
     if not graph_state.next:
         print(f"[agent] resume_agent: no interrupted state for thread={thread_id}", flush=True)
         return {"status": "error", "error": "No interrupted graph state found for this thread"}
@@ -1051,13 +1134,13 @@ async def resume_agent(thread_id: str, resolution: dict) -> dict:
     print(f"[agent] Resuming graph for thread={thread_id} with resolution status={resolution.get('status')}", flush=True)
 
     # Resume the graph — Command(resume=value) passes the value back to interrupt()
-    final_state = await _compiled_graph.ainvoke(
+    final_state = await graph.ainvoke(
         Command(resume=resolution),
         config=config,
     )
 
     # Check if graph hit ANOTHER interrupt (e.g., multiple blocked actions)
-    graph_state = _compiled_graph.get_state(config)
+    graph_state = await graph.aget_state(config)
     if graph_state.next:
         interrupts = []
         if hasattr(graph_state, "tasks"):

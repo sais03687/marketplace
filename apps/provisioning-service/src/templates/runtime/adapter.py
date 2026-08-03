@@ -12,6 +12,7 @@ import os
 import re
 import time
 import asyncio
+import contextvars
 from typing import Any
 from pathlib import Path
 
@@ -133,6 +134,77 @@ DATA_DIR = Path(f"/data/{DEPLOYMENT_ID}")
 WORKSPACE_DIR = Path("/agent/creator")
 RESOLUTIONS_DIR = DATA_DIR / "resolutions"
 RESOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Which suspended graph an approval belongs to. The graph's own state is
+# checkpointed to this same volume by the creator package, so it survives a
+# restart — but the pointer to it lived only in the _pending_resumes dict, which
+# does not. The result was a half-persisted system: the paused work was still on
+# disk and still resumable, while the adapter reported it gone. Written per
+# approval rather than as one file, so two resolutions can never race.
+PENDING_RESUMES_DIR = DATA_DIR / "pending_resumes"
+PENDING_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# An action the manager has just approved, set while the graph is resumed.
+#
+# Blocked actions are gated twice: the creator's graph raises interrupt() before
+# it calls a tool, and graph_request classifies the resulting Graph call and gates
+# it again. The second gate is what protects buyers from creator code that never
+# declared an action as blocked, so it has to stay — but on a resume it fired for
+# the very action the manager had just approved, queued a second identical
+# request, and blocked on it. The buyer approved an upload and was immediately
+# asked to approve the same upload again, while the file was never written.
+#
+# A ContextVar rather than a plain global: resumes run as asyncio tasks, each task
+# gets its own copy, and two concurrent resumes cannot exempt each other's action.
+_human_approved_action: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_human_approved_action", default=None
+)
+
+
+def _remember_pending_resume(approval_id: str, info: dict) -> None:
+    """Record which graph thread an approval will resume, in memory and on disk."""
+    _pending_resumes[approval_id] = info
+    try:
+        (PENDING_RESUMES_DIR / f"{approval_id}.json").write_text(
+            json.dumps(info), encoding="utf-8"
+        )
+    except Exception as e:
+        # Non-fatal: the in-memory entry still works for as long as this process
+        # lives, which is exactly the old behaviour.
+        print(f"[adapter] Could not persist pending resume {approval_id}: {e}", flush=True)
+
+
+def _recall_pending_resume(approval_id: str) -> dict | None:
+    """Find a pending resume, falling back to disk after a restart."""
+    info = _pending_resumes.get(approval_id)
+    if info is not None:
+        return info
+    try:
+        path = PENDING_RESUMES_DIR / f"{approval_id}.json"
+        if path.exists():
+            info = json.loads(path.read_text(encoding="utf-8"))
+            _pending_resumes[approval_id] = info
+            print(
+                f"[adapter] Recovered pending resume {approval_id} from disk "
+                f"(thread={info.get('thread_id')})",
+                flush=True,
+            )
+            return info
+    except Exception as e:
+        print(f"[adapter] Could not read pending resume {approval_id}: {e}", flush=True)
+    return None
+
+
+def _forget_pending_resume(approval_id: str) -> dict | None:
+    """Take a pending resume, removing both copies."""
+    info = _recall_pending_resume(approval_id)
+    _pending_resumes.pop(approval_id, None)
+    try:
+        (PENDING_RESUMES_DIR / f"{approval_id}.json").unlink(missing_ok=True)
+    except Exception:
+        pass
+    return info
 
 # ─── MCP Client ─────────────────────────────────────────────────────────────
 
@@ -1314,7 +1386,13 @@ async def graph_request(
             args["recipients"] = [
                 r.get("email") if isinstance(r, dict) else r for r in args["recipients"]
             ]
-        needs, reason = _should_require_action_approval(action, args, risk_assessment)
+        if _human_approved_action.get() == action:
+            # Consumed once. A resume is free to perform further actions, and each
+            # of those is a fresh decision the manager has not made yet.
+            _human_approved_action.set(None)
+            needs, reason = False, "manager approved this action for this run"
+        else:
+            needs, reason = _should_require_action_approval(action, args, risk_assessment)
         print(f"[graph] {action}: {'approval required' if needs else 'auto'} — {reason}", flush=True)
 
         if needs:
@@ -1623,21 +1701,21 @@ async def resolve_approval(approval_id: str, body: ApprovalResolution):
     resolution_path = RESOLUTIONS_DIR / f"{approval_id}.json"
     resolution_path.write_text(json.dumps(resolution))
 
-    # If there's a pending interrupted graph, resume it.
+    # If there's a pending interrupted graph, resume it — including one paused
+    # before a restart, since both the graph state and the pointer to it are now
+    # on the /data volume.
     #
-    # When there is not, say so. _pending_resumes lives in memory, so a restart —
-    # a redeploy, a crash, a re-provision — empties it while the approval itself
-    # survives in the database. This used to answer {"ok": true} regardless, so a
-    # buyer approved an action, saw it succeed, and nothing ever happened. Silence
-    # was the worst part: a rejection at least tells you where you stand.
-    if approval_id in _pending_resumes:
+    # When there genuinely is nothing to resume, say so. This used to answer
+    # {"ok": true} regardless, so a buyer approved an action, saw it succeed, and
+    # nothing ever happened. Silence was the worst part: a rejection at least
+    # tells you where you stand.
+    if _recall_pending_resume(approval_id) is not None:
         asyncio.create_task(_resume_and_deliver(approval_id, resolution))
         return {"ok": True, "resumed": True}
 
     print(
-        f"[adapter] Resolution for {approval_id} recorded, but no interrupted run is "
-        f"waiting on it — the agent restarted after this approval was raised, so the "
-        f"work it would have resumed no longer exists.",
+        f"[adapter] Resolution for {approval_id} recorded, but no suspended run is "
+        f"associated with it — no checkpoint and no pending-resume record on disk.",
         flush=True,
     )
     return {
@@ -1645,9 +1723,8 @@ async def resolve_approval(approval_id: str, body: ApprovalResolution):
         "resumed": False,
         "reason": "no_pending_run",
         "detail": (
-            "The decision was recorded, but the agent restarted after this request was "
-            "raised, so the paused work is gone and cannot be continued. Ask the agent "
-            "again to have it redo the task."
+            "The decision was recorded, but no paused work could be found for it, so "
+            "there was nothing to continue. Ask the agent again to have it redo the task."
         ),
     }
 
@@ -1672,13 +1749,13 @@ async def resolve_approval_alt(body: ResolveApprovalAlt):
 
     # Same honesty as the endpoint above — this is the one the web app actually
     # calls, so a silent {"ok": true} here is what the buyer sees as success.
-    if body.approvalId in _pending_resumes:
+    if _recall_pending_resume(body.approvalId) is not None:
         asyncio.create_task(_resume_and_deliver(body.approvalId, resolution))
         return {"ok": True, "resumed": True}
 
     print(
-        f"[adapter] Resolution for {body.approvalId} recorded, but no interrupted run "
-        f"is waiting on it — the agent restarted after this approval was raised.",
+        f"[adapter] Resolution for {body.approvalId} recorded, but no suspended run "
+        f"is associated with it — no pending-resume record on disk.",
         flush=True,
     )
     return {
@@ -1686,9 +1763,8 @@ async def resolve_approval_alt(body: ResolveApprovalAlt):
         "resumed": False,
         "reason": "no_pending_run",
         "detail": (
-            "The decision was recorded, but the agent restarted after this request was "
-            "raised, so the paused work is gone and cannot be continued. Ask the agent "
-            "again to have it redo the task."
+            "The decision was recorded, but no paused work could be found for it, so "
+            "there was nothing to continue. Ask the agent again to have it redo the task."
         ),
     }
 
@@ -1697,7 +1773,7 @@ async def resolve_approval_alt(body: ResolveApprovalAlt):
 
 async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
     """Resume an interrupted LangGraph and deliver the result to the right channel."""
-    resume_info = _pending_resumes.pop(approval_id, None)
+    resume_info = _forget_pending_resume(approval_id)
     if not resume_info:
         print(f"[adapter] _resume_and_deliver: no pending resume for {approval_id}", flush=True)
         return
@@ -1708,8 +1784,25 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
 
     print(f"[adapter] Resuming graph for approval {approval_id} (thread={thread_id}, channel={channel})", flush=True)
 
+    # Carry the manager's decision through to the Graph transport, so the action
+    # they just approved is not gated a second time on its way out.
+    approved_action = resume_info.get("action")
+    if approved_action and (resolution or {}).get("status") in ("APPROVED", "EDITED"):
+        _human_approved_action.set(approved_action)
+
     try:
-        result = await resume_agent(thread_id, resolution)
+        # Same tool set the original run was given. The agent cannot checkpoint
+        # functions, so after a restart the resumed graph has no way to reach
+        # Microsoft unless they are handed back here.
+        result = await resume_agent(
+            thread_id,
+            resolution,
+            contribute_fn=contribute_knowledge,
+            search_fn=search_knowledge,
+            use_fn=report_usage,
+            graph_fn=graph_request,
+            **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+        )
     except Exception as e:
         print(f"[adapter] resume_agent failed: {e}", flush=True)
         result = {"status": "error", "error": str(e)}
@@ -1734,11 +1827,11 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
                     thread_id=channel_ctx.get("conversation_id") or channel_ctx.get("thread_id"),
                     original_request=channel_ctx.get("original_message", ""),
                 )
-                _pending_resumes[new_approval_id] = {
+                _remember_pending_resume(new_approval_id, {
                     "thread_id": thread_id,
                     "channel": channel,
                     "channel_context": channel_ctx,
-                }
+                })
                 print(f"[adapter] Chained interrupt: new approval {new_approval_id}", flush=True)
             except Exception as e:
                 print(f"[adapter] Failed to queue chained approval: {e}", flush=True)
@@ -1760,7 +1853,14 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
     if action_results and not reply_text:
         # Use the last action result as the reply
         last_result = action_results[-1] if isinstance(action_results, list) else str(action_results)
-        reply_text = f"✅ {last_result}"
+        # The tick is not unconditional. execute_action puts its failures in this
+        # same list, so a flat prefix produced messages like "✅ Error: Microsoft
+        # access is not available" — telling the buyer an action succeeded while
+        # quoting the reason it did not.
+        _failed = isinstance(last_result, str) and last_result.strip().lower().startswith(
+            ("error", "failed", "unknown action")
+        )
+        reply_text = f"{'⚠️' if _failed else '✅'} {last_result}"
     elif action_results and reply_text:
         # Append action details to the reply
         for ar in (action_results if isinstance(action_results, list) else [action_results]):
@@ -1921,11 +2021,15 @@ async def _handle_interrupt(
             thread_id=channel_context.get("conversation_id") or channel_context.get("thread_id"),
             original_request=channel_context.get("original_message", ""),
         )
-        _pending_resumes[approval_id] = {
+        _remember_pending_resume(approval_id, {
             "thread_id": thread_id,
             "channel": channel,
             "channel_context": channel_context,
-        }
+            # Which action the manager is being asked about, so that when the
+            # graph resumes, the Graph transport can recognise it has already
+            # been approved instead of asking a second time.
+            "action": action_name,
+        })
         print(f"[adapter] Queued approval {approval_id} for interrupted graph (thread={thread_id})", flush=True)
 
         if action_name == "request_decision":
@@ -2451,7 +2555,7 @@ async def _handle_message(message: str, context: dict):
                     asyncio.create_task(_sync_approval_to_portal(approval_id, resolution_action, edited_text, rejection_reason))
 
                 # If there's a pending interrupted graph, resume it
-                if approval_id in _pending_resumes:
+                if _recall_pending_resume(approval_id) is not None:
                     asyncio.create_task(_resume_and_deliver(approval_id, resolution))
 
             reply_text = result.get("text")
