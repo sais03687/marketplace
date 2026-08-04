@@ -135,6 +135,11 @@ class AgentState(BaseModel):
     actions_taken: list = Field(default_factory=list)
     action_results: list = Field(default_factory=list)
     iteration: int = 0
+    # Consecutive turns the model has returned action=none while claiming the
+    # task is unfinished. Lives on the state so it survives a super-step; the
+    # equivalent counter used to be incremented inside the router, where the
+    # assignment was discarded and the guard it fed never fired.
+    none_streak: int = 0
     # A real multi-step task spends five steps before it can even answer:
     # drive_list, excel_list_sheets, excel_read, mcp_call, reply. At eight, one
     # wrong turn or a retried tool call left nothing for the reply — the chart
@@ -476,44 +481,96 @@ async def reason_and_act(state: AgentState) -> AgentState:
     action = state.analysis.get("action") if isinstance(state.analysis, dict) else None
     print(f"[agent] Parsed action: {json.dumps(action, default=str)[:200] if action else 'None/missing'}", flush=True)
 
+    # Decisions that change state belong here, in a node, never in the router.
+    #
+    # A conditional edge contributes only the name of the next node — anything it
+    # assigns to state is discarded. Three separate decisions were being made in
+    # route_after_reasoning by mutating state, and none of them took effect. Two
+    # were meant to stop the graph looping, including one whose comment reads
+    # "count this as an iteration to prevent infinite loops".
+    action_type = action.get("type", "none") if isinstance(action, dict) else "none"
+
+    # Nothing gathered yet and the model opened with "none": give it a first look
+    # at the folder rather than finalising on an empty hand.
+    if action_type == "none" and state.iteration == 0 and not state.actions_taken:
+        print("[agent] Forcing drive_list on first iteration (model returned none with no prior actions)", flush=True)
+        state.analysis["action"] = {"type": "drive_list", "params": {}}
+        action_type = "drive_list"
+
+    # How many turns in a row the model has declined to act while claiming the task
+    # is unfinished. Re-reasoning once or twice recovers a malformed action; beyond
+    # that it is not going to, and each further turn is another paid call for
+    # nothing. Counted here so the value survives into the next super-step.
+    if action_type == "none" and not state.analysis.get("completed", False) and state.actions_taken:
+        state.none_streak += 1
+    else:
+        state.none_streak = 0
+
     return state
 
 
+async def wrap_up(state: AgentState) -> AgentState:
+    """Final pass once the step budget is spent: write the reply, take no action.
+
+    A node rather than a jump back into reason_and_act. The first version of this
+    set a flag inside the router to stop it re-entering, and because router
+    mutations are discarded the flag was never there on the next visit — the graph
+    bounced between reason_and_act and the router indefinitely, one model call per
+    turn, executing nothing. That is what burned roughly twenty calls a minute on a
+    freshly hired agent until it was paused.
+
+    With a fixed edge to finalize, re-entry is impossible by construction rather
+    than by a flag that has to survive.
+    """
+    state.context["_wrapping_up"] = True
+    print(
+        f"[agent] Out of steps after {len(state.actions_taken)} action(s) — final pass for the reply",
+        flush=True,
+    )
+    return await reason_and_act(state)
+
+
 def route_after_reasoning(state: AgentState) -> str:
-    """Route based on the reasoning output."""
+    """Route based on the reasoning output.
+
+    Reads state, never writes it. A conditional edge only contributes the name of
+    the next node, so anything assigned here is thrown away — which is how two
+    guards meant to prevent infinite loops came to do nothing at all. Every
+    decision that needs to persist is made in reason_and_act or wrap_up.
+    """
     if not isinstance(state.analysis, dict):
         return "finalize"
     if state.analysis.get("completed", False):
         return "finalize"
-    if state.iteration >= state.max_iterations:
-        # Out of steps, but not out of things to say. Going straight to finalize
-        # hands it whatever final_response exists, and mid-task there is none — so
-        # the result was action=none with empty text and the person who asked got
-        # "I wasn't sure how to respond" after the agent had read their data and
-        # built their chart. One more pass, for the reply only.
-        if state.actions_taken and not state.context.get("_wrapping_up"):
-            state.context["_wrapping_up"] = True
-            print(
-                f"[agent] Out of iterations after {len(state.actions_taken)} action(s) "
-                f"— one final pass to write the reply",
-                flush=True,
-            )
-            return "reason_and_act"
+
+    # Already written the closing reply — nothing follows it.
+    if state.context.get("_wrapping_up"):
         return "finalize"
+
+    # Out of steps, but not out of things to say. Going straight to finalize hands
+    # it whatever final_response exists, and mid-task there is none — the requester
+    # got "I wasn't sure how to respond" after the agent had read their data and
+    # built their chart. One more pass, for the reply only, then finalize.
+    if state.iteration >= state.max_iterations:
+        return "wrap_up" if state.actions_taken else "finalize"
+
     action = state.analysis.get("action") or {}
     if isinstance(action, dict) and action.get("type", "none") != "none":
         return "execute_action"
-    # Force drive_list on first iteration if LLM said none but hasn't taken any actions
-    if state.iteration == 0 and not state.actions_taken:
-        print("[agent] Forcing drive_list on first iteration (LLM returned none with no prior actions)", flush=True)
-        state.analysis["action"] = {"type": "drive_list", "params": {}}
-        return "execute_action"
-    # If the LLM returned none but the task isn't complete and we have room to iterate,
-    # loop back to reasoning — the LLM likely just failed to emit the action type properly.
-    if not state.analysis.get("completed", False) and state.iteration < state.max_iterations - 1 and state.actions_taken:
-        print(f"[agent] LLM returned action=none but task not complete (iter={state.iteration}) — re-reasoning", flush=True)
-        state.iteration += 1  # count this as an iteration to prevent infinite loops
+
+    # The model declined to act while saying the task is unfinished. Give it a
+    # couple of turns to recover from a malformed action, then stop: past that it
+    # is looping, and every turn is another paid call producing nothing.
+    if state.none_streak <= 2 and state.iteration < state.max_iterations - 1 and state.actions_taken:
+        print(
+            f"[agent] action=none but task not complete "
+            f"(streak={state.none_streak}, iter={state.iteration}) — re-reasoning",
+            flush=True,
+        )
         return "reason_and_act"
+
+    if state.none_streak > 2:
+        print(f"[agent] action=none {state.none_streak} turns running — finalizing", flush=True)
     return "finalize"
 
 
@@ -826,11 +883,16 @@ async def execute_action(state: AgentState) -> AgentState:
 
 
 def route_after_execution(state: AgentState) -> str:
-    """After executing an action, decide whether to continue reasoning or finalize."""
+    """After executing an action, decide whether to continue reasoning or finalize.
+
+    Reads only, like route_after_reasoning. The flag is cleared in finalize, which
+    is a node and therefore actually persists the change — clearing it here looked
+    right and did nothing, since a conditional edge contributes only its return
+    value.
+    """
     # If a blocked action was just approved and executed, go straight to finalize
     # to compose the reply — don't re-reason (which causes repeated writes).
     if state.context.get("_approved_action_executing"):
-        state.context.pop("_approved_action_executing", None)
         print(f"[agent] Approved action executed — going to finalize", flush=True)
         return "finalize"
     return "reason_and_act"
@@ -838,6 +900,10 @@ def route_after_execution(state: AgentState) -> str:
 
 async def finalize(state: AgentState) -> AgentState:
     """Build the final result dict that the adapter will act on."""
+    # Cleared here rather than in the router that reads it, because this is a node
+    # and its writes survive.
+    state.context.pop("_approved_action_executing", None)
+
     analysis = state.analysis if isinstance(state.analysis, dict) else {}
     final = analysis.get("final_response") or {}
     if not isinstance(final, dict):
@@ -1033,6 +1099,7 @@ def build_graph() -> StateGraph:
     graph.add_node("search_commons", search_commons)
     graph.add_node("reason_and_act", reason_and_act)
     graph.add_node("execute_action", execute_action)
+    graph.add_node("wrap_up", wrap_up)
     graph.add_node("finalize", finalize)
     graph.add_node("maybe_contribute", maybe_contribute)
 
@@ -1043,6 +1110,8 @@ def build_graph() -> StateGraph:
     # After executing an action, either finalize (if it was an approved blocked action)
     # or loop back to reasoning for the next step.
     graph.add_conditional_edges("execute_action", route_after_execution)
+    # Fixed edge: the closing pass cannot lead anywhere but the end.
+    graph.add_edge("wrap_up", "finalize")
     graph.add_edge("finalize", "maybe_contribute")
     graph.add_edge("maybe_contribute", END)
 
