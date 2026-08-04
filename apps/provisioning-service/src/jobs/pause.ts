@@ -21,10 +21,17 @@ export async function pauseJob(deploymentId: string): Promise<void> {
 
   if (!deployment) throw new Error(`Deployment ${deploymentId} not found`);
   if (deployment.status === "FIRED") throw new Error("Cannot pause a fired deployment");
-  if (deployment.status === "PAUSED") {
-    console.log(`[pause] ${deploymentId.slice(0, 8)} already paused`);
-    return;
-  }
+
+  // Deliberately no early return on status === "PAUSED".
+  //
+  // The route marks the deployment PAUSED before this job runs, so the status is
+  // always already PAUSED by the time we get here — which meant this guard fired
+  // every single time and returned before stopping anything. The row said paused
+  // and the container went on answering mail.
+  //
+  // Idempotency has to come from the work instead, and it does: stopping a
+  // container that is already stopped is a no-op. Status is a record of intent,
+  // not evidence that the intent was carried out.
 
   // Stop the agent container (stopCustomAgent also kills its poller)
   if (deployment.containerName) {
@@ -54,10 +61,14 @@ export async function resumeJob(deploymentId: string): Promise<void> {
 
   if (!deployment) throw new Error(`Deployment ${deploymentId} not found`);
   if (deployment.status === "FIRED") throw new Error("Cannot resume a fired deployment");
-  if (deployment.status !== "PAUSED") {
-    console.log(`[resume] ${deploymentId.slice(0, 8)} is not paused (status: ${deployment.status})`);
-    return;
-  }
+
+  // The mirror of the guard removed from pauseJob, and broken the same way: the
+  // route sets the deployment ACTIVE before enqueuing this, so the status is never
+  // PAUSED by the time the job reads it. The job would log "is not paused" and
+  // return, leaving a deployment marked ACTIVE with nothing running.
+  //
+  // Re-provisioning an already-running deployment is safe — it reconciles rather
+  // than duplicating — so there is nothing to guard against here.
 
   if (!deployment.containerName) {
     throw new Error(`Deployment ${deploymentId} has no containerName — cannot resume`);

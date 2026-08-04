@@ -1,16 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
-import { Queue } from "bullmq";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
-let vetQueue: Queue | null = null;
-function getVetQueue() {
-  if (!vetQueue) {
-    vetQueue = new Queue("provisioning", {
-      connection: { url: process.env.REDIS_URL || "redis://localhost:6379" },
-    });
-  }
-  return vetQueue;
-}
 
 // POST /api/packages/[id]/vet-sandbox — enqueue a vetting job
 // Body (all optional):
@@ -46,7 +37,7 @@ export async function POST(
     skipDefaultTests = body?.skipDefaultTests === true;
   } catch { /* no body — fine */ }
 
-  const queue = getVetQueue();
+  const queue = getProvisioningQueue();
   const job = await queue.add("vet_package", {
     type: "vet_package",
     versionId,

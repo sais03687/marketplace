@@ -6,8 +6,8 @@ import {
   parseBody,
   requireOrg,
 } from "@/lib/api-utils";
-import { Queue } from "bullmq";
 import { getStripe } from "@/lib/stripe";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 const createDeploymentSchema = z.object({
   agentId: z.string().min(1),
@@ -27,22 +27,6 @@ const createDeploymentSchema = z.object({
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
 
-let provisionQueue: Queue | null = null;
-function getProvisionQueue() {
-  if (!provisionQueue) {
-    const redisUrl = new URL(process.env.REDIS_URL || "redis://localhost:6379");
-    provisionQueue = new Queue("provisioning", {
-      connection: {
-        host: redisUrl.hostname,
-        port: parseInt(redisUrl.port || "6379", 10),
-        username: redisUrl.username || undefined,
-        password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
-        tls: redisUrl.protocol === "rediss:" ? {} : undefined,
-      },
-    });
-  }
-  return provisionQueue;
-}
 
 export async function GET(request: Request) {
   const orgResult = await requireOrg();
@@ -200,7 +184,7 @@ export async function POST(request: Request) {
 
   // Dev/no-Stripe fallback: enqueue provisioning directly
   try {
-    await getProvisionQueue().add("provision", {
+    await getProvisioningQueue().add("provision", {
       type: "provision",
       deploymentId: deployment.id,
     });

@@ -1,26 +1,10 @@
 import { NextRequest } from "next/server";
 import type Stripe from "stripe";
-import { Queue } from "bullmq";
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
-let provisioningQueue: Queue | null = null;
-function getProvisioningQueue() {
-  if (!provisioningQueue) {
-    const redisUrl = new URL(process.env.REDIS_URL || "redis://localhost:6379");
-    provisioningQueue = new Queue("provisioning", {
-      connection: {
-        host: redisUrl.hostname,
-        port: parseInt(redisUrl.port || "6379", 10),
-        username: redisUrl.username || undefined,
-        password: redisUrl.password ? decodeURIComponent(redisUrl.password) : undefined,
-        tls: redisUrl.protocol === "rediss:" ? {} : undefined,
-      },
-    });
-  }
-  return provisioningQueue;
-}
 
 async function enqueueDeprovision(deploymentId: string) {
   try {

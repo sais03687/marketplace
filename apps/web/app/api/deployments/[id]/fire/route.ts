@@ -1,26 +1,11 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
-import { Queue } from "bullmq";
 import { getStripe } from "@/lib/stripe";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 // The provisioning worker listens on the "provisioning" queue for ALL job types
 // (provision, deprovision, pause, resume, update). The old "deprovision" queue
 // was never consumed — fixed here.
-let provisioningQueue: Queue | null = null;
-function getProvisioningQueue() {
-  if (!provisioningQueue) {
-    provisioningQueue = new Queue("provisioning", {
-      connection: {
-        host: new URL(process.env.REDIS_URL || "redis://localhost:6379").hostname,
-        port: parseInt(
-          new URL(process.env.REDIS_URL || "redis://localhost:6379").port || "6379",
-          10,
-        ),
-      },
-    });
-  }
-  return provisioningQueue;
-}
 
 export async function POST(
   _request: Request,

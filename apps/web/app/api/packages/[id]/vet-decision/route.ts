@@ -2,23 +2,8 @@ import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
 import { sendNotificationEmail, buildVettingDecisionEmail } from "@/lib/email";
-import { Queue } from "bullmq";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
-let provisioningQueue: Queue | null = null;
-function getProvisioningQueue() {
-  if (!provisioningQueue) {
-    provisioningQueue = new Queue("provisioning", {
-      connection: {
-        host: new URL(process.env.REDIS_URL || "redis://localhost:6379").hostname,
-        port: parseInt(
-          new URL(process.env.REDIS_URL || "redis://localhost:6379").port || "6379",
-          10,
-        ),
-      },
-    });
-  }
-  return provisioningQueue;
-}
 
 export async function POST(
   request: Request,
