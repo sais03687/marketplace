@@ -866,6 +866,44 @@ export function startProxyServer() {
       return;
     }
 
+    // Sentence embeddings for AgentMind semantic search.
+    //
+    // Served from here because the model is local and this process is long-lived,
+    // so it loads once and stays warm. The web app calls this rather than a paid
+    // embedding API — same quality on the cases that matter, no key, no per-call
+    // cost. See embedding.ts.
+    if (req.method === "POST" && req.url === "/internal/embed") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let raw = "";
+      req.on("data", (chunk: string) => { raw += chunk; });
+      req.on("end", async () => {
+        let texts: unknown;
+        try {
+          ({ texts } = JSON.parse(raw) as { texts?: unknown });
+        } catch {
+          return send(res, 400, { error: "Invalid JSON body" });
+        }
+        if (!Array.isArray(texts) || texts.some((t) => typeof t !== "string")) {
+          return send(res, 400, { error: "texts must be an array of strings" });
+        }
+        if (texts.length > 64) {
+          return send(res, 400, { error: "at most 64 texts per request" });
+        }
+        try {
+          const { embedTexts, EMBEDDING_MODEL, EMBEDDING_DIM } = await import("./embedding.js");
+          const embeddings = await embedTexts(texts as string[]);
+          send(res, 200, { embeddings, model: EMBEDDING_MODEL, dim: EMBEDDING_DIM });
+        } catch (err: any) {
+          console.error(`[embedding] Failed: ${err.message}`);
+          send(res, 500, { error: err.message });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/forward-resolve") {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

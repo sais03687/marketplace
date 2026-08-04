@@ -933,13 +933,30 @@ async def maybe_contribute(state: AgentState) -> AgentState:
         print(f"[agentmind] Rejected contribution: likely contains PRIVATE.md content", flush=True)
         return state
 
+    # What this lesson was actually learned from.
+    #
+    # This used to send the literal string "data-analysis" — the task type, which
+    # every contribution shares and which tells a reviewer nothing. Whether a
+    # lesson is durable depends entirely on what produced it: "the platform
+    # refuses external shares" is permanent, while "Excel returns 501" was one
+    # corrupt file that has since been replaced. Both read identically without
+    # their origin, and the second sat approved for a day teaching the agent to
+    # avoid spreadsheets.
+    request_snippet = (state.content or "").strip().replace("\n", " ")[:200]
+    last_result = ""
+    if state.action_results:
+        last_result = str(state.action_results[-1]).strip().replace("\n", " ")[:300]
+    provenance = f"Request: {request_snippet or '(none)'}"
+    if last_result:
+        provenance += f"\nTriggered by: {last_result}"
+
     try:
         await contribute_fn(
             contribution_type=insight["type"],
             title=insight["title"],
             content=insight["content"],
             tags=insight.get("tags", ["data-analysis"]),
-            context="data-analysis",
+            context=provenance,
         )
         print(f"[agentmind] Contributed: {insight['title']}", flush=True)
     except Exception as e:

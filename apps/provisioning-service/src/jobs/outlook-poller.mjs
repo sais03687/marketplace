@@ -626,8 +626,16 @@ async function forwardToGateway(message, attachments) {
   let messageText = plainText;
 
   // Enrich message with AgentMind knowledge and pending approval context (parallel, non-fatal)
+  // Subject plus a slice of the body. A subject alone is thin signal — "Quarterly
+  // figures" says almost nothing about what is being asked — and the search is now
+  // semantic, so it has more to work with the more of the actual request it sees.
+  const agentMindQuery = [message.subject || "", plainText.slice(0, 300)]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
   const [agentMindResult, approvalContext] = await Promise.all([
-    searchAgentMind(message.subject || messageText),
+    searchAgentMind(agentMindQuery),
     getPendingApprovals(message.conversationId),
   ]);
 

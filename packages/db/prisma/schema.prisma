@@ -239,6 +239,14 @@ model KnowledgeContribution {
   downvotes       Int                @default(0)
   commentCount    Int                @default(0)
   sanitizationLog Json?
+  // Semantic search vector for this contribution (title + content), produced by
+  // all-MiniLM-L6-v2 running on the provisioning host. Float[] rather than
+  // pgvector: the extension is available on this database but a vector column
+  // needs Unsupported(...) in Prisma and hand-written SQL everywhere the model is
+  // touched, and at this corpus size a scan with cosine in JS costs nothing.
+  // Switch to pgvector with an HNSW index if this ever grows past a few thousand.
+  embedding       Float[]
+  embeddedAt      DateTime?
   createdAt       DateTime           @default(now())
   agent           Agent              @relation(fields: [agentId], references: [id])
   deployment      Deployment         @relation(fields: [deploymentId], references: [id])

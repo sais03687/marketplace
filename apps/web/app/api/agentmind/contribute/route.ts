@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { runGuardrails, contributionInputSchema } from "@/lib/agentmind/guardrails";
 import { z } from "zod";
+import { embedTexts } from "@/lib/agentmind-embedding";
 
 const bodySchema = z.object({
   deploymentId: z.string().min(1),
@@ -81,9 +82,25 @@ export async function POST(request: Request) {
     );
   }
 
-  // Resolve initial status based on deployment's agentMind preference
+  // Resolve initial status based on deployment's agentMind preference.
+  //
+  // CORRECTION is held for review whatever the buyer set, because it is the class
+  // that goes stale. A correction encodes "when X happens, do Y" — it is a record
+  // of a failure, and a failure is exactly the thing that stops being true once
+  // somebody fixes it. One recorded that a 501 from Excel meant the workbook API
+  // was unavailable and the agent should apologise and offer alternatives; the
+  // real cause was a 253-byte file that was not a workbook, since replaced. It
+  // stayed approved, describing the opposite of the truth about the agent's main
+  // job. The other three types describe durable things — a pattern, a template, a
+  // recipe — and keep flowing as the buyer configured.
   const autoApprove = ac.agentMindAutoApprove !== false; // default true
-  const initialStatus = autoApprove ? "APPROVED" : "PENDING";
+  const initialStatus = autoApprove && type !== "CORRECTION" ? "APPROVED" : "PENDING";
+
+  // Embed now so the lesson is searchable the moment it is approved. Non-fatal:
+  // a row without a vector is still a perfectly good row, it simply falls to the
+  // keyword path until the backfill picks it up.
+  const [embedding] =
+    (await embedTexts([`${title}\n${guardrailResult.sanitizedContent}`])) ?? [];
 
   const contribution = await prisma.knowledgeContribution.create({
     data: {
@@ -97,6 +114,8 @@ export async function POST(request: Request) {
       tags,
       sanitizationLog: guardrailResult.log,
       status: initialStatus,
+      embedding: embedding ?? [],
+      embeddedAt: embedding?.length ? new Date() : null,
     },
   });
 

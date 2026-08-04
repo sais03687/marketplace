@@ -2,6 +2,25 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { jsonSuccess, jsonError, parseSearchParams } from "@/lib/api-utils";
+import {
+  embedTexts,
+  cosineSimilarity,
+  tokenise,
+  keywordScore,
+  SIMILARITY_THRESHOLD,
+} from "@/lib/agentmind-embedding";
+
+const SELECT_FIELDS = {
+  id: true,
+  type: true,
+  title: true,
+  content: true,
+  tags: true,
+  usageCount: true,
+  upvotes: true,
+  downvotes: true,
+  createdAt: true,
+} as const;
 
 const searchSchema = z.object({
   agentId: z.string().min(1),
@@ -43,30 +62,64 @@ export async function GET(request: NextRequest) {
     where.type = params.type;
   }
 
-  if (params.q && params.q.trim()) {
-    where.OR = [
-      { title: { contains: params.q.trim(), mode: "insensitive" } },
-      { content: { contains: params.q.trim(), mode: "insensitive" } },
-      { tags: { has: params.q.trim().toLowerCase() } },
-    ];
+  const query = (params.q ?? "").trim();
+
+  // No query: browse the most-used, as before.
+  if (!query) {
+    const browsed = await prisma.knowledgeContribution.findMany({
+      where,
+      select: SELECT_FIELDS,
+      orderBy: { usageCount: "desc" },
+      take: limit,
+    });
+    return jsonSuccess({ contributions: browsed });
   }
 
-  const contributions = await prisma.knowledgeContribution.findMany({
+  // Rank the agent's approved lessons against the query.
+  //
+  // This used to be a single Prisma `contains` on the whole query string, so the
+  // entire email subject had to appear verbatim inside a lesson. It never did:
+  // retrieval had never once fired in production, and every usageCount was zero.
+  // The pairs that matter share meaning rather than words — "Can you share a file
+  // with an outside partner?" and "External file sharing policy" have no word in
+  // common — so this is a semantic comparison, with keyword matching kept only as
+  // the degraded path.
+  const candidates = await prisma.knowledgeContribution.findMany({
     where,
-    select: {
-      id: true,
-      type: true,
-      title: true,
-      content: true,
-      tags: true,
-      usageCount: true,
-      upvotes: true,
-      downvotes: true,
-      createdAt: true,
-    },
+    select: { ...SELECT_FIELDS, embedding: true },
     orderBy: { usageCount: "desc" },
-    take: limit,
+    // The corpus is small and scoped to one agent; take enough to rank well
+    // without unbounded reads if it ever grows.
+    take: 500,
   });
+
+  if (candidates.length === 0) return jsonSuccess({ contributions: [] });
+
+  const [queryVector] = (await embedTexts([query])) ?? [];
+  const scored: { row: (typeof candidates)[number]; score: number }[] = [];
+
+  if (queryVector?.length) {
+    for (const row of candidates) {
+      const score = cosineSimilarity(queryVector, row.embedding ?? []);
+      if (score >= SIMILARITY_THRESHOLD) scored.push({ row, score });
+    }
+  } else {
+    // Embeddings unavailable, or nothing has been embedded yet. Fall back to
+    // terms, requiring two or more so one common word cannot pull in everything.
+    const tokens = tokenise(query);
+    for (const row of candidates) {
+      const hits = keywordScore(tokens, row);
+      if (hits >= 2) scored.push({ row, score: hits });
+    }
+  }
+
+  const contributions = scored
+    .sort((a, b) => b.score - a.score || b.row.usageCount - a.row.usageCount)
+    .slice(0, limit)
+    .map(({ row }) => {
+      const { embedding: _embedding, ...rest } = row as Record<string, unknown>;
+      return rest;
+    });
 
   // NOTE: usageCount is NOT incremented here — search is just browsing.
   // Agents call POST /api/agentmind/use with the IDs they actually

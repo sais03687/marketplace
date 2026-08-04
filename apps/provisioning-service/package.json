@@ -9,6 +9,7 @@
     "start": "node --env-file=../../.env dist/index.js"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.0.0",
     "@marketplace/agent-package-schema": "workspace:*",
     "@marketplace/db": "workspace:*",
     "adm-zip": "^0.5.17",
