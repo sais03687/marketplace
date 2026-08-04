@@ -1346,14 +1346,26 @@ def _share_recipient_allowed(address: str, allow: dict) -> bool:
     if not addr:
         return False
 
-    domain = str(allow.get("companyDomain") or "").strip().lower() or COMPANY_DOMAIN.strip().lower()
     manager = str(allow.get("managerEmail") or "").strip().lower() or _manager_email().lower()
     entries = [str(e).strip().lower() for e in (allow.get("allowedEmails") or []) if e]
 
-    if domain and addr.endswith("@" + domain):
-        return True
+    # The agent's own mail domain is included deliberately, and is not the same as
+    # the recorded company domain. On this deployment Company.domain is "acme.com"
+    # while the agent actually lives at agents.agentstore.it.com — so keying only
+    # on the recorded value refused colleagues in the agent's own tenant and
+    # permitted a domain the agent has no presence in. Whatever the record says,
+    # someone sharing a mail domain with the agent is inside the organisation.
+    domains = {
+        _agent_own_domain(),
+        str(allow.get("companyDomain") or "").strip().lower(),
+        COMPANY_DOMAIN.strip().lower(),
+    }
+
     if manager and addr == manager:
         return True
+    for domain in domains:
+        if domain and addr.endswith("@" + domain):
+            return True
     for e in entries:
         if e.startswith("@") and addr.endswith(e):
             return True
@@ -1362,26 +1374,45 @@ def _share_recipient_allowed(address: str, allow: dict) -> bool:
     return False
 
 
+def _agent_own_domain() -> str:
+    """The agent's own mail domain — the floor for every sender rule.
+
+    Agents are provisioned as users inside the buyer's tenant, so the domain of
+    the agent's own mailbox is the company domain. Taking it from here rather than
+    from the allowlist response means the rules still hold when that response is
+    unavailable.
+    """
+    for candidate in (WORKSPACE_EMAIL, AGENT_EMAIL):
+        addr = (candidate or "").strip().lower()
+        if "@" in addr:
+            return addr.rsplit("@", 1)[1]
+    return ""
+
+
 def _sender_allowed(address: str, allow: dict) -> bool:
     """Is this sender permitted to reach the agent?
 
-    An empty allowedEmails means no restriction — that is the product's meaning of
-    an unconfigured list, and matches the poller. The manager and the company
-    domain are always permitted.
+    An empty allowedEmails used to mean "no restriction", which gave the buyer who
+    configured nothing the weakest posture available: an agent that would converse
+    with anyone who learned its address and answer out of their SharePoint. It now
+    means the organisation only — the manager, the company domain, and whatever the
+    buyer added themselves.
+
+    Kept in step with isSenderAllowed in the poller. That decides what is forwarded;
+    this decides what the agent may read from its own mailbox, and the two
+    disagreeing is how the allowlist came to be bypassable in the first place.
     """
     addr = (address or "").strip().lower()
     if not addr:
         return False
-    manager = str(allow.get("managerEmail") or "").strip().lower()
-    domain = str(allow.get("companyDomain") or "").strip().lower()
+    manager = str(allow.get("managerEmail") or "").strip().lower() or _manager_email().lower()
     entries = [str(e).strip().lower() for e in (allow.get("allowedEmails") or []) if e]
 
     if manager and addr == manager:
         return True
-    if domain and addr.endswith("@" + domain):
-        return True
-    if not entries:
-        return True  # unconfigured means unrestricted
+    for domain in (_agent_own_domain(), str(allow.get("companyDomain") or "").strip().lower()):
+        if domain and addr.endswith("@" + domain):
+            return True
     for e in entries:
         if e.startswith("@") and addr.endswith(e):
             return True

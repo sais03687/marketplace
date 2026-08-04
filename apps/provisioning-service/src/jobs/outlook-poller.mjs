@@ -363,20 +363,49 @@ function extractEmail(from) {
  *  4. Domain wildcard match (@domain.com) in allowedEmails list
  *  5. If none of the above match → deny
  */
+/**
+ * The agent's own domain, taken from its mailbox address.
+ *
+ * This is the floor the sender rules rest on, and it deliberately comes from the
+ * agent's own address rather than the allowlist API. Agents are provisioned as
+ * users inside the buyer's tenant, so the domain of their mailbox *is* the
+ * company domain — no network call, and nothing that can fail.
+ */
+function agentOwnDomain() {
+  const at = (OUTLOOK_AGENT_EMAIL || "").lastIndexOf("@");
+  return at === -1 ? "" : OUTLOOK_AGENT_EMAIL.slice(at + 1).toLowerCase();
+}
+
+/**
+ * May this sender reach the agent?
+ *
+ * An empty allowlist used to mean "allow everyone", which made the default
+ * posture the weakest one: a buyer who configured nothing had an agent that would
+ * hold a conversation with anyone who found its address and answer using their
+ * SharePoint data. It now means "my organisation only" — the same reading applied
+ * to share recipients, for the same reason.
+ *
+ * The company domain is honoured, which it previously was not: isSenderAllowed
+ * consulted only managerEmail and explicit entries, so configuring an allowlist
+ * at all would have started blocking the buyer's own colleagues.
+ *
+ * Nothing here depends on the allowlist API having answered. If it never does,
+ * colleagues and the manager still get through and strangers still do not, rather
+ * than the outage deciding the policy in either direction.
+ */
 function isSenderAllowed(fromHeader) {
-  const { allowedEmails, managerEmail } = allowlistCache;
+  const { allowedEmails, companyDomain, managerEmail } = allowlistCache;
 
   const email = extractEmail(fromHeader);
   if (!email) return false;
 
-  // Manager email is always allowed
   if (managerEmail && email === managerEmail.toLowerCase()) return true;
 
-  // Empty allowlist = allow everyone (no restriction configured)
-  if (!allowedEmails || allowedEmails.length === 0) return true;
+  for (const domain of [agentOwnDomain(), (companyDomain || "").toLowerCase()]) {
+    if (domain && email.endsWith("@" + domain)) return true;
+  }
 
-  // Check explicit allowlist entries
-  for (const entry of allowedEmails) {
+  for (const entry of allowedEmails || []) {
     if (entry.startsWith("@")) {
       // Domain wildcard: @partner.com
       if (email.endsWith(entry)) return true;
