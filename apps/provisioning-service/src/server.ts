@@ -822,6 +822,50 @@ export function startProxyServer() {
       return;
     }
 
+    // Pause and resume, for when the queue cannot be reached from the web app.
+    //
+    // The same fallback the fire route has had since Upstash was seen dropping
+    // connections. Pause never got it, and the consequence was worse than a failed
+    // job: the route marks the deployment PAUSED before enqueuing, so a dropped
+    // enqueue left an agent that the dashboard called paused and that carried on
+    // reading mail, answering it and holding its licence. Confirmed on 2026-08-04.
+    if (req.method === "POST" && (req.url === "/internal/pause" || req.url === "/internal/resume")) {
+      const wantPause = req.url === "/internal/pause";
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let raw = "";
+      req.on("data", (chunk: string) => { raw += chunk; });
+      req.on("end", async () => {
+        let deploymentId: string | undefined;
+        try {
+          ({ deploymentId } = JSON.parse(raw) as { deploymentId?: string });
+        } catch {
+          return send(res, 400, { error: "Invalid JSON body" });
+        }
+        if (!deploymentId) {
+          return send(res, 400, { error: "deploymentId is required" });
+        }
+        const id = deploymentId;
+        // Awaited rather than answered early: stopping a container is quick, and
+        // the caller needs to know whether the agent actually stopped before it
+        // tells the buyer that it did.
+        try {
+          const { pauseJob, resumeJob } = await import("./jobs/pause.js");
+          await (wantPause ? pauseJob(id) : resumeJob(id));
+          console.log(`[server] ${wantPause ? "Pause" : "Resume"} via HTTP fallback completed for ${id}`);
+          send(res, 200, { ok: true, deploymentId: id });
+        } catch (err: any) {
+          console.error(
+            `[server] ${wantPause ? "Pause" : "Resume"} via HTTP fallback failed for ${id}: ${err.message}`,
+          );
+          send(res, 500, { error: err.message });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/forward-resolve") {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

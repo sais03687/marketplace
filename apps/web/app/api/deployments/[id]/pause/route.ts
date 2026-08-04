@@ -52,13 +52,65 @@ export async function POST(
     },
   });
 
-  // Enqueue the real work: stop/start the gateway process and poller
+  // Do the real work: stop or start the container and its poller.
+  //
+  // This used to enqueue inside a try/catch that swallowed failures and returned
+  // success anyway, on the theory that "the gateway will be cleaned up on next
+  // service restart". It is not — startup recovery re-spawns pollers for surviving
+  // containers, it does not stop paused ones. So a dropped enqueue produced a
+  // deployment the dashboard called PAUSED whose agent kept reading mail,
+  // answering it, and holding its Microsoft licence. Confirmed in production on
+  // 2026-08-04: paused, then emailed the agent, and it replied.
+  //
+  // The queue genuinely is unreliable from here — the fire route has carried a
+  // retry and an HTTP fallback since Upstash was seen dropping connections. Pause
+  // gets the same, and reports honestly when both fail.
+  let stopQueued = false;
   try {
     await getProvisioningQueue().add(jobType, { type: jobType, deploymentId: id });
+    stopQueued = true;
   } catch (err: any) {
-    // If queue is unavailable, still return success — DB is already updated.
-    // The gateway will be cleaned up on next service restart via recovery logic.
-    console.warn(`[pause-route] Failed to enqueue ${jobType} job: ${err.message}`);
+    console.error(`[pause-route] Failed to enqueue ${jobType} for ${id}: ${err.message}`);
+  }
+
+  if (!stopQueued) {
+    const base =
+      process.env.PROVISIONING_SERVICE_URL ||
+      process.env.PROVISIONING_URL ||
+      "https://api.agentstore.it.com";
+    const secret = process.env.PROVISIONING_SECRET;
+    if (secret) {
+      try {
+        const resp = await fetch(`${base.replace(/\/$/, "")}/internal/${jobType}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+          body: JSON.stringify({ deploymentId: id }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        stopQueued = resp.ok;
+        if (!resp.ok) {
+          console.error(`[pause-route] HTTP ${jobType} fallback returned ${resp.status} for ${id}`);
+        }
+      } catch (err: any) {
+        console.error(`[pause-route] HTTP ${jobType} fallback failed for ${id}: ${err.message}`);
+      }
+    }
+  }
+
+  if (!stopQueued) {
+    // Put the status back. Claiming an agent is paused while it is still running
+    // is the one outcome worse than refusing the request — a buyer pausing a
+    // misbehaving agent would believe they had stopped it.
+    await prisma.deployment.update({
+      where: { id },
+      data: { status: deployment.status, pausedAt: isPaused ? new Date() : null },
+    });
+    return jsonError(
+      isPaused
+        ? "Could not reach the agent to resume it. Nothing has changed — please try again."
+        : "Could not reach the agent to pause it. It is still running, so nothing has changed — please try again.",
+      503,
+    );
   }
 
   return jsonSuccess({
