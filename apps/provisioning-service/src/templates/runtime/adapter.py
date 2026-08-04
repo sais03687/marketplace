@@ -7,6 +7,7 @@ Implements the 3-endpoint adapter contract:
   POST /internal/approvals/{id}/resolve — receive approval resolutions
 """
 
+import base64
 import json
 import os
 import re
@@ -143,6 +144,14 @@ RESOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 # approval rather than as one file, so two resolutions can never race.
 PENDING_RESUMES_DIR = DATA_DIR / "pending_resumes"
 PENDING_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Files that arrived attached to inbound mail. The poller fetches them from Graph
+# and puts them on the webhook payload; before this existed nothing read them, so
+# they were fetched, sent over the wire and dropped. The agent, told about a CSV it
+# could not see, spent its whole step budget retrying inbox_read (which 400s) and
+# then answered without the data.
+ATTACHMENTS_DIR = DATA_DIR / "attachments"
+ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # An action the manager has just approved, set while the graph is resumed.
@@ -2374,6 +2383,91 @@ async def receive_hook(body: HookPayload):
     return {"ok": True, "status": "accepted"}
 
 
+# Text small enough to put in front of the model directly. Above this an
+# attachment is saved and described rather than inlined, so one large file cannot
+# crowd out the request itself.
+_ATTACHMENT_INLINE_LIMIT = 20_000
+_ATTACHMENT_INLINE_TOTAL = 60_000
+
+# Extensions whose bytes are text regardless of the Content-Type the sender chose.
+# Mail clients label CSVs as application/octet-stream often enough that trusting
+# the header alone loses the common case.
+_TEXTUAL_SUFFIXES = {".csv", ".txt", ".md", ".json", ".xml", ".yaml", ".yml", ".log", ".tsv"}
+
+
+def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
+    """Save inbound attachments and describe them for the agent.
+
+    Text files are inlined, because that is the only form the agent can reason over
+    without another round trip — and inlining a CSV is what makes "what is the total
+    in the attached file" answerable at all. Everything else is written to disk and
+    named, so the agent can say what it received and act on it deliberately instead
+    of guessing that a file exists somewhere.
+
+    Never raises: a malformed attachment must not cost the user their reply. The
+    message goes through without it and the agent answers what it can.
+    """
+    if not attachments:
+        return ""
+
+    # One directory per message, so two mails with a file of the same name do not
+    # overwrite each other.
+    safe_msg = re.sub(r"[^A-Za-z0-9_-]", "_", message_id or "unknown")[:64]
+    dest = ATTACHMENTS_DIR / safe_msg
+    lines: list[str] = []
+    inlined_total = 0
+
+    for att in attachments:
+        name = str(att.get("filename") or att.get("name") or "attachment")
+        safe_name = os.path.basename(name).replace("\\", "_") or "attachment"
+        ctype = str(att.get("contentType") or "application/octet-stream")
+        try:
+            raw = base64.b64decode(att.get("content_base64") or att.get("contentBytes") or "")
+        except Exception as exc:
+            print(f"[adapter] Attachment {name!r} could not be decoded: {exc}", flush=True)
+            lines.append(f"- {name} ({ctype}) — could not be decoded")
+            continue
+
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            path = dest / safe_name
+            path.write_bytes(raw)
+        except Exception as exc:
+            print(f"[adapter] Attachment {name!r} could not be saved: {exc}", flush=True)
+            path = None
+
+        looks_textual = (
+            ctype.startswith("text/")
+            or ctype in ("application/json", "application/xml", "application/csv")
+            or Path(safe_name).suffix.lower() in _TEXTUAL_SUFFIXES
+        )
+        decoded = None
+        if looks_textual and len(raw) <= _ATTACHMENT_INLINE_LIMIT:
+            if inlined_total + len(raw) <= _ATTACHMENT_INLINE_TOTAL:
+                try:
+                    decoded = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    decoded = None  # labelled text but isn't; fall through to describing it
+
+        if decoded is not None:
+            inlined_total += len(raw)
+            lines.append(
+                f"- {name} ({ctype}, {len(raw)} bytes) — full contents below\n"
+                f"--- BEGIN {name} ---\n{decoded}\n--- END {name} ---"
+            )
+        else:
+            where = f", saved at {path}" if path else ""
+            lines.append(f"- {name} ({ctype}, {len(raw)} bytes){where}")
+
+    print(f"[adapter] Inbound attachments: {len(attachments)} ({inlined_total} bytes inlined)", flush=True)
+    return (
+        "\n\n=== ATTACHMENTS ON THIS EMAIL ===\n"
+        "These arrived with the message. Where contents are shown, use them directly — "
+        "do not call inbox_read to fetch the attachment again.\n"
+        + "\n".join(lines)
+    )
+
+
 @app.post("/hooks/agentmail")
 async def receive_agentmail_webhook(request: Request):
     """Receive an email webhook from the AgentMail poller or AgentMail directly.
@@ -2399,6 +2493,10 @@ async def receive_agentmail_webhook(request: Request):
         f"Thread ID: {thread_id}\n\n"
         f"{text}"
     )
+
+    attachment_note = _describe_inbound_attachments(msg.get("attachments") or [], message_id)
+    if attachment_note:
+        formatted += attachment_note
 
     context = {
         "agent_name": AGENT_NAME,
