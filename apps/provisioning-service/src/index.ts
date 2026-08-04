@@ -2,7 +2,7 @@ import { prisma } from "@marketplace/db";
 import { startWorker } from "./worker.js";
 import { config } from "./config.js";
 import { getContainerPort } from "./clients/docker.js";
-import { startPoller } from "./jobs/poller-manager.js";
+import { startPoller, startStrayPollerSweep } from "./jobs/poller-manager.js";
 import { startProxyServer } from "./server.js";
 import Dockerode from "dockerode";
 
@@ -97,10 +97,24 @@ async function recoverDockerPollers(): Promise<void> {
 const worker = startWorker();
 startProxyServer();
 
-// Recover pollers for any Docker deployments that survived the last restart
-recoverDockerPollers().catch((err) => {
-  console.warn("[recovery] Unexpected error during poller recovery:", err.message);
-});
+// Recover pollers for any Docker deployments that survived the last restart,
+// then keep watching for strays.
+//
+// Recovery alone is not enough: it runs once, and an orphaned poller can appear at
+// any point afterwards — from a restart that outlived its child, or a one-off
+// script that spawned one and exited. Two pollers on one mailbox each keep their
+// own set of handled message ids, so every email is delivered twice and the buyer
+// gets two approvals for it. Sweeping periodically bounds how long that can last
+// to one interval instead of until the next provision.
+recoverDockerPollers()
+  .catch((err) => {
+    console.warn("[recovery] Unexpected error during poller recovery:", err.message);
+  })
+  .finally(() => {
+    // Started after recovery so the pollers it spawns are registered before the
+    // first sweep could look at them.
+    startStrayPollerSweep();
+  });
 
 // Graceful shutdown
 async function shutdown(signal: string) {

@@ -1,7 +1,7 @@
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { deleteInbox } from "../clients/agentmail.js";
-import { stopContainer, removeAgentNetwork } from "../clients/docker.js";
+import { stopContainer, removeAgentNetwork, removeAgentVolume } from "../clients/docker.js";
 import { deleteDeploymentServiceAccount } from "../clients/google-iam.js";
 import { deleteGoogleWorkspaceUser } from "../clients/google-workspace.js";
 import { deleteAgentIdentity } from "../clients/microsoft-workspace.js";
@@ -116,6 +116,13 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
     await removeAgentNetwork(deploymentId);
   } catch (err: any) {
     console.warn(`[deprovision] Network cleanup failed: ${err.message}`);
+  }
+  // Last of the Docker resources, because the volume can only go once nothing has
+  // it mounted — the agent container above, and any sidecar that shared it.
+  try {
+    await removeAgentVolume(deploymentId);
+  } catch (err: any) {
+    console.warn(`[deprovision] Volume cleanup failed: ${err.message}`);
   }
 
   // 4. Update deployment status

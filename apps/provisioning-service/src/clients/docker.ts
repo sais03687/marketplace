@@ -58,6 +58,86 @@ export async function removeAgentNetwork(deploymentId: string): Promise<void> {
   }
 }
 
+/**
+ * Remove the agent's data volume.
+ *
+ * This has to be explicit. `container.remove({ force: true })` removes anonymous
+ * volumes only — a *named* one like `custom-data-<id>` survives its container by
+ * design, which is the whole point of naming it. So every fire since the volume
+ * mount was introduced has left one behind, 29 of them by 2026-08-04, holding the
+ * agent's checkpoint database, pending resumes and any file it was given. The fire
+ * dialog tells the buyer their files are "deleted permanently"; until this ran,
+ * that was not true.
+ *
+ * Call only after the container is gone: Docker refuses to remove a volume that is
+ * still in use, and that refusal is reported here as a warning rather than a throw,
+ * so a stuck volume cannot strand the rest of the teardown (identity, licence seat).
+ */
+export async function removeAgentVolume(deploymentId: string): Promise<boolean> {
+  const name = `custom-data-${deploymentId.slice(0, 8)}`;
+  try {
+    await docker.getVolume(name).remove();
+    console.log(`[docker] Removed volume ${name}`);
+    return true;
+  } catch (err: any) {
+    // Reports whether anything was actually removed rather than throwing on 404,
+    // because the hourly sweep revisits every fired deployment forever — counting
+    // 404s would have it claim the same 29 removals on every run for good.
+    if (err.statusCode === 404) return false; // never created, or already gone
+    console.warn(`[docker] Failed to remove volume ${name}: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Remove agent data volumes that no container references any more.
+ *
+ * The per-deployment call above only reaches volumes whose deployment still has a
+ * row. It does not reach most of them: on 2026-08-04 there were 30 `custom-data-*`
+ * volumes and only 3 belonged to a FIRED or ERROR deployment still in the
+ * database. The other 27 were from deployments deleted outright, so no row-driven
+ * sweep could ever name them. They are reachable only by looking at what Docker
+ * actually has.
+ *
+ * Two independent guards, because this deletes buyer data:
+ *
+ *  - `dangling=true` — Docker's own "no container references this". Verified on the
+ *    VPS that a *stopped* container still protects its volume, so a paused
+ *    deployment is safe, and that the live agent's volume is correctly not dangling.
+ *  - `protectedIds` — short ids the caller knows are still in service. Belt and
+ *    braces: even if the dangling filter ever disagreed, an active deployment's
+ *    volume is not removable here.
+ *
+ * Returns the number actually removed.
+ */
+export async function removeOrphanedAgentVolumes(
+  protectedIds: Set<string>,
+): Promise<number> {
+  let removed = 0;
+  try {
+    const { Volumes } = await docker.listVolumes({
+      filters: { name: ["custom-data-"], dangling: ["true"] },
+    });
+    for (const vol of Volumes ?? []) {
+      const short = vol.Name.replace(/^custom-data-/, "");
+      if (protectedIds.has(short)) {
+        console.log(`[docker] Keeping ${vol.Name} — deployment is still in service`);
+        continue;
+      }
+      try {
+        await docker.getVolume(vol.Name).remove();
+        removed++;
+        console.log(`[docker] Removed orphaned volume ${vol.Name}`);
+      } catch (err: any) {
+        console.warn(`[docker] Could not remove ${vol.Name}: ${err.message}`);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[docker] Could not list volumes: ${err.message}`);
+  }
+  return removed;
+}
+
 export interface ContainerEnv {
   DEPLOYMENT_ID: string;
   AGENT_ID: string;

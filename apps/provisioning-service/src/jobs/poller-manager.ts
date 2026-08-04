@@ -8,7 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,50 @@ function resolvePollerScript(name: string = "outlook-poller.mjs"): string {
   throw new Error(
     `Cannot find ${name} (checked ${localPath} and ${srcPath})`,
   );
+}
+
+interface PollerProcess {
+  pid: number;
+  deploymentId: string;
+  /** Milliseconds since the process started, from the /proc entry's mtime. */
+  ageMs: number;
+}
+
+/** Every poller process on this host, whichever deployment it serves. */
+function scanPollerProcesses(): PollerProcess[] {
+  if (!existsSync("/proc")) return [];
+
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return [];
+  }
+
+  const now = Date.now();
+  const found: PollerProcess[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === process.pid) continue;
+    try {
+      // cmdline first: it is the cheap check and rules out almost everything.
+      if (!readFileSync(`/proc/${entry}/cmdline`, "utf8").includes("outlook-poller.mjs")) {
+        continue;
+      }
+      const environ = readFileSync(`/proc/${entry}/environ`, "utf8").split("\0");
+      const idEntry = environ.find((e) => e.startsWith("DEPLOYMENT_ID="));
+      if (!idEntry) continue;
+      found.push({
+        pid,
+        deploymentId: idEntry.slice("DEPLOYMENT_ID=".length),
+        ageMs: now - statSync(`/proc/${entry}`).mtimeMs,
+      });
+    } catch {
+      // Process exited between readdir and read, or isn't ours to inspect.
+    }
+  }
+  return found;
 }
 
 /**
@@ -44,34 +88,64 @@ function resolvePollerScript(name: string = "outlook-poller.mjs"): string {
  * and this returns nothing, which is correct — pollers only run on the VPS.
  */
 function findPollerPids(deploymentId: string): number[] {
-  if (!existsSync("/proc")) return [];
+  // Exact match on the id, so deployment "abc" cannot match a poller for "abcdef".
+  return scanPollerProcesses()
+    .filter((p) => p.deploymentId === deploymentId)
+    .map((p) => p.pid);
+}
 
-  let entries: string[];
-  try {
-    entries = readdirSync("/proc");
-  } catch {
-    return [];
-  }
+/** Grace period before a poller is eligible to be swept, covering the gap
+ *  between spawn() and the registration that follows it. */
+const SWEEP_GRACE_MS = 60_000;
 
-  const found: number[] = [];
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) continue;
-    const pid = Number(entry);
-    if (pid === process.pid) continue;
+/**
+ * Kill poller processes this service does not own.
+ *
+ * The reaper in stopPoller only runs when a deployment is provisioned or paused,
+ * so a stray appearing at any other moment survives until the next such event —
+ * possibly never. One appeared on 2026-08-04 eight minutes after the service
+ * started, so startup recovery had already been and gone, and it sat there
+ * duplicating every delivery: two pollers on one mailbox each keep their own set
+ * of handled message ids, so the buyer gets two approvals and two notifications
+ * per email. That is the failure this exists to prevent.
+ *
+ * Authority is the in-memory registry: a process is legitimate only if it is the
+ * exact child currently registered for its deployment. Anything else is an orphan
+ * from a restart or a one-off script, and nothing else will ever clean it up.
+ */
+export function sweepStrayPollers(): void {
+  const strays = scanPollerProcesses().filter((p) => {
+    if (p.ageMs < SWEEP_GRACE_MS) return false; // too young to judge
+    return pollers.get(p.deploymentId)?.pid !== p.pid;
+  });
+
+  for (const stray of strays) {
     try {
-      // cmdline first: it is the cheap check and rules out almost everything.
-      if (!readFileSync(`/proc/${entry}/cmdline`, "utf8").includes("outlook-poller.mjs")) {
-        continue;
-      }
-      // Exact match on the whole NUL-delimited entry, so deployment id "abc"
-      // cannot match a poller for "abcdef".
-      const environ = readFileSync(`/proc/${entry}/environ`, "utf8").split("\0");
-      if (environ.includes(`DEPLOYMENT_ID=${deploymentId}`)) found.push(pid);
+      process.kill(stray.pid, "SIGKILL");
+      console.log(
+        `[poller-manager] Swept stray poller pid ${stray.pid} for ` +
+          `${stray.deploymentId.slice(0, 8)} (age ${Math.round(stray.ageMs / 1000)}s)`,
+      );
     } catch {
-      // Process exited between readdir and read, or isn't ours to inspect.
+      // Already gone.
     }
   }
-  return found;
+}
+
+let sweepTimer: NodeJS.Timeout | null = null;
+
+/** Start the periodic sweep. Idempotent. */
+export function startStrayPollerSweep(intervalMs = 120_000): void {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => {
+    try {
+      sweepStrayPollers();
+    } catch (err: any) {
+      console.warn(`[poller-manager] Sweep failed: ${err.message}`);
+    }
+  }, intervalMs);
+  sweepTimer.unref?.();
+  console.log(`[poller-manager] Stray poller sweep every ${Math.round(intervalMs / 1000)}s`);
 }
 
 export interface PollerOpts {
