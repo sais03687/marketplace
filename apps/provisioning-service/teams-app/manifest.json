@@ -5,9 +5,9 @@
   "id": "76bfdef8-89ff-465c-ab4c-099a05a45e8c",
   "developer": {
     "name": "AgentStore",
-    "websiteUrl": "https://agentstore.dev",
-    "privacyUrl": "https://agentstore.dev/privacy",
-    "termsOfUseUrl": "https://agentstore.dev/terms"
+    "websiteUrl": "https://www.agentstore.it.com",
+    "privacyUrl": "https://www.agentstore.it.com/privacy",
+    "termsOfUseUrl": "https://www.agentstore.it.com/terms"
   },
   "name": {
     "short": "AgentStore",
@@ -25,12 +25,16 @@
   "bots": [
     {
       "botId": "76bfdef8-89ff-465c-ab4c-099a05a45e8c",
-      "scopes": ["personal"],
+      "scopes": [
+        "personal"
+      ],
       "supportsFiles": false,
       "isNotificationOnly": false,
       "commandLists": [
         {
-          "scopes": ["personal"],
+          "scopes": [
+            "personal"
+          ],
           "commands": [
             {
               "title": "help",
@@ -45,6 +49,13 @@
       ]
     }
   ],
-  "permissions": ["identity", "messageTeamMembers"],
-  "validDomains": ["agentstore.dev", "5.161.125.216"]
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "agentstore.it.com",
+    "www.agentstore.it.com",
+    "bot.agentstore.it.com"
+  ]
 }
