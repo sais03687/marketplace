@@ -22,15 +22,38 @@ export async function POST(request: NextRequest) {
   let event: Stripe.Event;
 
   try {
-    if (!webhookSecret || !sig) {
-      // Development fallback: accept unverified events when secret isn't configured
-      event = JSON.parse(body) as Stripe.Event;
-    } else {
+    if (webhookSecret) {
+      // A configured secret means verification is mandatory. The condition here
+      // used to be `!webhookSecret || !sig`, so an unsigned request took the
+      // development fallback and was accepted unverified *even in production with
+      // the secret set* — the bypass was chosen by the caller simply by omitting
+      // the stripe-signature header. Confirmed against production on 2026-08-04:
+      // an unsigned forged event returned 200, the same event with a junk
+      // signature returned 400.
+      //
+      // These handlers are not read-only. A forged customer.subscription.deleted
+      // enqueues a deprovision, which deletes the agent's Microsoft identity,
+      // mailbox, container and data volume; a forged checkout.session.completed
+      // provisions an agent that nobody paid for.
+      //
+      // Nothing legitimate is lost: Stripe always sends the header, so this only
+      // rejects callers that are not Stripe.
+      if (!sig) {
+        console.error("[stripe-webhook] Rejected an unsigned request — stripe-signature header is missing");
+        return jsonError("Missing stripe-signature header", 400);
+      }
       const stripe = getStripe();
       if (!stripe) {
         return jsonError("Stripe is not configured", 503);
       }
       event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
+    } else if (process.env.NODE_ENV === "production") {
+      // Fail closed. Unverified events are a local convenience, never a
+      // production posture, and silently accepting them is how this got missed.
+      console.error("[stripe-webhook] STRIPE_WEBHOOK_SECRET is not set — refusing to process unverified events");
+      return jsonError("Webhook verification is not configured", 503);
+    } else {
+      event = JSON.parse(body) as Stripe.Event;
     }
   } catch (err: any) {
     return jsonError(`Webhook signature verification failed: ${err.message}`, 400);
