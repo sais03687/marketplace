@@ -57,6 +57,12 @@ export const config = {
 
   // Platform-owned Microsoft 365 tenant (agents.[platform-domain].com)
   microsoftTenantId: process.env.MICROSOFT_TENANT_ID || "",
+  /**
+   * Mailbox the platform sends its own mail from — creator vetting decisions and
+   * anything else with no agent behind it. Must be a real licensed mailbox in the
+   * platform tenant; Graph will not send as an address that does not exist.
+   */
+  platformMailbox: process.env.PLATFORM_MAILBOX || "",
   microsoftClientId: process.env.MICROSOFT_CLIENT_ID || "",
   microsoftClientSecret: process.env.MICROSOFT_CLIENT_SECRET || "",
 

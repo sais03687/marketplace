@@ -33,6 +33,39 @@ function provisioningBase(): string {
 }
 
 /**
+ * Send as the platform itself, for mail with no agent behind it.
+ *
+ * Creator vetting decisions are the case that matters: a creator has no
+ * deployment and no agent mailbox, so the deployment-scoped path below cannot
+ * carry them. Until this existed the only other route was AgentMail, retired —
+ * and gated behind PLATFORM_NOTIFICATION_INBOX_ID, which is referenced exactly
+ * once in the codebase and set nowhere, so approvals and rejections were never
+ * sent and never logged. A creator could be rejected and simply never told.
+ *
+ * Throws rather than returning false: callers here are telling someone the
+ * outcome of their submission, and that failing silently is the bug being fixed.
+ */
+export async function sendPlatformEmail(params: {
+  to: string;
+  subject: string;
+  html: string;
+}): Promise<void> {
+  const secret = process.env.PROVISIONING_SECRET;
+  if (!secret) throw new Error("PROVISIONING_SECRET is not set");
+
+  const res = await fetch(`${provisioningBase().replace(/\/$/, "")}/internal/platform-send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+    body: JSON.stringify({ to: params.to, subject: params.subject, body: params.html, bodyType: "html" }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`platform-send returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+}
+
+/**
  * Send as the agent, via the provisioning service's Graph-backed send endpoint.
  * Returns true when accepted, so the caller can decide whether to fall back.
  */

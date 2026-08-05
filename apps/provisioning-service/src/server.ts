@@ -744,6 +744,77 @@ export function startProxyServer() {
       return;
     }
 
+    // ─── Platform-Sent Mail ──────────────────────────────────────────────────
+    // Mail the platform sends as itself, with no agent behind it: creator vetting
+    // decisions, and anything else addressed to someone who has not hired anything.
+    //
+    // Separate from /internal/outlook-send because that one is deployment-scoped
+    // — it needs a deploymentId to pick the buyer's tenant and the agent's mailbox,
+    // and a creator has neither. That mismatch is why creator mail never worked:
+    // the only other route was the retired AgentMail path, gated behind an env var
+    // (PLATFORM_NOTIFICATION_INBOX_ID) that appears exactly once in the codebase
+    // and is set nowhere, so the send was skipped without even logging.
+    if (req.method === "POST" && req.url === "/internal/platform-send") {
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { to, subject, body: emailBody, bodyType = "html" } = JSON.parse(body) as {
+            to?: string; subject?: string; body?: string; bodyType?: "text" | "html";
+          };
+
+          if (!to) return send(res, 400, { error: "to required" });
+          if (!subject) return send(res, 400, { error: "subject required" });
+          if (!emailBody) return send(res, 400, { error: "body required" });
+
+          const from = config.platformMailbox;
+          if (!from) {
+            // Loud, and a failure the caller can see. The previous design treated
+            // "not configured" as "quietly do nothing", which is how a creator
+            // could be rejected and never told.
+            console.error("[platform-send] PLATFORM_MAILBOX is not set — cannot send platform mail");
+            return send(res, 503, { error: "PLATFORM_MAILBOX not configured" });
+          }
+          if (!config.microsoftTenantId) {
+            return send(res, 500, { error: "No Microsoft tenant configured" });
+          }
+
+          const tokenData = await mintTokenForTenant(config.microsoftTenantId);
+          const sendResp = await fetch(
+            `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(from)}/sendMail`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${tokenData.access_token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                message: {
+                  subject,
+                  body: { contentType: bodyType, content: emailBody },
+                  toRecipients: [{ emailAddress: { address: to } }],
+                },
+                saveToSentItems: true,
+              }),
+            },
+          );
+
+          if (!sendResp.ok) {
+            const err = await sendResp.text();
+            console.error("[platform-send] Send failed:", sendResp.status, err.slice(0, 300));
+            return send(res, 502, { error: `Graph API error: ${sendResp.status}` });
+          }
+
+          console.log(`[platform-send] Sent "${subject}" to ${to} as ${from}`);
+          send(res, 200, { success: true });
+        } catch (err: any) {
+          console.error("[platform-send] Error:", err.message);
+          send(res, 500, { error: "Failed to send email" });
+        }
+      });
+      return;
+    }
+
     // ─── Teams App Auto-Install ──────────────────────────────────────────────
     // Install the Teams app into a buyer's org catalog via Graph API.
     // Called by the web app after admin consent, or manually for existing deployments.

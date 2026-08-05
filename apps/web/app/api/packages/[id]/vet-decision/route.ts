@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
-import { sendNotificationEmail, buildVettingDecisionEmail } from "@/lib/email";
+import { sendPlatformEmail, buildVettingDecisionEmail } from "@/lib/email";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 
@@ -56,8 +56,12 @@ export async function POST(
   });
 
   // ── Email creator ──────────────────────────────────────────────────────────
-  const platformInboxId = process.env.PLATFORM_NOTIFICATION_INBOX_ID;
-  if (platformInboxId) {
+  // Not gated on any env var. It used to be gated on PLATFORM_NOTIFICATION_INBOX_ID,
+  // an AgentMail inbox id that is set nowhere and referenced only here, so this
+  // whole block was skipped on every decision — silently, since the skip was the
+  // `if` itself and never reached the logging inside. Creators were approved and
+  // rejected without ever being told.
+  {
     const { subject, html } = buildVettingDecisionEmail({
       agentName: version.agent.name,
       version: version.version,
@@ -67,12 +71,17 @@ export async function POST(
     // Awaited despite costing a little latency: not blocking the response means
     // the send is cancelled with the function on Vercel, and a creator who is
     // never told their package was rejected is worse than a slower request.
-    await sendNotificationEmail({
-      inboxId: platformInboxId,
-      to: version.agent.creator.email,
-      subject,
-      html,
-    });
+    try {
+      await sendPlatformEmail({ to: version.agent.creator.email, subject, html });
+    } catch (err: any) {
+      // The decision itself stands — it is already written. Losing the email is
+      // bad but recoverable by hand, whereas failing the request would leave the
+      // admin unsure whether the decision took effect.
+      console.error(
+        `[vet-decision] Could not tell ${version.agent.creator.email} that ` +
+          `${version.agent.name} v${version.version} was ${decision}: ${err.message}`,
+      );
+    }
   }
 
   // ── If approved: update agent + trigger auto-updates ──────────────────────
