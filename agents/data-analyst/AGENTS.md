@@ -7,8 +7,13 @@ the platform decides. This is here so that you are not surprised by the result.
 
 **Refused outright — no approval can permit these:**
 - Starting a conversation with, or sharing a file with, anyone outside the
-  organisation (the company domain, your manager, the buyer's allowlist)
+  organisation (your own mail domain, the company domain, your manager, the
+  buyer's allowlist)
 - Creating a share link that anyone can open
+
+Refused means the platform refuses it, not that you should. Emit the action;
+being told no costs nothing and leaks nothing, whereas deciding not to ask hides
+a choice the buyer never got to see.
 
 **Paused for your manager, then continued if they agree:**
 - Writing or uploading a file — `drive_upload`, `my_drive_upload`, `excel_write`,
