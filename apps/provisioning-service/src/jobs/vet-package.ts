@@ -225,7 +225,20 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
 
       if (runtime === "custom") {
         // Required files
-        if (!existsSync(join(packageDir!, "agent.py"))) findings.push("agent.py missing");
+        if (!existsSync(join(packageDir!, "agent.py"))) {
+          findings.push("agent.py missing");
+        } else {
+          // Both are imported at adapter module scope, so either one missing
+          // means the container cannot start. Caught here as well as at upload
+          // so a package that predates the upload check still gets a finding
+          // that names the symbol, rather than an opaque health-check timeout.
+          const agentSrc = readFileSync(join(packageDir!, "agent.py"), "utf-8");
+          for (const fn of ["run_agent", "resume_agent"]) {
+            if (!new RegExp(`^\s*(async\s+)?def\s+${fn}\s*\(`, "m").test(agentSrc)) {
+              findings.push(`agent.py does not define ${fn}() — the platform imports it at startup`);
+            }
+          }
+        }
         for (const f of RESERVED_FILES)
           if (existsSync(join(packageDir!, f))) findings.push(`Reserved file present: ${f}`);
         for (const f of SHADOWED_MODULES)

@@ -150,6 +150,26 @@ export async function POST(request: Request) {
       }
     }
 
+    // The adapter does `from creator.agent import run_agent, resume_agent` at
+    // module scope, so a package missing either one cannot start at all. Without
+    // this check nothing says so: the manifest validates, the scan comes back
+    // clean, the Docker image builds, and the only symptom is the vetting
+    // sandbox reporting "Container did not become healthy within 60s" — which
+    // names neither the file nor the symbol. Verified on 2026-08-04 by publishing
+    // the same package twice, differing only in whether resume_agent existed:
+    // without it, health check failed; with it, 5/5 passed.
+    const agentSource = await zip.file("agent.py")!.async("string");
+    const missingEntrypoints = ["run_agent", "resume_agent"].filter(
+      (fn) => !new RegExp(`^\\s*(async\\s+)?def\\s+${fn}\\s*\\(`, "m").test(agentSource),
+    );
+    if (missingEntrypoints.length > 0) {
+      return jsonError(
+        `agent.py must define ${missingEntrypoints.join(" and ")} — the platform imports ` +
+          `both when the container starts, and the agent cannot run without them`,
+        400,
+      );
+    }
+
     const SHADOWED_MODULES = [
       "fastapi.py", "uvicorn.py", "httpx.py", "pydantic.py",
       "json.py", "os.py", "sys.py", "subprocess.py", "socket.py",
