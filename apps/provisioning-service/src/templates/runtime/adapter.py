@@ -153,6 +153,54 @@ PENDING_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 ATTACHMENTS_DIR = DATA_DIR / "attachments"
 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Email drafts that are waiting on a human decision.
+#
+# wait_for_resolution is an in-process polling loop, and the draft it will send
+# lives only in that coroutine's local variables. So a container restart threw
+# away every email awaiting approval: the buyer approved later, the resolution
+# file was written, and nobody was left to read it. The dashboard showed
+# APPROVED and the mail was never sent — silently, which is the worst version.
+#
+# The graph-interrupt path was already hardened this way (PENDING_RESUMES_DIR);
+# this is the same treatment for the queued-draft path, which was missed.
+PENDING_SENDS_DIR = DATA_DIR / "pending_sends"
+PENDING_SENDS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _remember_pending_send(approval_id: str, payload: dict) -> None:
+    """Record everything needed to deliver a draft without the original coroutine."""
+    try:
+        (PENDING_SENDS_DIR / f"{approval_id}.json").write_text(json.dumps(payload))
+    except Exception as exc:
+        print(f"[adapter] Could not persist pending send for {approval_id}: {exc}", flush=True)
+
+
+def _claim_pending_send(approval_id: str) -> dict | None:
+    """Take ownership of a pending draft, or return None if someone else has it.
+
+    The unlink is the claim, and it is atomic on POSIX, so the live waiter and the
+    resolve endpoint cannot both deliver the same draft — exactly one unlink wins.
+    That matters more than it looks: the alternative to a claim is two identical
+    emails to the buyer whenever a waiter happens to still be alive.
+    """
+    path = PENDING_SENDS_DIR / f"{approval_id}.json"
+    try:
+        payload = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        print(f"[adapter] Pending send for {approval_id} unreadable: {exc}", flush=True)
+        return None
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return None  # claimed between the read and the unlink
+    return payload
+
+
+def _forget_pending_send(approval_id: str) -> None:
+    (PENDING_SENDS_DIR / f"{approval_id}.json").unlink(missing_ok=True)
+
 
 # An action the manager has just approved, set while the graph is resumed.
 #
@@ -1951,6 +1999,63 @@ async def get_approval_policy():
     return _load_policy()
 
 
+async def _deliver_orphaned_send(approval_id: str, resolution: dict) -> None:
+    """Send a draft whose waiting coroutine did not survive.
+
+    Delayed deliberately. A live waiter polls the resolutions directory every two
+    seconds and will claim the draft itself; only if it has not done so after that
+    window is it safe to conclude there is nobody left to send this. Six seconds is
+    three poll intervals, which is slack enough for a busy event loop.
+    """
+    await asyncio.sleep(6)
+
+    payload = _claim_pending_send(approval_id)
+    if payload is None:
+        return  # a live waiter got there first, as intended
+
+    status = (resolution.get("status") or "").upper()
+    if status not in ("APPROVED", "EDITED"):
+        print(f"[adapter] Orphaned draft for {approval_id} was {status} — discarding", flush=True)
+        return
+
+    text = payload.get("text") or ""
+    if status == "EDITED" and resolution.get("resolutionAction"):
+        text = resolution["resolutionAction"]
+
+    recipient = payload.get("to") or ""
+    try:
+        if payload.get("action") == "reply_email":
+            await reply_email(
+                message_id=payload.get("message_id") or "",
+                text=text,
+                fallback_to=recipient,
+                fallback_subject=payload.get("fallback_subject") or "",
+                fallback_thread_id=payload.get("thread_id"),
+                attachments=payload.get("attachments"),
+            )
+        else:
+            if not recipient:
+                print(f"[adapter] Orphaned draft {approval_id} has no recipient — cannot send", flush=True)
+                return
+            await send_email(
+                to=recipient,
+                subject=payload.get("subject") or "",
+                text=text,
+                thread_id=payload.get("thread_id"),
+                attachments=payload.get("attachments"),
+            )
+        print(
+            f"[adapter] Delivered approved draft for {approval_id} to {recipient} "
+            f"after its waiter was lost to a restart",
+            flush=True,
+        )
+    except Exception as exc:
+        # Put it back, so a later resolution or restart can retry rather than the
+        # approval being lost a second time.
+        _remember_pending_send(approval_id, payload)
+        print(f"[adapter] Could not deliver orphaned draft {approval_id}: {exc}", flush=True)
+
+
 @app.post("/internal/approvals/{approval_id}/resolve")
 async def resolve_approval(approval_id: str, body: ApprovalResolution):
     """Receive an approval resolution from the marketplace and write it to disk,
@@ -1975,6 +2080,14 @@ async def resolve_approval(approval_id: str, body: ApprovalResolution):
     if _recall_pending_resume(approval_id) is not None:
         asyncio.create_task(_resume_and_deliver(approval_id, resolution))
         return {"ok": True, "resumed": True}
+
+    # No suspended graph. There may still be an email draft waiting, whose in-process
+    # waiter did not survive a restart — the case that silently swallowed approved
+    # mail. Give any live waiter a moment to consume the resolution first (it polls
+    # every 2s), then claim; whoever wins the unlink sends, so never both.
+    if (PENDING_SENDS_DIR / f"{approval_id}.json").exists():
+        asyncio.create_task(_deliver_orphaned_send(approval_id, resolution))
+        return {"ok": True, "resumed": True, "delivered": "pending_send"}
 
     print(
         f"[adapter] Resolution for {approval_id} recorded, but no suspended run is "
@@ -2015,6 +2128,14 @@ async def resolve_approval_alt(body: ResolveApprovalAlt):
     if _recall_pending_resume(body.approvalId) is not None:
         asyncio.create_task(_resume_and_deliver(body.approvalId, resolution))
         return {"ok": True, "resumed": True}
+
+    # Must mirror the endpoint above, and this is the one that matters: the
+    # dashboard resolves through /internal/forward-resolve, which calls *here*.
+    # Fixing only the other endpoint left the actual buyer-facing path unchanged,
+    # which is exactly how this went unnoticed in the first place.
+    if (PENDING_SENDS_DIR / f"{body.approvalId}.json").exists():
+        asyncio.create_task(_deliver_orphaned_send(body.approvalId, resolution))
+        return {"ok": True, "resumed": True, "delivered": "pending_send"}
 
     print(
         f"[adapter] Resolution for {body.approvalId} recorded, but no suspended run "
@@ -3041,13 +3162,35 @@ async def _handle_message(message: str, context: dict):
                         original_request=context.get("subject", ""),
                     )
                     print(f"[adapter] Queued approval {queued_id}; waiting for resolution", flush=True)
+                    # Persist before waiting, not after. Everything needed to send
+                    # this draft lives in local variables that a restart destroys,
+                    # and the window being covered starts the moment the buyer can
+                    # see the approval — which is now.
+                    _remember_pending_send(queued_id, {
+                        "action": action,
+                        "to": _extract_email(result.get("to") or context.get("sender", "")),
+                        "subject": result.get("subject", context.get("subject", "")),
+                        "text": draft_text,
+                        "thread_id": email_thread_id,
+                        "message_id": result.get("message_id") or context.get("message_id", ""),
+                        "fallback_subject": context.get("subject", ""),
+                        "attachments": _email_captured_files or None,
+                    })
                     # Wait for resolution (polling file — existing pattern for email hook)
                     resolution = await wait_for_resolution(queued_id)
                     if resolution.get("status") not in ("APPROVED", "EDITED"):
                         print(f"[adapter] Approval {queued_id} {resolution.get('status')} — not sending", flush=True)
+                        _forget_pending_send(queued_id)
                         return
                     if resolution.get("status") == "EDITED" and resolution.get("resolutionAction"):
                         result["text"] = resolution["resolutionAction"]
+                    # Claim it, so the resolve endpoint cannot also deliver it.
+                    if _claim_pending_send(queued_id) is None:
+                        print(
+                            f"[adapter] Approval {queued_id} was already delivered elsewhere — not sending twice",
+                            flush=True,
+                        )
+                        return
                 except Exception as e:
                     print(f"[adapter] Failed to auto-queue approval: {e}")
                     return
