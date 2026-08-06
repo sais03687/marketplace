@@ -24,19 +24,29 @@ function check(name: string, actual: number, expected: number, tolerance = 0.001
 }
 
 async function main() {
+  const stamp = Date.now();
   const company = await prisma.company.create({
-    data: { name: "pause-credit-check", domain: `pcc-${Date.now()}.invalid` },
+    data: {
+      clerkOrgId: `pcc-org-${stamp}`,
+      name: "pause-credit-check",
+      domain: `pcc-${stamp}.invalid`,
+    },
   });
   const creator = await prisma.creator.create({
-    data: { name: "pcc", email: `pcc-${Date.now()}@invalid` },
+    data: {
+      clerkUserId: `pcc-user-${stamp}`,
+      displayName: "pcc",
+      email: `pcc-${stamp}@invalid`,
+    },
   });
   const agent = await prisma.agent.create({
     data: {
       creatorId: creator.id,
       name: "pcc-agent",
-      slug: `pcc-agent-${Date.now()}`,
+      slug: `pcc-agent-${stamp}`,
+      tagline: "scratch",
       description: "scratch",
-      category: "OTHER",
+      category: "GENERAL",
       pricePerMonth: 5900,
       modelTier: "SONNET",
     },
