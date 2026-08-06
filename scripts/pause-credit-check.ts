@@ -25,6 +25,18 @@ function check(name: string, actual: number, expected: number, tolerance = 0.001
 
 async function main() {
   const stamp = Date.now();
+
+  // Declared out here and cleaned up in the finally below, because creating the
+  // fixtures inside the old try/finally boundary meant a failure partway through
+  // construction — an enum that turned out not to exist, a required column I had
+  // missed — stranded a company and a creator in the production database. Two
+  // such rows were found by the payout cron later the same day.
+  let companyId: string | null = null;
+  let creatorId: string | null = null;
+  let agentId: string | null = null;
+  let depId: string | null = null;
+
+  try {
   const company = await prisma.company.create({
     data: {
       clerkOrgId: `pcc-org-${stamp}`,
@@ -32,6 +44,7 @@ async function main() {
       domain: `pcc-${stamp}.invalid`,
     },
   });
+  companyId = company.id;
   const creator = await prisma.creator.create({
     data: {
       clerkUserId: `pcc-user-${stamp}`,
@@ -39,6 +52,7 @@ async function main() {
       email: `pcc-${stamp}@invalid`,
     },
   });
+  creatorId = creator.id;
   const agent = await prisma.agent.create({
     data: {
       creatorId: creator.id,
@@ -51,6 +65,7 @@ async function main() {
       modelTier: "SONNET",
     },
   });
+  agentId = agent.id;
   const dep = await prisma.deployment.create({
     data: {
       companyId: company.id,
@@ -63,9 +78,10 @@ async function main() {
     },
   });
 
+  depId = dep.id;
+
   const days = async (from: Date, to: Date) => (await pausedMsBetween(dep.id, from, to)) / DAY;
 
-  try {
     // A closed interval fully inside the window.
     await prisma.pausePeriod.create({
       data: { deploymentId: dep.id, startedAt: at(2), endedAt: at(5) },
@@ -113,11 +129,11 @@ async function main() {
     const owed = Math.ceil((5900 * 0.5 * 3 * DAY) / (30 * DAY));
     console.log(`\n$59/mo, 3 paused days in a 30-day cycle -> credit $${(owed / 100).toFixed(2)}`);
   } finally {
-    await prisma.pausePeriod.deleteMany({ where: { deploymentId: dep.id } });
-    await prisma.deployment.delete({ where: { id: dep.id } });
-    await prisma.agent.delete({ where: { id: agent.id } });
-    await prisma.creator.delete({ where: { id: creator.id } });
-    await prisma.company.delete({ where: { id: company.id } });
+    if (depId) await prisma.pausePeriod.deleteMany({ where: { deploymentId: depId } });
+    if (depId) await prisma.deployment.delete({ where: { id: depId } });
+    if (agentId) await prisma.agent.delete({ where: { id: agentId } });
+    if (creatorId) await prisma.creator.delete({ where: { id: creatorId } });
+    if (companyId) await prisma.company.delete({ where: { id: companyId } });
   }
 
   console.log(failures === 0 ? "\nAll checks passed." : `\n${failures} check(s) FAILED.`);
