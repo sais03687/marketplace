@@ -19,7 +19,9 @@ from pathlib import Path
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request
+import hmac
+
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 try:
@@ -42,6 +44,7 @@ _SECRETS_TO_SCRUB = [
     # would never see the request. Read into _secrets first so this module can
     # still use them; creator code, which imports after, cannot.
     "AGENT_TOKEN",
+    "AGENT_HOOKS_TOKEN",
     "TOKEN_ENDPOINT_URL",
     "MICROSOFT_CLIENT_SECRET",
 ]
@@ -1326,6 +1329,40 @@ _GRAPH = "https://graph.microsoft.com/v1.0"
 # them already gone and silently disable Microsoft access.
 _MS_TOKEN_ENDPOINT = _secrets.get("TOKEN_ENDPOINT_URL", "")
 _MS_AGENT_TOKEN = _secrets.get("AGENT_TOKEN", "")
+
+# Inbound credential for /hooks/*. Read from _secrets for the same reason as the
+# token above: creator code must not be able to read the key that authorises
+# messages to itself.
+_HOOKS_TOKEN = _secrets.get("AGENT_HOOKS_TOKEN", "")
+
+
+def _require_hooks_auth(request: Request) -> None:
+    """Reject inbound webhook calls that do not carry this deployment's token.
+
+    Until 2026-08-06 these routes had no auth of any kind: a POST to
+    /hooks/agentmail with no Authorization header returned 200 and the agent
+    acted on whatever it contained — sending mail as the agent, reading the
+    buyer's SharePoint and OneDrive, executing in the python sandbox. The
+    gateway was published on 0.0.0.0 with no firewall on the host, so the only
+    thing standing in the way was an upstream cloud firewall rule that appears
+    nowhere in this repository.
+
+    Fails closed when the token is absent. A missing credential is how this
+    became invisible in the first place — the poller has always been willing to
+    send one, nothing ever asked for it, and no log said so. An agent that has
+    gone deaf is a loud, obvious failure; an agent quietly accepting anonymous
+    instructions is not.
+    """
+    if not _HOOKS_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Gateway has no AGENT_HOOKS_TOKEN configured; refusing unauthenticated inbound",
+        )
+    presented = request.headers.get("authorization", "")
+    if presented.startswith("Bearer "):
+        presented = presented[7:]
+    if not hmac.compare_digest(presented, _HOOKS_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 _ms_token_cache: dict[str, Any] = {}
 
 
@@ -2547,8 +2584,9 @@ async def _handle_interrupt(
 
 
 @app.post("/hooks/agent")
-async def receive_hook(body: HookPayload):
-    """Receive a message from the AgentMail poller or onboarding trigger."""
+async def receive_hook(body: HookPayload, request: Request):
+    """Receive a message from the mail poller or onboarding trigger."""
+    _require_hooks_auth(request)
     context = {
         "agent_name": AGENT_NAME,
         "agent_email": AGENT_EMAIL,
@@ -2656,6 +2694,7 @@ async def receive_agentmail_webhook(request: Request):
     Payload format (from poller):
       { message: { from, to, subject, text, thread_id, ... }, thread: { ... } }
     """
+    _require_hooks_auth(request)
     payload = await request.json()
     msg = payload.get("message", {})
 
@@ -2754,6 +2793,7 @@ async def receive_teams_message(request: Request):
     Payload: { message, teamsUserId, teamsUserName, tenantId, deploymentId, conversationId }
     Response: { ok: true, reply: "..." } or { ok: false, error: "..." }
     """
+    _require_hooks_auth(request)
     payload = await request.json()
     message = payload.get("message", "").strip()
     teams_user_name = payload.get("teamsUserName", "Teams User")

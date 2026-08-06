@@ -100,7 +100,13 @@ export async function startNetgate(
       // The agent's gateway is published here rather than on the agent itself:
       // Docker will not publish a port for a container on an Internal network,
       // and this is the only member of that network reachable from the host.
-      PortBindings: { "4000/tcp": [{ HostPort: "0" }] },
+      // HostIp pinned to loopback. Omitting it makes Docker publish on 0.0.0.0,
+      // which put every agent's gateway on a public interface — and the host runs
+      // no firewall (ufw inactive, DOCKER-USER empty), so the only thing between
+      // the internet and these ports was an upstream cloud firewall rule that
+      // lives nowhere in this repo. The poller runs on this host, so loopback is
+      // all that was ever needed.
+      PortBindings: { "4000/tcp": [{ HostIp: "127.0.0.1", HostPort: "0" }] },
       RestartPolicy: { Name: "unless-stopped" },
       Memory: 64 * 1024 * 1024,
       MemorySwap: 64 * 1024 * 1024,

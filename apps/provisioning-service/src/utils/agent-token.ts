@@ -38,3 +38,30 @@ export function agentTokenMatches(
   if (a.length !== b.length) return false;
   return crypto.timingSafeEqual(a, b);
 }
+
+/**
+ * Per-deployment credential the mail poller presents to the agent's own gateway.
+ *
+ * Derived separately from `agentTokenFor` rather than reusing it. That token
+ * authorises calls *out* of the container to /internal/microsoft-token; this one
+ * authorises calls *in* to /hooks/*. Deriving both from the same input would mean
+ * a leak of either grants both, and they are exposed to different parties.
+ *
+ * Until 2026-08-06 there was no inbound credential at all: POST /hooks/agentmail
+ * with no Authorization header returned 200 and the agent acted on the message.
+ * The gateway was also published on 0.0.0.0, so the only thing between the
+ * internet and full remote control of every agent was an upstream cloud firewall
+ * rule that exists nowhere in this repository.
+ */
+export function hooksTokenFor(deploymentId: string, secret: string): string {
+  return agentTokenFor(`${deploymentId}:hooks`, secret);
+}
+
+/** Constant-time compare for the inbound hooks credential. */
+export function hooksTokenMatches(
+  presented: string,
+  deploymentId: string,
+  secret: string,
+): boolean {
+  return agentTokenMatches(presented, `${deploymentId}:hooks`, secret);
+}

@@ -12,7 +12,7 @@ import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
 import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
-import { agentTokenFor } from "../utils/agent-token.js";
+import { agentTokenFor, hooksTokenFor } from "../utils/agent-token.js";
 
 async function log(
   deploymentId: string,
@@ -429,6 +429,7 @@ export async function provisionJob(
             WORKSPACE_SCOPE: "buyer_org",
             TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
             AGENT_TOKEN: agentTokenFor(deploymentId, config.provisioningSecret),
+            AGENT_HOOKS_TOKEN: hooksTokenFor(deploymentId, config.provisioningSecret),
             SHAREPOINT_FOLDER: agentSlug,
             // Outlook email via Graph API
             EMAIL_MODE: "outlook",
@@ -444,6 +445,7 @@ export async function provisionJob(
             WORKSPACE_SCOPE: "platform",
             TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
             AGENT_TOKEN: agentTokenFor(deploymentId, config.provisioningSecret),
+            AGENT_HOOKS_TOKEN: hooksTokenFor(deploymentId, config.provisioningSecret),
             SHAREPOINT_FOLDER: agentSlug,
             // Outlook email via Graph API
             EMAIL_MODE: "outlook",

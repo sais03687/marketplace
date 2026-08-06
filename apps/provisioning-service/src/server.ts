@@ -32,7 +32,7 @@ import { ConnectorClient, MicrosoftAppCredentials } from "botframework-connector
 import { prisma } from "@marketplace/db";
 import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeTenantLicensing } from "./clients/microsoft-workspace.js";
 import { config } from "./config.js";
-import { agentTokenFor, agentTokenMatches } from "./utils/agent-token.js";
+import { agentTokenFor, agentTokenMatches, hooksTokenFor } from "./utils/agent-token.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -1312,7 +1312,12 @@ export function startProxyServer() {
             // Forward to agent container's /hooks/teams endpoint
             const hookResponse = await fetch(`${containerUrl}/hooks/teams`, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: {
+                "Content-Type": "application/json",
+                // Same inbound credential the mail poller presents. Without it the
+                // container now refuses the call, which is the point.
+                Authorization: `Bearer ${hooksTokenFor(deployment.id, SECRET)}`,
+              },
               body: JSON.stringify({
                 message: text,
                 teamsUserId,

@@ -8,6 +8,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { hooksTokenFor } from "../utils/agent-token.js";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -156,9 +157,9 @@ export interface PollerOpts {
   /** Full base URL for the agent gateway, e.g. "http://127.0.0.1:18800" */
   gatewayUrl: string;
   /**
-   * Bearer token the poller presents to the agent gateway. Empty in practice —
-   * the container's /hooks/* endpoints are currently unauthenticated. Kept
-   * because it is the existing lever for securing them.
+   * Bearer token the poller presents to the agent gateway. Optional: when unset
+   * it is derived from the deployment id, so a caller cannot accidentally spawn
+   * a poller that fails to authenticate. Overridable only for tests.
    */
   hooksToken?: string;
   marketplaceUrl: string;
@@ -187,7 +188,8 @@ export function startPoller(opts: PollerOpts): ChildProcess {
   const pollAddress = opts.outlookEmail || opts.agentEmail;
   const baseEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
-    OPENCLAW_HOOKS_TOKEN: opts.hooksToken ?? "",
+    OPENCLAW_HOOKS_TOKEN:
+      opts.hooksToken ?? hooksTokenFor(opts.deploymentId, process.env.PROVISIONING_SECRET || ""),
     POLLER_GATEWAY_URL: opts.gatewayUrl,
     MARKETPLACE_URL: opts.marketplaceUrl,
     DEPLOYMENT_ID: opts.deploymentId,

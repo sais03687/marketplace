@@ -201,6 +201,8 @@ export interface ContainerEnv {
   // id, so it authenticates as exactly one deployment and cannot be replayed
   // against another company's.
   AGENT_TOKEN?: string;
+  /** Inbound credential the poller must present to this container's /hooks/* routes. */
+  AGENT_HOOKS_TOKEN?: string;
   SHAREPOINT_FOLDER?: string;         // agent slug used as SharePoint folder name
   // Email mode: "outlook" uses Graph API via proxy, "agentmail" (default) uses AgentMail
   EMAIL_MODE?: string;

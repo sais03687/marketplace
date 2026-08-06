@@ -365,7 +365,8 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             Env: envVars,
             ExposedPorts: { "4000/tcp": {} },
             HostConfig: {
-              PortBindings: { "4000/tcp": [{ HostPort: "0" }] },
+              // Loopback only — vetting runs unreviewed third-party code.
+              PortBindings: { "4000/tcp": [{ HostIp: "127.0.0.1", HostPort: "0" }] },
               Memory: 512 * 1024 * 1024,
               MemorySwap: 512 * 1024 * 1024,
               NanoCpus: 1_000_000_000,
