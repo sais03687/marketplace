@@ -8,6 +8,38 @@ import { settlePauseCredit } from "@/lib/pause-credit";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 
+/**
+ * The subscription an invoice belongs to.
+ *
+ * Stripe moved this off the invoice root. Under the API version this endpoint is
+ * pinned to (2026-04-22.dahlia) there is no `invoice.subscription` at all — it
+ * lives at `parent.subscription_details.subscription`, and reading the old path
+ * yields undefined rather than an error.
+ *
+ * That silence is the whole problem. `invoice.paid` and `invoice.payment_failed`
+ * both read the root field and had therefore never once matched a deployment:
+ * an agent paused for a failed payment was never actually paused, and one paused
+ * for non-payment was never resumed when the payment finally went through. Both
+ * handlers returned 200 the entire time. Confirmed on 2026-08-06 by dumping a
+ * real invoice and finding the field absent.
+ *
+ * Falls back to the flat field so this keeps working if the endpoint is ever
+ * pinned to an older version, and accepts either a string id or an expanded
+ * object.
+ */
+function subscriptionIdFrom(obj: Record<string, unknown>): string | null {
+  const idOf = (v: unknown): string | null => {
+    if (typeof v === "string") return v;
+    if (v && typeof v === "object" && typeof (v as { id?: unknown }).id === "string") {
+      return (v as { id: string }).id;
+    }
+    return null;
+  };
+
+  const parent = obj.parent as { subscription_details?: { subscription?: unknown } } | null | undefined;
+  return idOf(parent?.subscription_details?.subscription) ?? idOf(obj.subscription);
+}
+
 async function enqueueDeprovision(deploymentId: string) {
   try {
     await getProvisioningQueue().add("deprovision", { type: "deprovision", deploymentId });
@@ -67,7 +99,7 @@ export async function POST(request: NextRequest) {
     case "checkout.session.completed": {
       const metadata = obj.metadata as Record<string, string> | undefined;
       const deploymentId = metadata?.deploymentId ?? null;
-      const subscriptionId = obj.subscription as string | null;
+      const subscriptionId = subscriptionIdFrom(obj);
       const customerId = obj.customer as string | null;
 
       if (deploymentId && subscriptionId) {
@@ -143,7 +175,7 @@ export async function POST(request: NextRequest) {
       // If this handler is missed or fails, the watermark does not advance and
       // the uncredited time rolls into the next renewal. Late is recoverable;
       // lost is not.
-      const subscriptionId = obj.subscription as string | null;
+      const subscriptionId = subscriptionIdFrom(obj);
       const invoiceId = obj.id as string | undefined;
       if (subscriptionId) {
         const deployment = await prisma.deployment.findFirst({
@@ -172,7 +204,7 @@ export async function POST(request: NextRequest) {
     }
 
     case "invoice.paid": {
-      const subscriptionId = obj.subscription as string | null;
+      const subscriptionId = subscriptionIdFrom(obj);
       if (subscriptionId) {
         const deployment = await prisma.deployment.findFirst({
           where: { stripeSubscriptionId: subscriptionId },
@@ -191,7 +223,7 @@ export async function POST(request: NextRequest) {
     }
 
     case "invoice.payment_failed": {
-      const subscriptionId = obj.subscription as string | null;
+      const subscriptionId = subscriptionIdFrom(obj);
       if (subscriptionId) {
         const deployment = await prisma.deployment.findFirst({
           where: { stripeSubscriptionId: subscriptionId },
