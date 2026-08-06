@@ -144,42 +144,73 @@ export async function POST(request: Request) {
   const stripe = getStripe();
 
   if (stripe && agent.pricePerMonth > 0) {
-    // Ensure the company has a Stripe customer
-    let stripeCustomerId = company.stripeCustomerId;
-    if (!stripeCustomerId) {
-      const customer = await stripe.customers.create({
-        name: company.name,
-        metadata: { companyId: company.id },
+    // Every Stripe call below is wrapped, because an unhandled throw here does not
+    // surface as an error — it becomes a 500 with an empty body, and the client's
+    // res.json() then fails with "Unexpected end of JSON input". A buyer sees that
+    // instead of a reason, and the only record of what actually happened is in the
+    // platform's runtime logs. That is how a stale live-mode customer id survived
+    // a switch to test keys on 2026-08-06 and looked like a broken hire button.
+    try {
+      // Ensure the company has a Stripe customer.
+      //
+      // Customer ids are mode-specific: one created with a live key is invisible
+      // to a test key and vice versa, and Stripe reports that as "No such
+      // customer" rather than as a mode problem. Clearing the stored id is the
+      // fix when switching modes, since this block recreates it.
+      let stripeCustomerId = company.stripeCustomerId;
+      if (!stripeCustomerId) {
+        const customer = await stripe.customers.create({
+          name: company.name,
+          metadata: { companyId: company.id },
+        });
+        stripeCustomerId = customer.id;
+        await prisma.company.update({
+          where: { id: company.id },
+          data: { stripeCustomerId },
+        });
+      }
+
+      // Create a price dynamically for this agent's monthly subscription
+      const price = await stripe.prices.create({
+        unit_amount: agent.pricePerMonth,
+        currency: "usd",
+        recurring: { interval: "month" },
+        product_data: {
+          name: agent.name,
+          metadata: { agentId: agent.id },
+        },
       });
-      stripeCustomerId = customer.id;
-      await prisma.company.update({
-        where: { id: company.id },
-        data: { stripeCustomerId },
+
+      // Create Stripe Checkout session — buyer pays before provisioning starts
+      const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        customer: stripeCustomerId,
+        line_items: [{ price: price.id, quantity: 1 }],
+        metadata: { deploymentId: deployment.id },
+        success_url: `${APP_URL}/dashboard/billing/success?session_id={CHECKOUT_SESSION_ID}&deploymentId=${deployment.id}`,
+        cancel_url: `${APP_URL}/browse`,
       });
+
+      return jsonSuccess({ checkoutUrl: session.url, deploymentId: deployment.id }, 201);
+    } catch (err: any) {
+      // The deployment row was written before this point and has no resources
+      // behind it — no mailbox, no container, no subscription. Remove it rather
+      // than leaving a PENDING_PAYMENT row that can never advance, because its
+      // checkout session was never created and no webhook will ever reference it.
+      await prisma.deployment.delete({ where: { id: deployment.id } }).catch(() => {});
+
+      const code = err?.code || err?.rawType || err?.type || "unknown";
+      console.error(
+        `[deployments] Stripe checkout failed for company ${company.id} ` +
+          `(agent ${agent.slug}, ${agent.pricePerMonth} cents): ${code} — ${err?.message}`,
+      );
+      return jsonError(
+        `Could not start checkout (${code}). The hire was not created and you have ` +
+          `not been charged. If this persists, the platform's Stripe configuration ` +
+          `needs attention.`,
+        502,
+      );
     }
-
-    // Create a price dynamically for this agent's monthly subscription
-    const price = await stripe.prices.create({
-      unit_amount: agent.pricePerMonth,
-      currency: "usd",
-      recurring: { interval: "month" },
-      product_data: {
-        name: agent.name,
-        metadata: { agentId: agent.id },
-      },
-    });
-
-    // Create Stripe Checkout session — buyer pays before provisioning starts
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      line_items: [{ price: price.id, quantity: 1 }],
-      metadata: { deploymentId: deployment.id },
-      success_url: `${APP_URL}/dashboard/billing/success?session_id={CHECKOUT_SESSION_ID}&deploymentId=${deployment.id}`,
-      cancel_url: `${APP_URL}/browse`,
-    });
-
-    return jsonSuccess({ checkoutUrl: session.url, deploymentId: deployment.id }, 201);
   }
 
   // Dev/no-Stripe fallback: enqueue provisioning directly
