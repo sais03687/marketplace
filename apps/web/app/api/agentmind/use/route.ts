@@ -5,6 +5,10 @@ import { z } from "zod";
 const bodySchema = z.object({
   deploymentId: z.string().min(1),
   contributionIds: z.array(z.string().min(1)).min(1).max(10),
+  // What the run that received this knowledge went on to do. Absent from the
+  // poller's call, which fires at forward time before any outcome exists; sent
+  // by the adapter once the run finishes.
+  outcome: z.enum(["acted", "no_action"]).optional(),
 });
 
 /**
@@ -32,7 +36,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const { deploymentId, contributionIds } = parsed.data;
+  const { deploymentId, contributionIds, outcome } = parsed.data;
 
   // Validate deployment exists
   const deployment = await prisma.deployment.findUnique({
@@ -58,10 +62,35 @@ export async function POST(request: Request) {
       continue; // Skip missing or non-approved contributions silently
     }
 
-    // Increment usage count
+    // Two callers, two different events, deliberately not merged.
+    //
+    // The poller calls this with no outcome when it forwards knowledge — that is
+    // the injection, and it is all usageCount has ever measured, despite the name
+    // suggesting the agent found it useful. The adapter calls back afterwards
+    // with the outcome, and that call must not re-count the injection.
+    if (outcome) {
+      // A lesson repeatedly followed by the agent doing nothing is suppressing
+      // work rather than helping. That is the fingerprint of the seven "do not
+      // attempt" lessons which made the agent refuse to email its own manager:
+      // each was injected, each produced a reply and no action, and nothing
+      // anywhere noticed until a human read the reasoning by hand.
+      if (outcome === "no_action") {
+        await prisma.knowledgeContribution.update({
+          where: { id: contributionId },
+          data: { noActionCount: { increment: 1 } },
+        });
+      }
+      results.push({ id: contributionId, voted: false });
+      continue;
+    }
+
     await prisma.knowledgeContribution.update({
       where: { id: contributionId },
-      data: { usageCount: { increment: 1 } },
+      data: {
+        usageCount: { increment: 1 },
+        injectedCount: { increment: 1 },
+        lastUsedAt: new Date(),
+      },
     });
 
     // Auto-upvote (idempotent — won't double-vote if already upvoted)

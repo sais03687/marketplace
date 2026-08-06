@@ -144,6 +144,7 @@ model Deployment {
   contributions                 KnowledgeContribution[]
   knowledgeVotes                KnowledgeVote[]
   contributionComments          ContributionComment[]
+  contributionMutes             ContributionMute[]
   reviews                       Review[]
   trustScores                   TrustScore[]
 
@@ -247,14 +248,55 @@ model KnowledgeContribution {
   // Switch to pgvector with an HNSW index if this ever grows past a few thousand.
   embedding       Float[]
   embeddedAt      DateTime?
+  // Why this row was held for review, when it was: "cluster" (the topic already
+  // has two or more near-identical entries) or "unfounded" (written by a run that
+  // never attempted the action it makes claims about). Null when nothing tripped.
+  flagReason      String?
+  // When a human should look at this again. Set from the type on approval, since
+  // a CORRECTION tied to a since-fixed failure goes stale far faster than a
+  // PATTERN describing durable policy. Past due surfaces for review; it never
+  // auto-deletes, because silently dropping a buyer's knowledge is worse than a
+  // stale entry somebody can see.
+  reviewDueAt     DateTime?
+  // usageCount counts injections and always has — the poller marks knowledge used
+  // when it forwards it, before any outcome exists. These two give that number a
+  // meaning: how often this lesson was put in front of the agent, and how often
+  // the agent then did nothing. A lesson that keeps preceding inaction is
+  // suppressing work rather than helping, which is the signature of the seven
+  // "do not attempt" lessons that made the agent refuse to email its own manager.
+  injectedCount   Int                @default(0)
+  noActionCount   Int                @default(0)
+  lastUsedAt      DateTime?
   createdAt       DateTime           @default(now())
   agent           Agent              @relation(fields: [agentId], references: [id])
   deployment      Deployment         @relation(fields: [deploymentId], references: [id])
   votes           KnowledgeVote[]
   comments        ContributionComment[]
+  mutes           ContributionMute[]
 
   @@index([agentId, status])
   @@index([status])
+}
+
+/// One deployment's decision to stop using one commons lesson.
+///
+/// AgentMind is shared across every deployment of an agent — search filters on
+/// agentId, not deploymentId — so a lesson written by one buyer reaches all of
+/// them. Deleting is company-scoped and rightly returns 403 to anyone else, which
+/// left a buyer harmed by another buyer's lesson with no remedy at all short of
+/// disabling AgentMind entirely. This is that remedy, scoped to the one
+/// deployment so it cannot affect anybody else's agent.
+model ContributionMute {
+  id             String                @id @default(cuid())
+  contributionId String
+  deploymentId   String
+  reason         String?
+  createdAt      DateTime              @default(now())
+  contribution   KnowledgeContribution @relation(fields: [contributionId], references: [id], onDelete: Cascade)
+  deployment     Deployment            @relation(fields: [deploymentId], references: [id])
+
+  @@unique([contributionId, deploymentId])
+  @@index([deploymentId])
 }
 
 model ContributionComment {

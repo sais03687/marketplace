@@ -2,7 +2,15 @@ import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { runGuardrails, contributionInputSchema } from "@/lib/agentmind/guardrails";
 import { z } from "zod";
-import { embedTexts } from "@/lib/agentmind-embedding";
+import {
+  embedTexts,
+  findNeighbours,
+  isFounded,
+  reviewDueDate,
+  CLUSTER_THRESHOLD,
+  DUPLICATE_THRESHOLD,
+  type NeighbourHit,
+} from "@/lib/agentmind-embedding";
 
 const bodySchema = z.object({
   deploymentId: z.string().min(1),
@@ -61,7 +69,9 @@ export async function POST(request: Request) {
     );
   }
 
-  // Duplicate detection: same agentId + type + title (case-insensitive)
+  // Exact-title duplicate. Kept, but it was never enough on its own: the seven
+  // lessons that taught the agent to refuse emailing its own manager all had
+  // different titles for the same rule, so not one of them deduped here.
   const existing = await prisma.knowledgeContribution.findFirst({
     where: {
       agentId: deployment.agentId,
@@ -82,6 +92,38 @@ export async function POST(request: Request) {
     );
   }
 
+  // Embed before deciding, not after. The vector is what makes the semantic
+  // duplicate check possible, and it is needed on the row regardless.
+  const [embedding] =
+    (await embedTexts([`${title}\n${guardrailResult.sanitizedContent}`])) ?? [];
+
+  // Semantic neighbours among this agent's existing lessons. PENDING rows count:
+  // a topic with three entries already awaiting review does not need a fourth.
+  let neighbours: NeighbourHit[] = [];
+  if (embedding?.length) {
+    const siblings = await prisma.knowledgeContribution.findMany({
+      where: { agentId: deployment.agentId, status: { in: ["APPROVED", "PENDING"] } },
+      select: { id: true, title: true, embedding: true },
+    });
+    neighbours = findNeighbours(embedding, siblings, CLUSTER_THRESHOLD);
+
+    // Same lesson, different words. Return the existing row exactly as the title
+    // match above does, so a re-phrasing does not become a second entry.
+    const twin = neighbours.find((n) => n.score >= DUPLICATE_THRESHOLD);
+    if (twin) {
+      const row = await prisma.knowledgeContribution.findUnique({
+        where: { id: twin.id },
+        select: { id: true, status: true },
+      });
+      if (row) {
+        console.log(
+          `[agentmind] "${title}" is ${twin.score.toFixed(3)} similar to "${twin.title}" — returning existing`,
+        );
+        return jsonSuccess({ id: row.id, status: row.status, duplicate: true }, 200);
+      }
+    }
+  }
+
   // Resolve initial status based on deployment's agentMind preference.
   //
   // CORRECTION is held for review whatever the buyer set, because it is the class
@@ -94,13 +136,38 @@ export async function POST(request: Request) {
   // job. The other three types describe durable things — a pattern, a template, a
   // recipe — and keep flowing as the buyer configured.
   const autoApprove = ac.agentMindAutoApprove !== false; // default true
-  const initialStatus = autoApprove && type !== "CORRECTION" ? "APPROVED" : "PENDING";
 
-  // Embed now so the lesson is searchable the moment it is approved. Non-fatal:
-  // a row without a vector is still a perfectly good row, it simply falls to the
-  // keyword path until the backfill picks it up.
-  const [embedding] =
-    (await embedTexts([`${title}\n${guardrailResult.sanitizedContent}`])) ?? [];
+  // Two further reasons to hold a lesson for a human, whatever the buyer set.
+  //
+  // "cluster" — the topic already has two or more near-identical entries. One
+  // lesson about external sharing is knowledge; seven is a pile-up that crowds
+  // out everything else in every search and reinforces itself.
+  //
+  // "unfounded" — the lesson makes claims about what the platform does, but the
+  // run that wrote it never asked the platform anything (no `Triggered by:` in
+  // its provenance). That is the agent generalising from its own reasoning, and
+  // it is exactly how one refusal became a standing policy.
+  let flagReason: string | null = null;
+  if (neighbours.length >= 2) {
+    flagReason = "cluster";
+  } else if (!isFounded(context)) {
+    flagReason = "unfounded";
+  }
+
+  const initialStatus =
+    autoApprove && type !== "CORRECTION" && !flagReason ? "APPROVED" : "PENDING";
+
+  if (flagReason) {
+    console.log(
+      `[agentmind] Holding "${title}" for review (${flagReason})` +
+        (flagReason === "cluster"
+          ? `: ${neighbours.length} similar — ${neighbours
+              .slice(0, 3)
+              .map((n) => `${n.title} ${n.score.toFixed(2)}`)
+              .join("; ")}`
+          : ""),
+    );
+  }
 
   const contribution = await prisma.knowledgeContribution.create({
     data: {
@@ -114,10 +181,17 @@ export async function POST(request: Request) {
       tags,
       sanitizationLog: guardrailResult.log,
       status: initialStatus,
+      flagReason,
+      // Only dated when it goes live. A PENDING row is already in front of a
+      // human, so a review date on it would mean nothing.
+      reviewDueAt: initialStatus === "APPROVED" ? reviewDueDate(type) : null,
       embedding: embedding ?? [],
       embeddedAt: embedding?.length ? new Date() : null,
     },
   });
 
-  return jsonSuccess({ id: contribution.id, status: contribution.status }, 201);
+  return jsonSuccess(
+    { id: contribution.id, status: contribution.status, flagReason },
+    201,
+  );
 }

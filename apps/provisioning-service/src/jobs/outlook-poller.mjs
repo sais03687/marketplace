@@ -661,6 +661,11 @@ async function forwardToGateway(message, attachments) {
       html: htmlContent,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(ccAddresses ? { cc: ccAddresses } : {}),
+      // Which lessons were injected into the text above. The container needs
+      // them so it can report back what the run actually did — without this the
+      // only record is "injected", which is why a lesson that suppressed work
+      // and one that helped were indistinguishable in the data.
+      ...(agentMindResult.ids.length > 0 ? { agentmind_ids: agentMindResult.ids } : {}),
     },
     thread: {
       thread_id: message.conversationId,

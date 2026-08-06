@@ -993,6 +993,25 @@ async def maybe_contribute(state: AgentState) -> AgentState:
     if not insight.get("type") or not insight.get("title") or not insight.get("content"):
         return state
 
+    # A run that did nothing has learned nothing worth telling other agents.
+    #
+    # This is where the compounding started. Told by an earlier lesson not to
+    # attempt something, the agent would decline, act on nothing, and then record
+    # a fresh lesson about a refusal that never happened — which the next run read
+    # as evidence. Seven near-identical "do not attempt" lessons accumulated that
+    # way in two days, and between them they taught the agent to refuse emailing
+    # its own manager, an address the platform would have allowed.
+    #
+    # Lessons should come from doing. The platform holds these for review as well
+    # (flagReason "unfounded"), but not writing them is better than reviewing them.
+    if not state.actions_taken:
+        print(
+            "[agentmind] Not contributing: this run took no action, so the lesson "
+            "would describe something the agent never actually tried",
+            flush=True,
+        )
+        return state
+
     # Validate that contribution doesn't leak PRIVATE.md content
     combined = f"{insight.get('title', '')} {insight.get('content', '')}"
     if _check_private_leak(combined, _private_md):

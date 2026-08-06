@@ -30,6 +30,42 @@ export default async function AgentMindQueuePage() {
     orderBy: { createdAt: "desc" },
   });
 
+  // Approved lessons the platform thinks are worth a second look. None of these
+  // are wrong by definition — they are the shapes that went wrong before, and
+  // the point is that somebody sees them rather than the corpus quietly rotting:
+  //   past due          a CORRECTION outlives the failure it describes
+  //   suppressing work  injected repeatedly, and the agent then did nothing
+  //   flagged           held at contribute time as a cluster or unfounded
+  const now = new Date();
+  const needsAttention = await prisma.knowledgeContribution.findMany({
+    where: {
+      status: "APPROVED",
+      OR: [
+        { reviewDueAt: { lt: now } },
+        { flagReason: { not: null } },
+        { AND: [{ injectedCount: { gte: 3 } }, { noActionCount: { gte: 2 } }] },
+      ],
+    },
+    include: {
+      agent: { select: { name: true, slug: true } },
+      deployment: { select: { agentName: true } },
+    },
+    orderBy: { noActionCount: "desc" },
+    take: 50,
+  });
+
+  const attentionReason = (c: (typeof needsAttention)[number]): string => {
+    if (c.injectedCount >= 3 && c.noActionCount / c.injectedCount >= 0.5) {
+      return `injected ${c.injectedCount}×, no action ${c.noActionCount}× — may be suppressing work`;
+    }
+    if (c.flagReason === "cluster") return "near-duplicate of other lessons";
+    if (c.flagReason === "unfounded") return "written by a run that took no action";
+    if (c.reviewDueAt && c.reviewDueAt < now) {
+      return `review due ${formatDate(c.reviewDueAt)}`;
+    }
+    return "flagged";
+  };
+
   return (
     <div className="mx-auto max-w-4xl p-6">
       <h1 className="text-2xl font-bold">Admin: AgentMind Review Queue</h1>
@@ -37,6 +73,44 @@ export default async function AgentMindQueuePage() {
         Review and approve knowledge contributions from agents.
       </p>
 
+      {needsAttention.length > 0 && (
+        <div className="mt-8">
+          <h2 className="text-lg font-semibold">Needs attention</h2>
+          <p className="text-sm text-muted-foreground">
+            Already approved, but showing a pattern worth checking. Nothing here is
+            removed automatically.
+          </p>
+          <div className="mt-3 space-y-2">
+            {needsAttention.map((c: (typeof needsAttention)[number]) => (
+              <Card key={c.id} className="border-amber-200">
+                <CardContent className="flex items-start justify-between gap-4 p-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{c.title}</span>
+                      <Badge variant="outline" className={TYPE_COLORS[c.type] ?? ""}>
+                        {c.type}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-amber-700">{attentionReason(c)}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {c.agent.name} · used {c.usageCount}× · added {formatDate(c.createdAt)}
+                    </p>
+                  </div>
+                  {/* Informational only. Acting on these goes through the same
+                      PATCH/DELETE handlers the buyer's knowledge table uses; a
+                      button here would need a client component, and a control
+                      that looks live but does nothing is worse than none. */}
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                    {c.id.slice(0, 8)}
+                  </span>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <h2 className="mt-8 text-lg font-semibold">Pending review</h2>
       {contributions.length === 0 ? (
         <div className="mt-12 text-center">
           <p className="text-lg font-medium">No contributions to review</p>

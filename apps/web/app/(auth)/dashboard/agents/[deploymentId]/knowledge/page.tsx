@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatDate } from "@/lib/utils";
 import { DeleteContributionButton } from "./delete-button";
+import { MuteContributionButton } from "./mute-button";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,27 @@ export default async function KnowledgePage({
   ]);
 
   const totalUsage = usageAgg._sum.usageCount ?? 0;
+
+  // Lessons this agent can draw on that were written by somebody else.
+  //
+  // AgentMind is a commons scoped to the agent type, not to a company, so these
+  // arrive from other buyers' deployments. They cannot be deleted here — they are
+  // not this company's to remove — but they can be silenced for this agent, which
+  // until now was impossible: the only lever was turning AgentMind off entirely.
+  const commonsLessons = await prisma.knowledgeContribution.findMany({
+    where: {
+      agentId: deployment.agentId,
+      status: "APPROVED",
+      deploymentId: { not: deploymentId },
+    },
+    select: {
+      id: true, title: true, type: true, usageCount: true,
+      injectedCount: true, noActionCount: true,
+      mutes: { where: { deploymentId }, select: { id: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
 
   return (
     <div>
@@ -123,6 +145,51 @@ export default async function KnowledgePage({
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {commonsLessons.length > 0 && (
+        <div className="mt-10">
+          <h2 className="text-xl font-semibold">Shared lessons your agent can use</h2>
+          <p className="text-sm text-muted-foreground">
+            Written by other deployments of this agent. You cannot delete them —
+            they belong to whoever wrote them — but you can stop yours using one.
+            Muting affects only {deployment.agentName}.
+          </p>
+          <div className="mt-4 space-y-2">
+            {commonsLessons.map((c) => {
+              const muted = c.mutes.length > 0;
+              const suppressing =
+                c.injectedCount >= 3 && c.noActionCount / c.injectedCount >= 0.5;
+              return (
+                <Card key={c.id} className={muted ? "opacity-60" : undefined}>
+                  <CardContent className="flex items-start justify-between gap-4 p-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{c.title}</span>
+                        <Badge variant="outline" className="text-[10px]">{c.type}</Badge>
+                        {muted && <Badge variant="outline" className="text-[10px]">Muted</Badge>}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Used {c.usageCount}x
+                        {suppressing && (
+                          <span className="ml-2 text-amber-700">
+                            · your agent took no action {c.noActionCount} of the last{" "}
+                            {c.injectedCount} times this was used
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <MuteContributionButton
+                      deploymentId={deploymentId}
+                      contributionId={c.id}
+                      muted={muted}
+                    />
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

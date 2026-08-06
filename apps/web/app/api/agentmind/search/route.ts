@@ -56,6 +56,12 @@ export async function GET(request: NextRequest) {
   const where: Record<string, unknown> = {
     agentId: params.agentId,
     status: "APPROVED",
+    // Lessons this buyer has silenced for their own agent. AgentMind is shared
+    // across every deployment of an agent, so a lesson written by one buyer
+    // reaches all of them; deleting is rightly company-scoped, which left a
+    // buyer harmed by somebody else's lesson with no remedy but switching the
+    // whole commons off. Muting is that remedy, and it stops here.
+    mutes: { none: { deploymentId: params.deploymentId } },
   };
 
   if (params.type) {
@@ -87,7 +93,12 @@ export async function GET(request: NextRequest) {
   const candidates = await prisma.knowledgeContribution.findMany({
     where,
     select: { ...SELECT_FIELDS, embedding: true },
-    orderBy: { usageCount: "desc" },
+    // Deliberately not ordered by usageCount. That number counts injections, so
+    // ordering by it made a lesson that fires often rank higher, get injected
+    // more, and count higher still — a ratchet that promoted the most harmful
+    // lesson in the corpus to eleven uses. Semantic score decides the ranking
+    // below; usage only breaks ties.
+    orderBy: { createdAt: "desc" },
     // The corpus is small and scoped to one agent; take enough to rank well
     // without unbounded reads if it ever grows.
     take: 500,

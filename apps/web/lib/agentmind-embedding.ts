@@ -71,6 +71,94 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot;
 }
 
+/** Near-identical: return the existing row instead of writing another. */
+export const DUPLICATE_THRESHOLD = Number(
+  process.env.AGENTMIND_DUPLICATE_THRESHOLD || "0.90",
+);
+
+/**
+ * Same topic, different wording. Two or more neighbours at this distance means
+ * the subject is already covered and another entry is a pile-up, not a lesson.
+ *
+ * 0.75 was measured, not guessed. Against the seven near-duplicate lessons that
+ * taught the agent to refuse emailing its own manager, plus the one deliberately
+ * kept and two unrelated controls, neighbour counts at this threshold were 3–5
+ * for six of the seven and 0 for everything that should be kept. Pairwise
+ * similarity across the seven ran 0.348–0.944 with a median of 0.762, so the
+ * line sits just under the median of a genuine cluster and well above anything
+ * unrelated.
+ */
+export const CLUSTER_THRESHOLD = Number(
+  process.env.AGENTMIND_CLUSTER_THRESHOLD || "0.75",
+);
+
+export interface NeighbourHit {
+  id: string;
+  title: string;
+  score: number;
+}
+
+/**
+ * Existing rows semantically close to a candidate, nearest first.
+ *
+ * A linear scan and a threshold — k-nearest-neighbour counting, not clustering.
+ * The question at write time is one candidate against the corpus, which needs no
+ * k-means or DBSCAN and none of their tuning. Rows without a vector are skipped
+ * rather than treated as distant, so an embedding outage cannot manufacture the
+ * appearance of a novel lesson.
+ */
+export function findNeighbours(
+  vector: number[],
+  rows: Array<{ id: string; title: string; embedding: number[] | null }>,
+  threshold: number,
+): NeighbourHit[] {
+  if (!vector?.length) return [];
+  const hits: NeighbourHit[] = [];
+  for (const row of rows) {
+    if (!row.embedding?.length) continue;
+    const score = cosineSimilarity(vector, row.embedding);
+    if (score >= threshold) hits.push({ id: row.id, title: row.title, score });
+  }
+  return hits.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * How long a lesson of each type stays trustworthy without another look.
+ *
+ * They do not age alike. A CORRECTION encodes a failure mode and goes stale the
+ * moment the failure is fixed — #38 found one asserting Excel was unavailable,
+ * learned from a corrupt test fixture that had since been replaced. A PATTERN
+ * describes durable policy. Adjust here; nothing else reads these numbers.
+ */
+export const REVIEW_INTERVAL_DAYS: Record<string, number> = {
+  CORRECTION: 30,
+  RESPONSE_TEMPLATE: 90,
+  TASK_RECIPE: 90,
+  PATTERN: 180,
+};
+
+export function reviewDueDate(type: string, from: Date = new Date()): Date {
+  const days = REVIEW_INTERVAL_DAYS[type] ?? 90;
+  return new Date(from.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Was this lesson learned from something the agent actually did?
+ *
+ * Provenance is `Request: …` plus `Triggered by: …`, the second present only when
+ * the run produced an action result (see maybe_contribute in agent.py). A lesson
+ * making claims about what the platform permits, written by a run that never
+ * asked the platform anything, is the agent generalising from its own reasoning.
+ *
+ * That is not hypothetical: both harmful lessons written after provenance was
+ * added carried a Request and no Triggered by. The agent had refused
+ * pre-emptively, then recorded a lesson about a refusal that never happened —
+ * which is precisely how one bad lesson became seven.
+ */
+export function isFounded(context: string | null | undefined): boolean {
+  return /(^|\n)\s*Triggered by:\s*\S/.test(context || "");
+}
+
 const STOPWORDS = new Set([
   "the", "and", "for", "with", "can", "you", "our", "about", "this", "that",
   "from", "have", "has", "are", "was", "were", "what", "when", "where", "how",

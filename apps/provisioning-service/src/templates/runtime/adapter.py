@@ -789,24 +789,55 @@ async def search_knowledge(
         return data.get("contributions", [])
 
 
-async def report_usage(contribution_ids: list[str]) -> dict:
+async def report_usage(contribution_ids: list[str], outcome: str | None = None) -> dict:
     """Report that specific contributions were used in a response.
 
     This signals real value — increments usage count and auto-upvotes
     each contribution the agent actually incorporated.
+
+    With ``outcome`` it reports what the run did afterwards instead, and the
+    marketplace records that without re-counting the injection. "no_action" is
+    the signal worth having: knowledge that keeps being followed by the agent
+    doing nothing is suppressing work, which is how seven "do not attempt"
+    lessons quietly taught the agent to refuse emailing its own manager.
     """
     if not contribution_ids:
         return {}
+    payload = {
+        "deploymentId": DEPLOYMENT_ID,
+        "contributionIds": contribution_ids,
+    }
+    if outcome:
+        payload["outcome"] = outcome
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{MARKETPLACE_URL}/api/agentmind/use",
-            json={
-                "deploymentId": DEPLOYMENT_ID,
-                "contributionIds": contribution_ids,
-            },
+            json=payload,
         )
         resp.raise_for_status()
         return resp.json()
+
+
+async def _report_agentmind_outcome(context: dict, result: dict) -> None:
+    """Tell the marketplace whether knowledge given to this run led anywhere.
+
+    Never raises and never blocks the reply — this is telemetry, and losing it
+    matters far less than the buyer's answer.
+    """
+    ids = context.get("agentmind_ids") or []
+    if not ids:
+        return
+    acted = bool((result or {}).get("action_results"))
+    try:
+        await report_usage(list(ids), outcome="acted" if acted else "no_action")
+        if not acted:
+            print(
+                f"[agentmind] {len(ids)} lesson(s) injected and the run took no action "
+                f"— recorded against them",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[agentmind] Could not report outcome: {exc}", flush=True)
 
 
 async def _sync_approval_to_portal(
@@ -2660,6 +2691,9 @@ async def receive_agentmail_webhook(request: Request):
         "message_id": message_id,
         "sender": sender,
         "subject": subject,
+        # Lessons the poller injected into the text above, so the run can report
+        # back whether they led to anything.
+        "agentmind_ids": msg.get("agentmind_ids") or payload.get("agentmind_ids") or [],
     }
 
     asyncio.create_task(_handle_message(formatted, context))
@@ -3062,6 +3096,9 @@ async def _handle_message(message: str, context: dict):
         if not isinstance(result, dict):
             print(f"[adapter] run_agent returned non-dict ({type(result).__name__}) — skipping", flush=True)
             return
+
+        # Fire-and-forget: whether injected knowledge preceded real work.
+        asyncio.create_task(_report_agentmind_outcome(context, result))
 
         # ── Handle interrupted graph (blocked action needs approval) ─────
         if result.get("status") == "__interrupted__":
