@@ -1,0 +1,15 @@
+-- Agent.totalDeployments was an Int @default(0) that nothing ever wrote.
+--
+-- No increment on hire, no decrement on fire, no backfill — a grep across the
+-- repository finds reads only. So it was 0 for every agent from the day it was
+-- added: every browse card said "0 hired", every detail page said "0 companies
+-- use this agent", and sorting by Most Popular ordered a column of zeroes.
+--
+-- Replaced by a live count of non-FIRED deployments. Dropped rather than
+-- backfilled, because a stored counter that looks authoritative and drifts is
+-- how this happened; there is nothing to drift if the number is derived.
+-- IF EXISTS because the web build runs `prisma db push` on every deploy and
+-- will drop this itself. Whichever mechanism reaches the database first, the
+-- other must not fail — an unguarded DROP left the migration table wedged
+-- earlier today and blocked every subsequent migration.
+ALTER TABLE "Agent" DROP COLUMN IF EXISTS "totalDeployments";

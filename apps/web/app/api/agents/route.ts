@@ -44,10 +44,15 @@ export async function GET(request: NextRequest) {
     where.averageRating = { gte: parseFloat(params.minRating) };
   }
 
-  let orderBy: Record<string, string> = { createdAt: "desc" };
+  // Popularity is a live relation count, not a stored column. `totalDeployments`
+  // was an Int @default(0) that nothing in the codebase ever incremented, so it
+  // was 0 for every agent since the day it was added: every card read "0 hired",
+  // every detail page read "0 companies use this agent", and sorting by Most
+  // Popular ordered a list of identical zeroes.
+  let orderBy: Record<string, unknown> = { createdAt: "desc" };
   switch (params.sort) {
     case "popular":
-      orderBy = { totalDeployments: "desc" };
+      orderBy = { deployments: { _count: "desc" } };
       break;
     case "rating":
       orderBy = { averageRating: "desc" };
@@ -68,6 +73,8 @@ export async function GET(request: NextRequest) {
     const query = params.q.trim().replace(/[^a-zA-Z0-9\s]/g, "").split(/\s+/).join(" & ");
     const agents = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
       `SELECT a.*,
+        (SELECT COUNT(*)::int FROM "Deployment" d
+          WHERE d."agentId" = a.id AND d.status <> 'FIRED') AS "totalDeployments",
         ts_rank(
           to_tsvector('english', a.name || ' ' || a.tagline || ' ' || a.description),
           to_tsquery('english', $1)
@@ -101,6 +108,10 @@ export async function GET(request: NextRequest) {
       include: {
         capabilities: true,
         creator: { select: { displayName: true } },
+        // Fired agents are excluded: the card says "hired" and the detail page
+        // says "companies use this agent", both present tense. Counting agents
+        // that were let go would overstate both.
+        _count: { select: { deployments: { where: { status: { not: "FIRED" } } } } },
       },
       orderBy,
       skip,
@@ -109,5 +120,10 @@ export async function GET(request: NextRequest) {
     prisma.agent.count({ where }),
   ]);
 
-  return jsonSuccess({ agents, total, page, limit });
+  const withCounts = agents.map(({ _count, ...a }) => ({
+    ...a,
+    totalDeployments: _count.deployments,
+  }));
+
+  return jsonSuccess({ agents: withCounts, total, page, limit });
 }

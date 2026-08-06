@@ -49,6 +49,9 @@ export default async function AgentListingPage({
       _count: {
         select: {
           contributions: { where: { status: "APPROVED" } },
+          // Live count — see the note in app/api/agents/route.ts. The stored
+          // column this used to read was never incremented by anything.
+          deployments: { where: { status: { not: "FIRED" } } },
         },
       },
     },
@@ -255,7 +258,7 @@ export default async function AgentListingPage({
                   </div>
                   <div className="flex items-center gap-2">
                     <Users className="h-4 w-4" />
-                    {agent.totalDeployments} companies use this agent
+                    {agent._count.deployments} companies use this agent
                   </div>
                   {agent.averageRating && (
                     <div className="flex items-center gap-2">

@@ -10,7 +10,7 @@ export async function FeaturedAgents() {
     pricePerMonth: number;
     modelTier: string;
     averageRating: number | null;
-    totalDeployments: number;
+    _count: { deployments: number };
     creator: { displayName: string } | null;
     capabilities: Array<{ name: string; description: string }>;
   }> = [];
@@ -21,15 +21,23 @@ export async function FeaturedAgents() {
       include: {
         capabilities: true,
         creator: { select: { displayName: true } },
+        _count: { select: { deployments: { where: { status: { not: "FIRED" } } } } },
       },
-      orderBy: { totalDeployments: "desc" },
+      // Live relation count. This used to sort on a stored column that nothing
+      // ever wrote, so "featured" was whatever order Postgres felt like.
+      orderBy: { deployments: { _count: "desc" } },
       take: 6,
     });
   } catch {
     // DB may not be available during build
   }
 
-  if (agents.length === 0) {
+  const featured = agents.map(({ _count, ...a }: any) => ({
+    ...a,
+    totalDeployments: _count?.deployments ?? 0,
+  }));
+
+  if (featured.length === 0) {
     return null;
   }
 
@@ -43,7 +51,7 @@ export async function FeaturedAgents() {
           Ready to hire today. No training required.
         </p>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {agents.map((agent) => (
+          {featured.map((agent) => (
             <AgentCard key={agent.slug} agent={agent} />
           ))}
         </div>
