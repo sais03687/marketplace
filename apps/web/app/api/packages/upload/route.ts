@@ -4,6 +4,7 @@ import { validateApiKey } from "@/lib/api-key-auth";
 import { validateManifest } from "@marketplace/agent-package-schema";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
+import { priceRejection } from "@/lib/agent-pricing";
 
 // ── Code scanning ─────────────────────────────────────────────────────────────
 
@@ -201,16 +202,10 @@ export async function POST(request: Request) {
     ? parseInt(pricePerMonthRaw, 10) * 100
     : (manifest.pricePerMonth as number);
 
-  const MIN_PRICE_CENTS: Record<string, number> = {
-    HAIKU: 2900,   // $29/mo — growth-phase minimum, revisit after product-market fit
-    SONNET: 5900,  // $59/mo
-    OPUS: 14900,   // $149/mo
-  };
-  const minPrice = MIN_PRICE_CENTS[modelTierRaw] || 2900;
-  // Allow $0 for internal test agents (bypasses Stripe in the hire flow)
-  if (priceCheck !== 0 && priceCheck < minPrice) {
+  const uploadPriceError = priceRejection(priceCheck, modelTierRaw);
+  if (uploadPriceError) {
     return jsonError(
-      `Minimum price for ${modelTierRaw.toLowerCase()} tier is $${(minPrice / 100).toFixed(0)}/month`,
+      uploadPriceError,
       400,
     );
   }

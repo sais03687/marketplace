@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { priceRejection } from "@/lib/agent-pricing";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { validateManifest } from "@marketplace/agent-package-schema";
 import { storeExtractedPackage } from "@/lib/package-storage";
@@ -137,27 +138,10 @@ export async function POST(
   }
 
   // Enforce minimum pricing per model tier
-  const versionModelTier = (manifest.modelTier as string || "").toUpperCase();
-  const MIN_PRICE_CENTS: Record<string, number> = {
-    HAIKU: 2900,
-    SONNET: 5900,
-    OPUS: 14900,
-  };
+  const versionModelTier = (manifest.modelTier as string) || "";
   const versionPrice = manifest.pricePerMonth as number | undefined;
-  // Zero is not a cheap price, it is a free agent, and the platform supports
-  // those deliberately — the hire flow guards on `pricePerMonth > 0` and
-  // provisions without payment when it is zero. Applying a tier floor to it
-  // meant a free agent could never publish a version at all: 0 is below every
-  // minimum, so the upload was rejected for being too cheap to exist.
-  if (versionPrice !== undefined && versionPrice > 0 && versionModelTier) {
-    const minPrice = MIN_PRICE_CENTS[versionModelTier] || 2900;
-    if (versionPrice < minPrice) {
-      return jsonError(
-        `Minimum price for ${versionModelTier.toLowerCase()} tier is $${(minPrice / 100).toFixed(0)}/month`,
-        400,
-      );
-    }
-  }
+  const priceError = priceRejection(versionPrice, versionModelTier);
+  if (priceError) return jsonError(priceError, 400);
 
   // Publishing a version does not change what the agent costs.
   //

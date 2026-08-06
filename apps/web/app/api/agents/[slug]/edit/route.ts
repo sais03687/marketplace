@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { z } from "zod";
+import { priceRejection } from "@/lib/agent-pricing";
 
 const patchSchema = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -73,11 +74,44 @@ export async function PATCH(
 
   const { capabilities, ...fields } = parsed.data;
 
+  // This is the one place a price can change without a package being uploaded,
+  // so it is the one place that could put the agent row and its version manifest
+  // out of step. It previously enforced no floor at all — `min(0)` and no tier
+  // check — so an edit could set a price no upload would have accepted.
+  const priceError = priceRejection(fields.pricePerMonth, agent.modelTier);
+  if (priceError) return jsonError(priceError, 400);
+
   const updated = await prisma.$transaction(async (tx) => {
     const updatedAgent = await tx.agent.update({
       where: { id: agent.id },
       data: fields,
     });
+
+    // Keep the live version's manifest in step with what buyers are charged.
+    //
+    // Price is stored twice — on the agent, and inside the version's stored
+    // manifestData — and nothing kept them together. data-analyst carried 0 on
+    // the row against 4900 in its approved manifest, which is how it came to be
+    // listed free while its manifest said $49. Publishing already keeps them
+    // aligned (upload writes both, and the versions route refuses a manifest
+    // whose price differs); this is the remaining direction.
+    if (fields.pricePerMonth !== undefined && agent.currentVersion) {
+      const live = await tx.agentVersion.findFirst({
+        where: { agentId: agent.id, version: agent.currentVersion },
+        select: { id: true, manifestData: true },
+      });
+      if (live?.manifestData) {
+        await tx.agentVersion.update({
+          where: { id: live.id },
+          data: {
+            manifestData: {
+              ...(live.manifestData as Record<string, unknown>),
+              pricePerMonth: fields.pricePerMonth,
+            },
+          },
+        });
+      }
+    }
 
     if (capabilities) {
       await tx.capability.deleteMany({ where: { agentId: agent.id } });
