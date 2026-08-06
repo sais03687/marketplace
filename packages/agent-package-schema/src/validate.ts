@@ -24,7 +24,10 @@ const VALID_CATEGORIES: Set<string> = new Set([
 
 const VALID_TIERS: Set<string> = new Set(["haiku", "sonnet", "opus"]);
 
-const VALID_RUNTIMES: Set<string> = new Set(["custom"]);
+/** The only runtimes that may be published. Exported so the creator UI can warn
+ *  about a dead runtime using the same list the validator rejects on, rather
+ *  than hardcoding "custom" in a second place and drifting from it. */
+export const VALID_RUNTIMES: Set<string> = new Set(["custom"]);
 
 export function validateManifest(m: unknown): ValidationError[] {
   const errors: ValidationError[] = [];

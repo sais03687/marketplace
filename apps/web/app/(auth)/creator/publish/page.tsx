@@ -16,6 +16,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import JSZip from "jszip";
+import { VALID_RUNTIMES } from "@marketplace/agent-package-schema";
 
 interface ManifestData {
   name: string;
@@ -50,6 +51,13 @@ export default function PublishPage() {
   const [descriptionOverride, setDescriptionOverride] = useState("");
   const [priceOverride, setPriceOverride] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Runtime as the manifest actually declares it, and whether the platform still
+  // accepts it. Omitting the field means "custom", which is what the validator
+  // assumes too. VALID_RUNTIMES is imported rather than restated so that retiring
+  // another runtime updates the warning here automatically.
+  const manifestRuntime = manifest?.runtime || "custom";
+  const runtimeSupported = VALID_RUNTIMES.has(manifestRuntime.toLowerCase());
   const [submitted, setSubmitted] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [stripeOnboarded, setStripeOnboarded] = useState<boolean | null>(null);
@@ -316,7 +324,9 @@ export default function PublishPage() {
                   <span className="text-muted-foreground">Model Tier</span>
                   <span>{manifest.modelTier}</span>
                   <span className="text-muted-foreground">Runtime</span>
-                  <span>{manifest.runtime || "custom"}</span>
+                  <span className={runtimeSupported ? undefined : "text-destructive font-medium"}>
+                    {manifestRuntime}
+                  </span>
                   <span className="text-muted-foreground">Capabilities</span>
                   <span>{manifest.capabilities.length} defined</span>
                 </div>
@@ -359,11 +369,29 @@ export default function PublishPage() {
               </p>
             </div>
 
+            {!runtimeSupported && (
+              <p className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                This package declares <span className="font-mono">{manifestRuntime}</span>,
+                which is no longer supported — only <span className="font-mono">custom</span> is.
+                Publishing will be rejected. Set <span className="font-mono">runtime</span> to{" "}
+                <span className="font-mono">custom</span> in marketplace.json, or remove the field
+                entirely, and upload again.
+              </p>
+            )}
+
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setStep(1)}>
                 Back
               </Button>
-              <Button className="flex-1" onClick={() => setStep(3)}>
+              {/* Stops here rather than at the final click. The runtime is
+                  already parsed and displayed on this step, so there is no
+                  reason to let someone fill in tagline, description and price
+                  first and only then be told the upload was never viable. */}
+              <Button
+                className="flex-1"
+                onClick={() => setStep(3)}
+                disabled={!runtimeSupported}
+              >
                 Continue
               </Button>
             </div>
@@ -395,7 +423,13 @@ export default function PublishPage() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Runtime</span>
-                  <span>Custom</span>
+                  {/* Was hardcoded "Custom". A package declaring runtime:
+                      openclaw showed "openclaw" on the Review step and "Custom"
+                      here one step later — telling the creator the opposite of
+                      the reason the server was about to reject them. */}
+                  <span className={runtimeSupported ? undefined : "text-destructive"}>
+                    {manifestRuntime}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Price</span>

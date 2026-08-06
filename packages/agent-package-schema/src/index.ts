@@ -10,6 +10,7 @@ export type {
 } from "./types.js";
 
 export { VALID_INTEGRATIONS } from "./types.js";
+export { VALID_RUNTIMES } from "./validate.js";
 
 export {
   validateManifest,
