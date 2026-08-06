@@ -1,8 +1,10 @@
 import { NextRequest } from "next/server";
 import type Stripe from "stripe";
 import { prisma } from "@/lib/db";
+import { setDeploymentPaused } from "@marketplace/db";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
+import { settlePauseCredit } from "@/lib/pause-credit";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 
@@ -130,6 +132,45 @@ export async function POST(request: NextRequest) {
       break;
     }
 
+    case "invoice.created": {
+      // Settle paused time for the cycle that just ended, onto this draft.
+      //
+      // This is the only place the buyer is credited for a pause. Stripe creates
+      // the draft roughly an hour before finalising it, and pending invoice items
+      // attach to a draft but not to a finalised invoice, so the work has to
+      // happen here rather than on invoice.paid.
+      //
+      // If this handler is missed or fails, the watermark does not advance and
+      // the uncredited time rolls into the next renewal. Late is recoverable;
+      // lost is not.
+      const subscriptionId = obj.subscription as string | null;
+      const invoiceId = obj.id as string | undefined;
+      if (subscriptionId) {
+        const deployment = await prisma.deployment.findFirst({
+          where: { stripeSubscriptionId: subscriptionId },
+          select: { id: true },
+        });
+        if (deployment) {
+          const periodStart = (obj.period_start as number | undefined) ?? null;
+          const periodEnd = (obj.period_end as number | undefined) ?? null;
+          const cycleMs =
+            periodStart && periodEnd && periodEnd > periodStart
+              ? (periodEnd - periodStart) * 1000
+              : undefined;
+          try {
+            await settlePauseCredit(deployment.id, { cycleMs, invoiceId });
+          } catch (err: any) {
+            console.error(
+              `[stripe-webhook] Failed to settle pause credit for ${deployment.id} on ` +
+                `invoice ${invoiceId}: ${err.message}. The buyer is owed this credit; ` +
+                `it will roll into the next renewal because the watermark did not advance.`,
+            );
+          }
+        }
+      }
+      break;
+    }
+
     case "invoice.paid": {
       const subscriptionId = obj.subscription as string | null;
       if (subscriptionId) {
@@ -137,10 +178,7 @@ export async function POST(request: NextRequest) {
           where: { stripeSubscriptionId: subscriptionId },
         });
         if (deployment && deployment.status === "PAUSED") {
-          await prisma.deployment.update({
-            where: { id: deployment.id },
-            data: { status: "ACTIVE", pausedAt: null, pauseReason: null },
-          });
+          await setDeploymentPaused(deployment.id, false, { reason: null });
           // Restart the container if it was paused for billing
           try {
             await getProvisioningQueue().add("resume", { type: "resume", deploymentId: deployment.id });
@@ -159,13 +197,8 @@ export async function POST(request: NextRequest) {
           where: { stripeSubscriptionId: subscriptionId },
         });
         if (deployment && deployment.status !== "FIRED") {
-          await prisma.deployment.update({
-            where: { id: deployment.id },
-            data: {
-              status: "PAUSED",
-              pausedAt: new Date(),
-              pauseReason: "Payment failed — please update your billing details to resume this agent.",
-            },
+          await setDeploymentPaused(deployment.id, true, {
+            reason: "Payment failed — please update your billing details to resume this agent.",
           });
         }
       }

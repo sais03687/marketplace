@@ -15,6 +15,8 @@
  * Idempotent: if a payout already exists for the period, skip.
  */
 import { prisma } from "@/lib/db";
+import { pausedMsBetween } from "@marketplace/db";
+import { PAUSED_RATE } from "@/lib/pause-credit";
 import { jsonSuccess, jsonError } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
 
@@ -102,11 +104,26 @@ export async function POST(request: Request) {
           );
           const activeDays = Math.max(0, (end - start) / (1000 * 60 * 60 * 24));
 
-          // PAUSED deployments: charge a reduced amount (50% of daily rate)
-          // Rationale: we still hold infra resources even when paused
-          const pauseFraction = dep.status === "PAUSED" ? 0.5 : 1.0;
+          // Paused days earn the creator half rate; running days earn full.
+          //
+          // This used to be `dep.status === "PAUSED" ? 0.5 : 1.0` — the status at
+          // the instant the cron happened to run, applied to the entire month. A
+          // one-day pause halved a creator's month, and a 25-day pause paid them
+          // in full if the agent happened to be running when this fired. It was
+          // also a *different* instant from the one the buyer's charge was
+          // sampled at, so the two sides could disagree about the same month in
+          // either direction, with the platform absorbing the difference.
+          const pausedDays =
+            activeDays > 0
+              ? Math.min(
+                  activeDays,
+                  (await pausedMsBetween(dep.id, new Date(start), new Date(end))) /
+                    (1000 * 60 * 60 * 24),
+                )
+              : 0;
+          const runningDays = Math.max(0, activeDays - pausedDays);
           const dailyRateCents = agent.pricePerMonth / daysInMonth;
-          grossCents += Math.round(dailyRateCents * activeDays * pauseFraction);
+          grossCents += Math.round(dailyRateCents * (runningDays + pausedDays * PAUSED_RATE));
         }
       }
 

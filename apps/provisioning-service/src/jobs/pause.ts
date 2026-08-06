@@ -9,7 +9,7 @@
  * consume LLM quota. Useful for payment failures, manual suspension, etc.
  */
 
-import { prisma } from "@marketplace/db";
+import { prisma, setDeploymentPaused } from "@marketplace/db";
 import { config } from "../config.js";
 import { stopPoller } from "./poller-manager.js";
 
@@ -45,10 +45,7 @@ export async function pauseJob(deploymentId: string): Promise<void> {
     }
   }
 
-  await prisma.deployment.update({
-    where: { id: deploymentId },
-    data: { status: "PAUSED", pausedAt: new Date() },
-  });
+  await setDeploymentPaused(deploymentId, true);
 
   console.log(`[pause] Deployment ${deploymentId.slice(0, 8)} paused`);
 }
@@ -85,10 +82,7 @@ export async function resumeJob(deploymentId: string): Promise<void> {
   const { provisionJob } = await import("./provision.js");
   await provisionJob(deploymentId, statusBefore);
 
-  await prisma.deployment.update({
-    where: { id: deploymentId },
-    data: { status: "ACTIVE", pausedAt: null },
-  });
+  await setDeploymentPaused(deploymentId, false);
 
   console.log(`[resume] Deployment ${deploymentId.slice(0, 8)} resumed`);
 }

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
+import { settlePauseCredit } from "@/lib/pause-credit";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 // The provisioning worker listens on the "provisioning" queue for ALL job types
@@ -41,6 +42,18 @@ export async function POST(
   });
   if (expiredApprovals > 0) {
     console.log(`[fire] Expired ${expiredApprovals} pending approval(s) for ${id}`);
+  }
+
+  // Settle any uncredited pause time before the subscription goes away.
+  //
+  // Cancelling at period end means no further invoice is ever generated, so a
+  // pending invoice item would have nothing to attach to and the buyer would
+  // quietly lose money they were owed. Credit it to the customer balance
+  // instead, where it survives the subscription.
+  try {
+    await settlePauseCredit(id, { toCustomerBalance: true });
+  } catch (err: any) {
+    console.error(`[fire] Failed to settle pause credit for ${id}: ${err.message}`);
   }
 
   // Cancel Stripe subscription at period end (buyer keeps access until then)

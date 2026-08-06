@@ -390,12 +390,14 @@ export default function AgentOverviewPage({
           <div className="space-y-4 text-sm">
             <div className="rounded-md border bg-muted/40 p-3">
               <p className="font-medium">
-                You will be charged half the monthly rate while paused.
+                Paused days are billed at half rate, counted to the day.
               </p>
               <p className="mt-1 text-muted-foreground">
                 Its Microsoft 365 licence seat, mailbox address and stored files are
                 held for you the whole time it is paused, so it comes back as the
                 same colleague with its history intact rather than as a new hire.
+                Nothing is charged when you pause — the credit for the days it sat
+                idle appears on your next invoice.
               </p>
             </div>
 
@@ -420,7 +422,7 @@ export default function AgentOverviewPage({
             </Button>
             <Button onClick={handlePauseResume} disabled={acting}>
               {acting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Pause className="mr-2 h-4 w-4" />}
-              Pause at half rate
+              Pause agent
             </Button>
           </DialogFooter>
         </DialogContent>

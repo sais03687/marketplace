@@ -123,6 +123,7 @@ model Deployment {
   updatedAt                     DateTime                @updatedAt
   pausedAt                      DateTime?
   pauseReason                   String?
+  pauseCreditedThrough          DateTime?
   firedAt                       DateTime?
   agentEmailInboxId             String?
   deploymentServiceAccountEmail String?
@@ -145,11 +146,34 @@ model Deployment {
   knowledgeVotes                KnowledgeVote[]
   contributionComments          ContributionComment[]
   contributionMutes             ContributionMute[]
+  pausePeriods                  PausePeriod[]
   reviews                       Review[]
   trustScores                   TrustScore[]
 
   @@index([status])
   @@index([companyId])
+}
+
+/// One stretch of time a deployment spent paused.
+///
+/// `pausedAt` on Deployment records only that an agent is paused right now — it
+/// is nulled on resume, so the history is destroyed. Both the buyer discount and
+/// the creator payout therefore sampled a single instant and applied it to a
+/// whole month: a one-day pause could halve a creator's month, and a 25-day
+/// pause could earn the buyer nothing. Charging for paused time requires knowing
+/// when it was paused, not merely whether it is.
+model PausePeriod {
+  id           String     @id @default(cuid())
+  deploymentId String
+  startedAt    DateTime   @default(now())
+  /// Null while the agent is still paused. Readers treat null as "open, ongoing"
+  /// and clamp it to the end of the window they are measuring.
+  endedAt      DateTime?
+  reason       String?
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@index([deploymentId, startedAt])
+  @@index([deploymentId, endedAt])
 }
 
 model Approval {

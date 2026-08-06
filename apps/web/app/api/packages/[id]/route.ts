@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { setDeploymentPaused } from "@marketplace/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
 import { del, list } from "@vercel/blob";
@@ -57,14 +58,7 @@ export async function DELETE(
   await Promise.all(
     activeDeployments.map(async (dep) => {
       // Update DB status
-      await prisma.deployment.update({
-        where: { id: dep.id },
-        data: {
-          status: "PAUSED",
-          pausedAt: new Date(),
-          pauseReason: PAUSE_REASON,
-        },
-      });
+      await setDeploymentPaused(dep.id, true, { reason: PAUSE_REASON });
 
       // Enqueue pause job (non-fatal if queue unavailable)
       try {

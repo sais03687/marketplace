@@ -41,22 +41,3 @@ export function isStripeConfigured(): boolean {
  * invisible to a test key, which is exactly the trap that cost an afternoon on
  * 2026-08-06 with a customer id.
  */
-export const PAUSE_COUPON_ID = "agent-paused-half-rate";
-
-export async function getOrCreatePauseCoupon(
-  stripe: import("stripe").default,
-): Promise<string> {
-  try {
-    const existing = await stripe.coupons.retrieve(PAUSE_COUPON_ID);
-    if (!existing.deleted) return existing.id;
-  } catch {
-    // Not found in this mode — fall through and create it.
-  }
-  const created = await stripe.coupons.create({
-    id: PAUSE_COUPON_ID,
-    percent_off: 50,
-    duration: "forever",
-    name: "Agent paused — half rate",
-  });
-  return created.id;
-}

@@ -1,7 +1,6 @@
-import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
-import { getStripe, getOrCreatePauseCoupon } from "@/lib/stripe";
+import { setDeploymentPaused } from "@marketplace/db";
 
 
 export async function POST(
@@ -29,14 +28,11 @@ export async function POST(
   const jobType = isPaused ? "resume" : "pause";
   const newStatus = isPaused ? "ACTIVE" : "PAUSED";
 
-  // Optimistically update DB status so the UI reflects the intent immediately
-  await prisma.deployment.update({
-    where: { id },
-    data: {
-      status: newStatus,
-      pausedAt: newStatus === "PAUSED" ? new Date() : null,
-    },
-  });
+  // Optimistically update DB status so the UI reflects the intent immediately.
+  // This also opens or closes the PausePeriod that the buyer's credit and the
+  // creator's payout are both computed from, which is why it goes through the
+  // shared helper rather than writing `status` directly.
+  await setDeploymentPaused(id, !isPaused);
 
   // Do the real work: stop or start the container and its poller.
   //
@@ -87,10 +83,7 @@ export async function POST(
     // Put the status back. Claiming an agent is paused while it is still running
     // is the one outcome worse than refusing the request — a buyer pausing a
     // misbehaving agent would believe they had stopped it.
-    await prisma.deployment.update({
-      where: { id },
-      data: { status: deployment.status, pausedAt: isPaused ? new Date() : null },
-    });
+    await setDeploymentPaused(id, isPaused, { status: deployment.status });
     return jsonError(
       isPaused
         ? "Could not reach the agent to resume it. Nothing has changed — please try again."
@@ -99,71 +92,18 @@ export async function POST(
     );
   }
 
-  // Now the money. The agent is already stopped or restarted at this point, which
-  // is what the buyer actually asked for, so a Stripe failure here must not undo
-  // that — but it must be loud, because the failure mode is silent overcharging.
+  // No Stripe call here, deliberately.
   //
-  // Until 2026-08-06 this step did not exist at all. Pause touched no Stripe API,
-  // so a paused agent kept billing at the full rate while /dashboard/billing told
-  // the buyer "Paused agents are charged at 50% of the monthly rate" and the
-  // creator payout cron computed the creator's share on that same halved figure.
-  // Three places, three different answers, and the gap quietly kept.
+  // Until 2026-08-06 this applied a 50%-off coupon on pause and removed it on
+  // resume. That answered the wrong question. A coupon is evaluated once, when
+  // the invoice generates, so it asked "is this agent paused right now?" rather
+  // than "how much of the month was it paused?" — a three-week pause ending
+  // before renewal earned the buyer nothing, and pausing across the renewal date
+  // bought a whole month at half price for an agent that ran all but two days.
   //
-  // Granularity is per-invoice, not per-day: the discount covers whichever
-  // invoices fall while the agent is paused, rather than the exact hours. That
-  // errs toward the buyer on a short pause, which is the right direction to be
-  // wrong in, and matches how the page describes it.
-  if (deployment.stripeSubscriptionId) {
-    const stripe = getStripe();
-    if (stripe) {
-      const subId = deployment.stripeSubscriptionId;
-      try {
-        if (newStatus === "PAUSED") {
-          const coupon = await getOrCreatePauseCoupon(stripe);
-          await stripe.subscriptions.update(subId, { discounts: [{ coupon }] });
-        } else {
-          // Removal has its own endpoint. `subscriptions.update(id, {discounts: []})`
-          // looks like it should work and returns 200, but Stripe form-encodes an
-          // empty array to no parameter at all, so the request carries no
-          // `discounts` key and the existing discount is left untouched. Observed
-          // on 2026-08-06: resume logged "Removed half-rate discount", and the
-          // customer portal still showed -$29.50 against an ACTIVE agent — the
-          // buyer would have kept the pause discount indefinitely.
-          try {
-            await stripe.subscriptions.deleteDiscount(subId);
-          } catch (err: any) {
-            // Nothing to remove is the desired end state, not a failure.
-            if (err?.code !== "resource_missing") throw err;
-          }
-        }
-
-        // Read back rather than trust the write. The bug above was invisible
-        // precisely because the call succeeded and we logged our intent instead
-        // of the outcome; the only honest confirmation is what Stripe now holds.
-        const after = await stripe.subscriptions.retrieve(subId);
-        const discounted = (after.discounts ?? []).length > 0;
-        const shouldBeDiscounted = newStatus === "PAUSED";
-
-        if (discounted === shouldBeDiscounted) {
-          console.log(
-            `[pause-route] ${shouldBeDiscounted ? "Applied" : "Removed"} half-rate ` +
-              `discount ${shouldBeDiscounted ? "to" : "from"} ${subId} (verified)`,
-          );
-        } else {
-          console.error(
-            `[pause-route] Subscription ${subId} is discounted=${discounted} but agent ${id} ` +
-              `is ${newStatus}. The buyer is being billed at the wrong rate.`,
-          );
-        }
-      } catch (err: any) {
-        console.error(
-          `[pause-route] Agent ${id} is now ${newStatus} but its subscription ` +
-            `${subId} was NOT adjusted: ${err.message}. ` +
-            `The buyer is being billed at the wrong rate until this is corrected.`,
-        );
-      }
-    }
-  }
+  // Paused time is now credited in arrears at renewal, from the PausePeriod row
+  // opened above. Pausing itself costs nothing and charges nothing; see
+  // lib/pause-credit.ts and the invoice.created handler.
 
   return jsonSuccess({
     message: isPaused ? "Agent resuming" : "Agent pausing",

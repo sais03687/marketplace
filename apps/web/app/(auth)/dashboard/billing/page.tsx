@@ -63,7 +63,7 @@ export default function BillingPage() {
           "\n\n" +
           "This cannot be undone once the period ends. To keep the agent and its " +
           "data while stopping its work, pause it instead — paused agents are " +
-          "charged at half rate.",
+          "billed at half rate for each paused day.",
       )
     )
       return;
@@ -210,7 +210,8 @@ export default function BillingPage() {
 
       <p className="mt-4 text-xs text-muted-foreground">
         Subscriptions are billed monthly. Cancellations take effect at the end of the current billing period.
-        Paused agents are charged at 50% of the monthly rate.
+        Paused agents are billed at half rate for each day they are paused,
+        credited on your next invoice.
       </p>
     </div>
   );
