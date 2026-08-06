@@ -13,7 +13,7 @@
  * shape as the discount that logged "Removed" while removing nothing.
  */
 
-import { prisma } from "./index.js";
+import { prisma } from "./index";
 
 /** An interval clamped to a measurement window. Half-open: [start, end). */
 export interface Interval {

@@ -11,5 +11,5 @@ if (process.env.NODE_ENV !== "production") {
 export { PrismaClient } from "@prisma/client";
 export type * from "@prisma/client";
 
-export { setDeploymentPaused, pausedMsBetween } from "./pause-tracking.js";
-export type { Interval } from "./pause-tracking.js";
+export { setDeploymentPaused, pausedMsBetween } from "./pause-tracking";
+export type { Interval } from "./pause-tracking";
