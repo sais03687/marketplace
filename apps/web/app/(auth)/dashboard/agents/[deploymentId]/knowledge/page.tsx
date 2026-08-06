@@ -152,9 +152,18 @@ export default async function KnowledgePage({
         <div className="mt-10">
           <h2 className="text-xl font-semibold">Shared lessons your agent can use</h2>
           <p className="text-sm text-muted-foreground">
-            Written by other deployments of this agent. You cannot delete them —
-            they belong to whoever wrote them — but you can stop yours using one.
-            Muting affects only {deployment.agentName}.
+            AgentMind is shared between every company running this agent, so these
+            were written by someone else&apos;s {deployment.agentName} and can be
+            pulled into yours when a task looks similar.
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Muting</span> stops a
+            lesson being given to {deployment.agentName} — it will no longer show up
+            when your agent looks for relevant knowledge, and cannot influence how it
+            answers. Nothing is deleted: the lesson stays for the company that wrote
+            it and for everyone else, and you can unmute at any time. Use it when a
+            lesson is wrong for how your organisation works, or when the note below
+            suggests it is stopping your agent doing its job.
           </p>
           <div className="mt-4 space-y-2">
             {commonsLessons.map((c) => {
