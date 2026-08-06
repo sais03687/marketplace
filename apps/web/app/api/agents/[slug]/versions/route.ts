@@ -144,7 +144,12 @@ export async function POST(
     OPUS: 14900,
   };
   const versionPrice = manifest.pricePerMonth as number | undefined;
-  if (versionPrice !== undefined && versionModelTier) {
+  // Zero is not a cheap price, it is a free agent, and the platform supports
+  // those deliberately — the hire flow guards on `pricePerMonth > 0` and
+  // provisions without payment when it is zero. Applying a tier floor to it
+  // meant a free agent could never publish a version at all: 0 is below every
+  // minimum, so the upload was rejected for being too cheap to exist.
+  if (versionPrice !== undefined && versionPrice > 0 && versionModelTier) {
     const minPrice = MIN_PRICE_CENTS[versionModelTier] || 2900;
     if (versionPrice < minPrice) {
       return jsonError(
@@ -152,6 +157,28 @@ export async function POST(
         400,
       );
     }
+  }
+
+  // Publishing a version does not change what the agent costs.
+  //
+  // This route validates the manifest price above and then never writes it —
+  // it only stores manifestData on the version, and approval reads that solely
+  // for capabilities. So a creator could change the price in their manifest,
+  // watch it pass validation, watch the version get approved, and find the
+  // agent still charging the old amount, with nothing anywhere saying why.
+  //
+  // Refusing is the right half to keep. An agent's price is what its buyers are
+  // already paying, and a version bump is the wrong moment to move it silently.
+  // PATCH /api/agents/[slug] is the deliberate path, so point at it rather than
+  // accepting a number that will be discarded.
+  if (versionPrice !== undefined && versionPrice !== agent.pricePerMonth) {
+    return jsonError(
+      `This version's manifest sets pricePerMonth to ${versionPrice} but ${slug} ` +
+        `currently costs ${agent.pricePerMonth}. Publishing a version does not change ` +
+        `the price, because buyers are already paying the current one. Either match ` +
+        `the manifest to the current price, or change the price deliberately first.`,
+      409,
+    );
   }
 
   // Check version doesn't already exist as an approved/live version
