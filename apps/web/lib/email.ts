@@ -109,8 +109,8 @@ export async function sendNotificationEmail(params: SendNotificationEmailParams)
 
   if (deploymentId && agentEmail) {
     if (await sendAsAgent(deploymentId, agentEmail, to, subject, html)) return;
-    console.warn(
-      `[email] Falling back to AgentMail for deployment ${deploymentId} — the agent send did not succeed`,
+    console.error(
+      `[email] Agent send failed for deployment ${deploymentId} — no fallback transport remains`,
     );
   }
 
@@ -118,60 +118,28 @@ export async function sendNotificationEmail(params: SendNotificationEmailParams)
 }
 
 /**
- * Legacy AgentMail path. Retained for callers with no agent mailbox behind them.
- * Skips when it has no inbox, which is why the failure above went unnoticed.
+ * Terminal failure path for a notification with no agent mailbox behind it.
+ *
+ * This used to POST to AgentMail. Nothing reaches that service any more: every
+ * deployment is workspaceProvider MICROSOFT, provisioning no longer creates an
+ * @agentmail.to inbox, and the only row that ever held an inbox id is fired. The
+ * call could not have succeeded — it was reachable only when `inboxId` was set,
+ * and no live deployment has one.
+ *
+ * Deliberately an error, not a warning. This branch quietly swallowed every
+ * approval notification on every Microsoft deployment, and a console.warn on a
+ * serverless platform is indistinguishable from nothing happening. If a
+ * notification cannot be delivered, that is a failure of the product's core
+ * promise and should read like one in the logs.
  */
 async function sendViaAgentMail({
-  inboxId,
   to,
   subject,
-  html,
 }: SendNotificationEmailParams): Promise<void> {
-  const apiKey = process.env.AGENTMAIL_API_KEY;
-
-  if (!inboxId) {
-    // Deliberately an error, not a warning. This branch quietly swallowed every
-    // approval notification on every Microsoft deployment, and a console.warn on
-    // a serverless platform is indistinguishable from nothing happening. If a
-    // notification cannot be delivered, that is a failure of the product's core
-    // promise and should read like one in the logs.
-    console.error(
-      `[email] NOT SENT to ${to} — no AgentMail inbox and no agent mailbox was supplied. ` +
-        `Subject: "${subject}". The recipient will never learn about this.`,
-    );
-    return;
-  }
-
-  if (!apiKey) {
-    console.warn("[email] Skipping send: AGENTMAIL_API_KEY is not set");
-    return;
-  }
-
-  try {
-    const res = await fetch(
-      `https://api.agentmail.to/v0/inboxes/${inboxId}/messages/send`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          to: [to],
-          subject,
-          html,
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      console.error(
-        `[email] AgentMail API returned ${res.status}: ${await res.text()}`
-      );
-    }
-  } catch (err) {
-    console.error("[email] Failed to send notification email:", err);
-  }
+  console.error(
+    `[email] NOT SENT to ${to} — no agent mailbox was available to send from. ` +
+      `Subject: "${subject}". The recipient will never learn about this.`,
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,5 @@
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
-import { createInbox, setInboxWebhook } from "../clients/agentmail.js";
 import {
   createAgentNetwork,
   removeAgentNetwork,
@@ -329,7 +328,10 @@ export async function provisionJob(
   const effectiveGoogleSAEmail = deploymentRefreshed?.deploymentServiceAccountEmail || config.googleServiceAccountEmail;
   const effectiveGoogleSAKey = deploymentRefreshed?.deploymentServiceAccountKey || config.googleServiceAccountKey;
 
-  let agentEmail: string;
+  // Definite-assignment asserted: it is set in the Microsoft branch below, and
+  // the only other path throws. The compiler cannot see that because the throw
+  // is behind a flag — see the note on noWorkspaceMailbox.
+  let agentEmail!: string;
   let inboxId: string | undefined;
 
   // 2. Create AgentMail inbox — only where it will actually be used.
@@ -338,6 +340,13 @@ export async function provisionJob(
   // same agent that nothing polls, and one more thing to keep in sync. Anything
   // provisioned before this keeps the inbox it already has, because
   // deprovision.ts still needs the id to delete it when the agent is fired.
+  // Flagged rather than thrown inline: throwing inside the else narrows
+  // workspaceProvider to "MICROSOFT" for the rest of the function, and the
+  // GOOGLE and NONE branches further down then fail to compile. They are
+  // unreachable today — every deployment is MICROSOFT — but that is a separate
+  // cleanup from this one, and silently deleting them under cover of a type
+  // error is not the way to do it.
+  let noWorkspaceMailbox = false;
   if (workspaceProvider === "MICROSOFT" && workspaceEmail) {
     agentEmail = workspaceEmail;
     inboxId = preExistingInboxId ?? undefined;
@@ -345,27 +354,27 @@ export async function provisionJob(
       `[provision] Microsoft workspace — skipping AgentMail inbox, agent address is ${workspaceEmail}`,
     );
   } else {
-    try {
-      const slug = deployment.agent.slug;
-      const companySlug = companyName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-      // Include a short deployment-ID suffix so multiple deployments of the same
-      // agent at the same company each get a distinct inbox.
-      const depSuffix = deploymentId.slice(-12);
-      const username = `${slug}-${companySlug}-${depSuffix}`;
+    // Every agent's mailbox is a Microsoft 365 mailbox in the buyer's own tenant.
+    // This branch used to provision an @agentmail.to inbox on a third-party
+    // service instead, which is no longer how the product works: all 12
+    // deployments are MICROSOFT, the hire wizard cannot advance without an M365
+    // connection, and the only row that ever held an AgentMail inbox id has been
+    // fired.
+    //
+    // Failing loudly beats silently provisioning onto a service the platform no
+    // longer uses and the buyer never agreed to hold their mail.
+    noWorkspaceMailbox = true;
+  }
 
-      const inbox = await withRetry(
-        () => createInbox(username, "agentmail.to"),
-        { step: "create_inbox", deploymentId },
-      );
-      agentEmail = inbox.email_address;
-      inboxId = inbox.id;
-    } catch (err: any) {
-      await prisma.deployment.update({
-        where: { id: deploymentId },
-        data: { status: "ERROR" },
-      });
-      throw err;
-    }
+  if (noWorkspaceMailbox) {
+    await prisma.deployment.update({
+      where: { id: deploymentId },
+      data: { status: "ERROR" },
+    });
+    throw new Error(
+      `Deployment ${deploymentId} has workspaceProvider=${workspaceProvider} and no workspace mailbox. ` +
+        `An agent's mailbox must be a Microsoft 365 mailbox in the buyer's tenant.`,
+    );
   }
 
   // 2b. Set up Gmail forwarding from workspace address → Agentmail inbox (Google path only)
@@ -533,15 +542,9 @@ export async function provisionJob(
     containerName = `http://localhost:${result.port}`;
     healthPort = result.port;
   } catch (err: any) {
-    // Clean up inbox on container failure — but only if this run created it.
-    if (inboxId && inboxId !== preExistingInboxId) {
-      try {
-        const { deleteInbox } = await import("../clients/agentmail.js");
-        await deleteInbox(inboxId);
-      } catch {
-        // best-effort cleanup
-      }
-    } else if (inboxId) {
+    // Nothing creates an inbox any more, so there is never one to roll back —
+    // an inboxId here can only be a legacy value carried on the row.
+    if (inboxId) {
       console.log(`[provision] Keeping pre-existing inbox ${inboxId} (not created by this run)`);
     }
     // Clean up M365 user on failure (prevents orphaned licensed users) — again,
@@ -626,18 +629,7 @@ export async function provisionJob(
     }
   }
 
-  // 5. Set AgentMail webhook so inbound emails reach the agent container
-  if (inboxId) {
-    const containerUrl = containerName?.startsWith("http")
-      ? containerName
-      : `http://${healthHost}:${healthPort}`;
-    try {
-      await setInboxWebhook(inboxId, `${containerUrl}/hooks/agentmail`, agentName);
-    } catch (err: any) {
-      console.warn(`[provision] Failed to set inbox webhook: ${err.message}`);
-      // Non-fatal: agent can still send outbound email, just won't receive inbound
-    }
-  }
+  // 5. (removed) AgentMail inbound webhook — mail arrives via the Outlook poller.
 
   // 6. Update deployment to ONBOARDING.
   // Preserve OBSERVATION if answers were collected during the hire wizard —
