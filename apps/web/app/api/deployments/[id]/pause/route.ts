@@ -116,23 +116,49 @@ export async function POST(
   if (deployment.stripeSubscriptionId) {
     const stripe = getStripe();
     if (stripe) {
+      const subId = deployment.stripeSubscriptionId;
       try {
         if (newStatus === "PAUSED") {
           const coupon = await getOrCreatePauseCoupon(stripe);
-          await stripe.subscriptions.update(deployment.stripeSubscriptionId, {
-            discounts: [{ coupon }],
-          });
-          console.log(`[pause-route] Applied half-rate discount to ${deployment.stripeSubscriptionId}`);
+          await stripe.subscriptions.update(subId, { discounts: [{ coupon }] });
         } else {
-          await stripe.subscriptions.update(deployment.stripeSubscriptionId, {
-            discounts: [],
-          });
-          console.log(`[pause-route] Removed half-rate discount from ${deployment.stripeSubscriptionId}`);
+          // Removal has its own endpoint. `subscriptions.update(id, {discounts: []})`
+          // looks like it should work and returns 200, but Stripe form-encodes an
+          // empty array to no parameter at all, so the request carries no
+          // `discounts` key and the existing discount is left untouched. Observed
+          // on 2026-08-06: resume logged "Removed half-rate discount", and the
+          // customer portal still showed -$29.50 against an ACTIVE agent — the
+          // buyer would have kept the pause discount indefinitely.
+          try {
+            await stripe.subscriptions.deleteDiscount(subId);
+          } catch (err: any) {
+            // Nothing to remove is the desired end state, not a failure.
+            if (err?.code !== "resource_missing") throw err;
+          }
+        }
+
+        // Read back rather than trust the write. The bug above was invisible
+        // precisely because the call succeeded and we logged our intent instead
+        // of the outcome; the only honest confirmation is what Stripe now holds.
+        const after = await stripe.subscriptions.retrieve(subId);
+        const discounted = (after.discounts ?? []).length > 0;
+        const shouldBeDiscounted = newStatus === "PAUSED";
+
+        if (discounted === shouldBeDiscounted) {
+          console.log(
+            `[pause-route] ${shouldBeDiscounted ? "Applied" : "Removed"} half-rate ` +
+              `discount ${shouldBeDiscounted ? "to" : "from"} ${subId} (verified)`,
+          );
+        } else {
+          console.error(
+            `[pause-route] Subscription ${subId} is discounted=${discounted} but agent ${id} ` +
+              `is ${newStatus}. The buyer is being billed at the wrong rate.`,
+          );
         }
       } catch (err: any) {
         console.error(
           `[pause-route] Agent ${id} is now ${newStatus} but its subscription ` +
-            `${deployment.stripeSubscriptionId} was NOT adjusted: ${err.message}. ` +
+            `${subId} was NOT adjusted: ${err.message}. ` +
             `The buyer is being billed at the wrong rate until this is corrected.`,
         );
       }
