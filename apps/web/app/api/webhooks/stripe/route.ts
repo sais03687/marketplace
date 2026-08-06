@@ -69,10 +69,37 @@ export async function POST(request: NextRequest) {
       const customerId = obj.customer as string | null;
 
       if (deploymentId && subscriptionId) {
-        // Advance from PENDING_PAYMENT → PROVISIONING and save subscription ID
-        const deployment = await prisma.deployment.update({
-          where: { id: deploymentId },
+        // Advance from PENDING_PAYMENT → PROVISIONING and save subscription ID.
+        //
+        // Conditional on still being PENDING_PAYMENT, because Stripe delivers at
+        // least once and retries on any non-2xx — four retries of this very event
+        // were queued on 2026-08-06 while the signing secret was wrong. Without
+        // the condition, a duplicate delivery would drag an ACTIVE deployment
+        // back to PROVISIONING and enqueue a second provision job for an agent
+        // that already has a mailbox and a container. Provisioning twice is not
+        // a no-op: it is the path that once deleted a live agent's M365 identity
+        // through the 409 container-name rollback.
+        const { count } = await prisma.deployment.updateMany({
+          where: { id: deploymentId, status: "PENDING_PAYMENT" },
           data: { stripeSubscriptionId: subscriptionId, status: "PROVISIONING" },
+        });
+
+        if (count === 0) {
+          // Already handled. Record the subscription id if it is somehow missing,
+          // but do not touch status and do not enqueue.
+          await prisma.deployment.updateMany({
+            where: { id: deploymentId, stripeSubscriptionId: null },
+            data: { stripeSubscriptionId: subscriptionId },
+          });
+          console.log(
+            `[stripe-webhook] checkout.session.completed for ${deploymentId} ignored — ` +
+              `already past PENDING_PAYMENT (duplicate delivery)`,
+          );
+          break;
+        }
+
+        const deployment = await prisma.deployment.findUniqueOrThrow({
+          where: { id: deploymentId },
           include: { company: true },
         });
 
