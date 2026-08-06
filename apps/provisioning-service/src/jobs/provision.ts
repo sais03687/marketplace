@@ -712,6 +712,11 @@ export async function provisionJob(
     async () => {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
+        // The gateway authenticates /hooks/* now. This caller was missed when
+        // that landed and the resume job died on a 401 — which is the fail-closed
+        // design working: a missed caller is a loud job failure rather than an
+        // endpoint that quietly stayed open.
+        Authorization: `Bearer ${hooksTokenFor(deploymentId, config.provisioningSecret)}`,
       };
       const res = await fetch(`http://${healthHost}:${healthPort}/hooks/agent`, {
         method: "POST",

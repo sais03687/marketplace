@@ -21,6 +21,15 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CustomTest } from "../queue.js";
 
+/**
+ * Hooks credential for the throwaway vetting container.
+ *
+ * Random per process rather than derived: this container is never a deployment,
+ * has no id to derive from, and lives for one vetting run. It only has to match
+ * between the env handed to the container and the probes fired at it.
+ */
+const VET_HOOKS_TOKEN = randomBytes(32).toString("hex");
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const docker = new Dockerode();
 
@@ -349,6 +358,9 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `LLM_BASE_URL=`,
             `LLM_MODEL=gpt-4o-mini`,
             `AGENTMAIL_API_KEY=vet-noop`,
+            // The gateway authenticates /hooks/* — without this the harness's own
+            // probes below would 503 and every package would fail vetting.
+            `AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}`,
             `ANTHROPIC_API_KEY=vet-noop`,
             `APPROVAL_WEBHOOK_TOKEN=vet-noop`,
             `MARKETPLACE_APPROVAL_WEBHOOK=http://host.docker.internal:3002`,
@@ -426,7 +438,13 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           init: RequestInit & { signal: AbortSignal },
           expectStatus: number,
         ): Promise<{ httpStatus: number; responseBody: string }> {
-          const r = await fetch(url, init);
+          // Attached here rather than at each call site: the /hooks/* probes need
+          // it, the others ignore it, and a probe that forgot would read as the
+          // package failing rather than the harness misconfiguring itself.
+          const r = await fetch(url, {
+            ...init,
+            headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${VET_HOOKS_TOKEN}` },
+          });
           const raw = await r.text().catch(() => "");
           const responseBody = raw.slice(0, 500) + (raw.length > 500 ? "…" : "");
           if (r.status !== expectStatus) {
