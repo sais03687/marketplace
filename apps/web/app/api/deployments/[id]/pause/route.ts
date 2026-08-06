@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
+import { getStripe, getOrCreatePauseCoupon } from "@/lib/stripe";
 
 
 export async function POST(
@@ -96,6 +97,46 @@ export async function POST(
         : "Could not reach the agent to pause it. It is still running, so nothing has changed — please try again.",
       503,
     );
+  }
+
+  // Now the money. The agent is already stopped or restarted at this point, which
+  // is what the buyer actually asked for, so a Stripe failure here must not undo
+  // that — but it must be loud, because the failure mode is silent overcharging.
+  //
+  // Until 2026-08-06 this step did not exist at all. Pause touched no Stripe API,
+  // so a paused agent kept billing at the full rate while /dashboard/billing told
+  // the buyer "Paused agents are charged at 50% of the monthly rate" and the
+  // creator payout cron computed the creator's share on that same halved figure.
+  // Three places, three different answers, and the gap quietly kept.
+  //
+  // Granularity is per-invoice, not per-day: the discount covers whichever
+  // invoices fall while the agent is paused, rather than the exact hours. That
+  // errs toward the buyer on a short pause, which is the right direction to be
+  // wrong in, and matches how the page describes it.
+  if (deployment.stripeSubscriptionId) {
+    const stripe = getStripe();
+    if (stripe) {
+      try {
+        if (newStatus === "PAUSED") {
+          const coupon = await getOrCreatePauseCoupon(stripe);
+          await stripe.subscriptions.update(deployment.stripeSubscriptionId, {
+            discounts: [{ coupon }],
+          });
+          console.log(`[pause-route] Applied half-rate discount to ${deployment.stripeSubscriptionId}`);
+        } else {
+          await stripe.subscriptions.update(deployment.stripeSubscriptionId, {
+            discounts: [],
+          });
+          console.log(`[pause-route] Removed half-rate discount from ${deployment.stripeSubscriptionId}`);
+        }
+      } catch (err: any) {
+        console.error(
+          `[pause-route] Agent ${id} is now ${newStatus} but its subscription ` +
+            `${deployment.stripeSubscriptionId} was NOT adjusted: ${err.message}. ` +
+            `The buyer is being billed at the wrong rate until this is corrected.`,
+        );
+      }
+    }
   }
 
   return jsonSuccess({

@@ -76,6 +76,7 @@ export default function AgentOverviewPage({
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [confirmFire, setConfirmFire] = useState(false);
+  const [confirmPause, setConfirmPause] = useState(false);
   const [fireWarning, setFireWarning] = useState<string | null>(null);
   const [review, setReview] = useState<{ rating: number; headline: string; body: string } | null>(null);
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
@@ -126,6 +127,7 @@ export default function AgentOverviewPage({
     await fetch(`/api/deployments/${deploymentId}/pause`, { method: "POST" });
     await fetchData();
     setActing(false);
+    setConfirmPause(false);
   };
 
   const handleFire = async () => {
@@ -336,7 +338,7 @@ export default function AgentOverviewPage({
         <div className="flex items-center gap-2 flex-wrap border-t pt-4">
           <Button
             variant="outline"
-            onClick={handlePauseResume}
+            onClick={() => (isPaused ? handlePauseResume() : setConfirmPause(true))}
             disabled={acting || deployment.status === "PROVISIONING"}
           >
             {acting ? (
@@ -372,6 +374,57 @@ export default function AgentOverviewPage({
           </div>
         </div>
       )}
+
+      <Dialog open={confirmPause} onOpenChange={(open) => { if (!open) setConfirmPause(false); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pause className="h-5 w-5" />
+              Pause {deployment?.agentName}?
+            </DialogTitle>
+            <DialogDescription>
+              Your agent stops working immediately and keeps everything it has.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 text-sm">
+            <div className="rounded-md border bg-muted/40 p-3">
+              <p className="font-medium">
+                You will be charged half the monthly rate while paused.
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                Its Microsoft 365 licence seat, mailbox address and stored files are
+                held for you the whole time it is paused, so it comes back as the
+                same colleague with its history intact rather than as a new hire.
+              </p>
+            </div>
+
+            <div>
+              <p className="font-medium mb-2">While paused</p>
+              <ul className="space-y-1.5 text-muted-foreground list-disc pl-5">
+                <li>It stops reading email and stops acting</li>
+                <li>Its mailbox, files and approval history are kept</li>
+                <li>Resuming brings it back with the same address</li>
+              </ul>
+            </div>
+
+            <p className="text-muted-foreground">
+              To stop paying entirely, fire the agent instead — that deletes its
+              account, mailbox and files permanently.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmPause(false)} disabled={acting}>
+              Keep running
+            </Button>
+            <Button onClick={handlePauseResume} disabled={acting}>
+              {acting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Pause className="mr-2 h-4 w-4" />}
+              Pause at half rate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={confirmFire} onOpenChange={(open) => { if (!open) setConfirmFire(false); }}>
         <DialogContent className="sm:max-w-lg">

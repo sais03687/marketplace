@@ -44,7 +44,29 @@ export default function BillingPage() {
   useEffect(() => { fetchBilling(); }, []);
 
   const handleCancel = async (subscriptionId: string) => {
-    if (!confirm("Cancel this subscription? Your agent will remain active until the end of the billing period.")) return;
+    // Cancelling is destructive, just not immediately, and that delay is exactly
+    // what made the old one-line confirm misleading: it said the agent stays
+    // active until the period ends and stopped there. What it did not say is what
+    // happens next. At period end Stripe emits customer.subscription.deleted, and
+    // the webhook sets the deployment FIRED and enqueues a full deprovision —
+    // Microsoft identity deleted, mailbox and its history gone, data volume
+    // removed. The same end state as the Fire button, which by contrast spells all
+    // of that out before you confirm.
+    if (
+      !confirm(
+        "Cancel this subscription?" +
+          "\n\n" +
+          "Your agent keeps working until the end of the current billing period. " +
+          "After that it is permanently deleted — its Microsoft 365 account and " +
+          "mailbox, every email it has sent or received, its files and its licence " +
+          "seat." +
+          "\n\n" +
+          "This cannot be undone once the period ends. To keep the agent and its " +
+          "data while stopping its work, pause it instead — paused agents are " +
+          "charged at half rate.",
+      )
+    )
+      return;
     setCancelling(subscriptionId);
     try {
       await fetch("/api/company/billing/cancel", {
