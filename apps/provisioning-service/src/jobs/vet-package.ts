@@ -357,7 +357,6 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `LLM_API_KEY=vet-noop`,
             `LLM_BASE_URL=`,
             `LLM_MODEL=gpt-4o-mini`,
-            `AGENTMAIL_API_KEY=vet-noop`,
             // The gateway authenticates /hooks/* — without this the harness's own
             // probes below would 503 and every package would fail vetting.
             `AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}`,

@@ -20,7 +20,6 @@
  *   MARKETPLACE_URL              - Marketplace web app URL (default http://localhost:3002)
  *   AGENT_ID                     - Agent ID for AgentMind search
  *   POLLER_INBOX                 - Agent's inbox email (for compatibility)
- *   AGENTMAIL_API_KEY            - AgentMail API key (unused, for compat)
  *
  * Env vars (optional — enables Drive watcher):
  *   GOOGLE_SERVICE_ACCOUNT_KEY   - Base64-encoded service account JSON key

@@ -8,7 +8,6 @@ import {
 } from "../clients/docker.js";
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
-import { createGoogleWorkspaceUser, setupGmailForwarding } from "../clients/google-workspace.js";
 import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor, hooksTokenFor } from "../utils/agent-token.js";
@@ -177,24 +176,7 @@ export async function provisionJob(
   const preExistingWorkspaceUserId = (deployment as any).workspaceUserId as string | null;
   const preExistingInboxId = (deployment as any).agentEmailInboxId as string | null;
 
-  if (workspaceProvider === "GOOGLE" && config.googleWorkspaceSaKey) {
-    try {
-      const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
-      const user = await withRetry(
-        () => createGoogleWorkspaceUser(username, agentName),
-        { step: "create_workspace_user_google", deploymentId },
-      );
-      workspaceEmail = user.email;
-      workspaceUserId = user.id;
-      await prisma.deployment.update({
-        where: { id: deploymentId },
-        data: { workspaceEmail: user.email, workspaceUserId: user.id },
-      });
-      console.log(`[provision] Google Workspace user created: ${user.email}`);
-    } catch (err: any) {
-      console.warn(`[provision] Google Workspace user creation failed: ${err.message}`);
-    }
-  } else if (workspaceProvider === "MICROSOFT" && config.microsoftTenantId) {
+  if (workspaceProvider === "MICROSOFT" && config.microsoftTenantId) {
     const buyerTenantId = (deployment as any).buyerMicrosoftTenantId as string | null;
 
     if (buyerTenantId) {
@@ -278,32 +260,6 @@ export async function provisionJob(
         console.warn(`[provision] Microsoft 365 user creation failed: ${err.message}`);
       }
     }
-  } else if (workspaceProvider === "NONE" || !workspaceProvider) {
-    // Legacy path: use per-deployment GCP IAM SA if configured
-    const iamKey = config.gcpIamKey || config.googleServiceAccountKey;
-    if (config.gcpProjectId && iamKey) {
-      try {
-        const sa = await withRetry(
-          () => createDeploymentServiceAccount(
-            deploymentId,
-            deployment.agent.slug,
-            config.gcpProjectId,
-            iamKey,
-          ),
-          { step: "create_service_account", deploymentId },
-        );
-        await prisma.deployment.update({
-          where: { id: deploymentId },
-          data: {
-            deploymentServiceAccountEmail: sa.email,
-            deploymentServiceAccountKey: sa.privateKeyJson,
-          },
-        });
-        console.log(`[provision] Legacy service account created: ${sa.email}`);
-      } catch (err: any) {
-        console.warn(`[provision] Service account creation failed, using platform SA: ${err.message}`);
-      }
-    }
   }
 
   // Workspace identity is created with a deterministic username, so a re-provision
@@ -377,19 +333,7 @@ export async function provisionJob(
     );
   }
 
-  // 2b. Set up Gmail forwarding from workspace address → Agentmail inbox (Google path only)
-  if (workspaceProvider === "GOOGLE" && workspaceEmail && inboxId) {
-    try {
-      await withRetry(
-        () => setupGmailForwarding(workspaceEmail!, agentEmail, inboxId!),
-        { step: "setup_gmail_forwarding", deploymentId },
-      );
-      console.log(`[provision] Gmail forwarding set up: ${workspaceEmail} → ${agentEmail}`);
-    } catch (err: any) {
-      // Non-fatal: agent can still receive email via Agentmail directly
-      console.warn(`[provision] Gmail forwarding setup failed: ${err.message}`);
-    }
-  }
+  // 2b. (removed) Gmail forwarding — Google path, forwarded into an AgentMail inbox.
 
   // 3. Create container or local process
   let containerName: string | undefined;
@@ -425,11 +369,8 @@ export async function provisionJob(
       ? { HEARTBEAT_INTERVAL_HOURS: String(heartbeatIntervalHours) }
       : {}),
     // New workspace identity vars (Google Workspace or Microsoft 365)
-    ...(workspaceProvider !== "NONE" && workspaceEmail
+    ...(workspaceEmail
       ? { WORKSPACE_PROVIDER: workspaceProvider, WORKSPACE_EMAIL: workspaceEmail }
-      : {}),
-    ...(workspaceProvider === "GOOGLE" && config.googleWorkspaceSaKey
-      ? { GOOGLE_WORKSPACE_SA_KEY: config.googleWorkspaceSaKey }
       : {}),
     ...(workspaceProvider === "MICROSOFT"
       ? deployment.buyerMicrosoftTenantId
@@ -460,13 +401,6 @@ export async function provisionJob(
             EMAIL_MODE: "outlook",
             OUTLOOK_SEND_URL: "http://host.docker.internal:3003/internal/outlook-send",
           }
-      : {}),
-    // Legacy Google SA vars — only injected for NONE/legacy deployments that have old SA fields
-    ...(workspaceProvider === "NONE" && effectiveGoogleSAEmail
-      ? { GOOGLE_SERVICE_ACCOUNT_EMAIL: effectiveGoogleSAEmail }
-      : {}),
-    ...(workspaceProvider === "NONE" && effectiveGoogleSAKey
-      ? { GOOGLE_SERVICE_ACCOUNT_KEY: effectiveGoogleSAKey }
       : {}),
   };
 
@@ -686,9 +620,7 @@ export async function provisionJob(
     ...(workspaceEmail
       ? [
           `\nYou have your own workspace identity: ${workspaceEmail}.`,
-          workspaceProvider === "GOOGLE"
-            ? `Team members can share Google Drive files, Sheets, and Docs with that address, and send you calendar invites.`
-            : `You have a SharePoint folder for file storage (Excel trackers, documents). Team members can send you calendar invites at that address.`,
+          `You have a SharePoint folder for file storage (Excel trackers, documents). Team members can send you calendar invites at that address.`,
         ]
       : effectiveGoogleSAEmail
         ? [

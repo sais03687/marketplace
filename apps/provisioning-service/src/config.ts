@@ -6,8 +6,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const config = {
   redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
   databaseUrl: process.env.DATABASE_URL || "postgresql://marketplace:marketplace@localhost:5432/marketplace",
-  agentMailApiKey: process.env.AGENTMAIL_API_KEY || "",
-  agentMailApiBase: process.env.AGENTMAIL_API_BASE || "https://api.agentmail.to/v0",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
   approvalWebhookUrl: process.env.MARKETPLACE_APPROVAL_WEBHOOK || "http://localhost:3002",
   // Public base URL of *this* service, for callbacks Microsoft has to reach.

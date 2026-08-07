@@ -1,6 +1,5 @@
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
-import { deleteInbox } from "../clients/agentmail.js";
 import { stopContainer, removeAgentNetwork, removeAgentVolume } from "../clients/docker.js";
 import { deleteDeploymentServiceAccount } from "../clients/google-iam.js";
 import { deleteGoogleWorkspaceUser } from "../clients/google-workspace.js";
@@ -30,30 +29,12 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
     }
   }
 
-  // 2. Delete AgentMail inbox — only if no other active deployment shares it.
-  // Two deployments can end up with the same inbox if the same agent is hired twice
-  // by the same company (e.g. after a re-hire). Deleting a shared inbox would break
-  // the surviving deployment.
-  if (deployment.agentEmailInboxId) {
-    const sharedCount = await prisma.deployment.count({
-      where: {
-        agentEmailInboxId: deployment.agentEmailInboxId,
-        id: { not: deploymentId },
-        status: { notIn: ["FIRED"] },
-      },
-    });
-
-    if (sharedCount > 0) {
-      console.log(`[deprovision] Inbox ${deployment.agentEmailInboxId} is shared with ${sharedCount} other deployment(s) — skipping delete`);
-    } else {
-      try {
-        await deleteInbox(deployment.agentEmailInboxId);
-        console.log(`[deprovision] Deleted inbox ${deployment.agentEmailInboxId} (${deployment.agentEmail})`);
-      } catch (err: any) {
-        console.warn(`[deprovision] Failed to delete inbox: ${err.message}`);
-      }
-    }
-  }
+  // 2. (removed) AgentMail inbox deletion.
+  //
+  // Provisioning no longer creates an @agentmail.to inbox — every agent's mailbox
+  // is a Microsoft 365 mailbox in the buyer's tenant — and no non-FIRED deployment
+  // holds an inbox id, so there is nothing left here to delete. The mailbox itself
+  // is removed with the workspace identity below.
 
   // 3. Delete workspace identity or legacy GCP service account (best-effort)
   const workspaceProvider = (deployment as any).workspaceProvider as string | undefined;
