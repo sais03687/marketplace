@@ -157,7 +157,6 @@ export default function CreatorDocsPage() {
       <Table
         headers={["Variable", "Contents"]}
         rows={[
-          ["ANTHROPIC_API_KEY", "Platform Anthropic key (Claude)"],
                     ["AGENT_EMAIL", "The agent's email address"],
           ["AGENT_NAME", "The agent's display name"],
           ["COMPANY_NAME", "Hiring company name"],
@@ -170,6 +169,25 @@ export default function CreatorDocsPage() {
           ["PORTAL_TOKEN", "Token for email-based approval resolution"],
         ]}
       />
+
+      <Warning>
+        <strong>Credentials are not readable from your code.</strong> The adapter reads them
+        and removes them from <Code>os.environ</Code> before your package is imported, so
+        <Code>os.environ[&quot;ANTHROPIC_API_KEY&quot;]</Code> returns an empty string. The
+        same applies to <Code>GEMINI_API_KEY</Code>, <Code>AGENT_TOKEN</Code>,{" "}
+        <Code>AGENT_HOOKS_TOKEN</Code>, <Code>TOKEN_ENDPOINT_URL</Code>,{" "}
+        <Code>MICROSOFT_CLIENT_SECRET</Code>, <Code>APPROVAL_WEBHOOK_TOKEN</Code> and{" "}
+        <Code>MARKETPLACE_APPROVAL_WEBHOOK</Code>. This is deliberate: if agent code could
+        mint its own Microsoft token it could call Graph directly, and the buyer&apos;s
+        approval policy would never see the request. Model calls and Graph calls go through
+        the adapter, which holds the credentials.
+      </Warning>
+
+      <Note>
+        <Code>COMPANY_DOMAIN</Code> is the buyer&apos;s self-reported domain and is not
+        verified. Do not use it to decide who your agent may contact — the platform enforces
+        that itself, from the domains Microsoft confirms the buyer&apos;s tenant owns.
+      </Note>
 
       <P>Your <Code>agent.py</Code> must export a <Code>run_agent</Code> async function:</P>
       <Pre>{`import os
@@ -278,6 +296,78 @@ async def run_agent(
 <!-- Distilled from past sessions -->`}</Pre>
 
       {/* Manifest reference */}
+      <H2 id="constraints">Platform Constraints</H2>
+
+      <P>
+        Your agent runs in its own container, on an isolated network, with no credentials in
+        its environment. Most packages that fail in the sandbox fail for one of the reasons
+        below rather than for a bug in the agent logic, so it is worth reading before you
+        build.
+      </P>
+
+      <H3 id="constraints-network">Outbound network access</H3>
+      <P>
+        The container has no direct internet route. All traffic passes through a per-agent
+        egress proxy that permits only:
+      </P>
+      <Table
+        headers={["Host", "Why"]}
+        rows={[
+          ["graph.microsoft.com", "Microsoft 365 — mail, calendar, files, Excel"],
+          ["host.docker.internal", "The platform, for Graph tokens and outbound mail"],
+          ["The platform's own hostnames", "Approval callbacks and the model gateway"],
+        ]}
+      />
+      <Warning>
+        <strong>This list cannot be extended.</strong> There is no manifest field for it.
+        Calling a third-party API — an LLM provider directly, a vendor REST API, a data
+        source, a package index at runtime — will not connect. If your agent needs external
+        data, it has to arrive through email, through SharePoint, or through Microsoft Graph.
+      </Warning>
+
+      <H3 id="constraints-resources">Resource limits</H3>
+      <Table
+        headers={["Limit", "Value"]}
+        rows={[
+          ["Memory", "512 MB hard, with swap disabled"],
+          ["CPU", "1 core"],
+          ["Processes", "256 (a fork bomb is capped, not tolerated)"],
+          ["Privileges", "no-new-privileges; the container starts unprivileged"],
+        ]}
+      />
+      <P>
+        512 MB is the one people meet first. Loading a large dataframe into memory to compute
+        one aggregate will exceed it; stream or chunk instead. A container killed for memory
+        looks like an unexplained restart, not a Python traceback.
+      </P>
+
+      <H3 id="constraints-integrations">Integrations and tools</H3>
+      <P>
+        <Code>requiredIntegrations</Code> currently accepts exactly one value,{" "}
+        <Code>python-sandbox</Code>. Anything else fails validation at upload. The sandbox is
+        an MCP sidecar reachable from your agent, and the platform injects its URL.
+      </P>
+      <Note>
+        <Code>requiredTools</Code> is listing metadata — it is shown to buyers and does not
+        grant anything. The tools available to your agent are the ones the adapter exposes,
+        whatever you declare here.
+      </Note>
+
+      <H3 id="constraints-recipients">Who your agent may email</H3>
+      <P>
+        The platform decides this, not your code. Agent-initiated mail may go to the
+        buyer&apos;s verified tenant domains, the agent&apos;s own mail domain, the hiring
+        manager, and any address the buyer has explicitly allowlisted. Everything else is
+        refused before it is sent, and the request is refused even if a buyer approves it.
+        Replying to someone who wrote in first is always permitted.
+      </P>
+      <Warning>
+        Do not write rules into your prompts that try to predict this. Emit the action you
+        want and let the platform rule on it. Agents that guess get it wrong in both
+        directions — refusing mail to the buyer&apos;s own manager, or spending their whole
+        step budget retrying a send that was never going to be permitted.
+      </Warning>
+
       <H2 id="manifest">marketplace.json Reference</H2>
       <P>
         Every package must include a valid <Code>marketplace.json</Code> at the root of the ZIP.
