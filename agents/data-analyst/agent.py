@@ -862,10 +862,29 @@ async def execute_action(state: AgentState) -> AgentState:
             state.actions_taken.append(f"email_forward {params['message_id'][:20]} to {params['to']}")
 
         elif action_type in ("send_email", "reply_email"):
-            # Emails are handled by the adapter, not here.
-            # If the LLM wants to send an email mid-loop (e.g., to ask a teammate),
-            # we note it but the actual send happens in finalize.
-            result_text = "Email action noted — will be sent after this iteration"
+            # Emails are handled by the adapter, not here — the actual send (or
+            # refusal) happens once this iteration finalises.
+            #
+            # The wording matters. This used to read "Email action noted — will be
+            # sent after this iteration", which is success-shaped and says nothing
+            # about stopping. Seeing it, the model concluded the send was under way,
+            # noticed the task was still incomplete, and emitted the same action
+            # again. Observed on 2026-08-07 asking for mail to an address outside
+            # the organisation: five identical send_email emissions, no verdict
+            # after any of them, and the run ending in "I worked on this but ran
+            # out of steps before I could finish."
+            #
+            # The loop is the bug, not the boundary. The platform decides whether
+            # this recipient is permitted, and it cannot decide until the iteration
+            # ends — so the honest observation is that the outcome is not known yet
+            # and repeating the action cannot make it known.
+            result_text = (
+                "Email action recorded. The platform will send it after this "
+                "iteration, or refuse it if the recipient is outside the "
+                "organisation, and will tell the requester either way. The outcome "
+                "is not available to you now and emitting this action again will "
+                "not produce one — finish the task instead."
+            )
             state.actions_taken.append(f"Email to: {params.get('to', 'unknown')}")
 
         else:
