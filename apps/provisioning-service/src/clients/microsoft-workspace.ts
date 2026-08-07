@@ -538,6 +538,30 @@ export type TenantLicensing = {
  * its own answer the two would drift, and the buyer would be shown a licence or a
  * capability set that provisioning does not actually produce.
  */
+/**
+ * Domains this tenant actually owns, straight from Microsoft.
+ *
+ * The recipient boundary used to key on Company.domain — free text that
+ * requireOrg() defaults to the literal "company.com", a real domain belonging to
+ * someone else. Confirmed on 2026-08-07: the two companies on this platform held
+ * "company.com" and "acme.com" while the tenant's verified domains were
+ * agentstore.onmicrosoft.com, agents.agentstore.it.com and agentstore.it.com.
+ * Neither stored value was a domain the tenant owned, and both were being
+ * treated as inside the organisation.
+ *
+ * Returns lowercase names. An empty result means "unknown", and callers must
+ * treat that as granting nothing rather than as granting everything.
+ */
+export async function getVerifiedDomains(tenantId: string): Promise<string[]> {
+  const org = (await graphRequestForTenant(tenantId, "GET", "/organization")) as {
+    value?: Array<{ verifiedDomains?: Array<{ name?: string }> }>;
+  };
+  const domains = org.value?.[0]?.verifiedDomains ?? [];
+  return domains
+    .map((d) => (d.name ?? "").trim().toLowerCase())
+    .filter(Boolean);
+}
+
 export async function describeTenantLicensing(tenantId: string): Promise<TenantLicensing> {
   const skus = (await graphRequestForTenant(tenantId, "GET", "/subscribedSkus")) as { value: TenantSku[] };
   const all = skus.value ?? [];

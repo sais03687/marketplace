@@ -285,8 +285,8 @@ async function classifyApprovalReply(replyText) {
 
 // ─── Email Allowlist ─────────────────────────────────────────────────────────
 
-/** { allowedEmails: string[], companyDomain: string, managerEmail: string|null } */
-let allowlistCache = { allowedEmails: [], companyDomain: "", managerEmail: null };
+/** { allowedEmails: string[], companyDomains: string[], companyDomain: string, managerEmail: string|null } */
+let allowlistCache = { allowedEmails: [], companyDomains: [], companyDomain: "", managerEmail: null };
 
 // The allowlist is fetched lazily — only when there is actually mail to decide
 // about — rather than on a fixed heartbeat. A timer-based refresh queried the
@@ -400,7 +400,16 @@ function isSenderAllowed(fromHeader) {
 
   if (managerEmail && email === managerEmail.toLowerCase()) return true;
 
-  for (const domain of [agentOwnDomain(), (companyDomain || "").toLowerCase()]) {
+  // companyDomains is Microsoft's verifiedDomains for the buyer's tenant.
+  // companyDomain is kept only for an older platform that has not redeployed;
+  // the API now sources it from the same verified list.
+  const domains = [
+    agentOwnDomain(),
+    ...(allowlistCache.companyDomains || []),
+    companyDomain || "",
+  ];
+  for (const d of domains) {
+    const domain = (d || "").toLowerCase();
     if (domain && email.endsWith("@" + domain)) return true;
   }
 

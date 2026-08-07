@@ -50,7 +50,7 @@ export async function GET(
     select: {
       allowedEmails: true,
       managerEmail: true,
-      company: { select: { domain: true } },
+      company: { select: { verifiedDomains: true } },
     },
   });
 
@@ -58,7 +58,13 @@ export async function GET(
 
   return jsonSuccess({
     allowedEmails: (deployment.allowedEmails as string[]) ?? [],
-    companyDomain: deployment.company.domain,
+    // The domains Microsoft says the buyer's tenant owns — not Company.domain,
+    // which is unverified free text defaulting to "company.com" and was being
+    // treated as inside the organisation. Empty grants nothing.
+    companyDomains: (deployment.company.verifiedDomains as string[]) ?? [],
+    // Kept for older readers. Deliberately the first verified domain rather than
+    // Company.domain, so a stale client narrows rather than widens.
+    companyDomain: ((deployment.company.verifiedDomains as string[]) ?? [])[0] ?? "",
     managerEmail: deployment.managerEmail ?? null,
   });
 }

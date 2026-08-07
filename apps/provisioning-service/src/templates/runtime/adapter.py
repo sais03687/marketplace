@@ -1509,11 +1509,26 @@ def _share_recipient_allowed(address: str, allow: dict) -> bool:
     # on the recorded value refused colleagues in the agent's own tenant and
     # permitted a domain the agent has no presence in. Whatever the record says,
     # someone sharing a mail domain with the agent is inside the organisation.
-    domains = {
-        _agent_own_domain(),
-        str(allow.get("companyDomain") or "").strip().lower(),
-        COMPANY_DOMAIN.strip().lower(),
-    }
+    # companyDomains comes from Microsoft's verifiedDomains for the buyer's
+    # tenant. It replaced Company.domain, which was unverified free text that
+    # requireOrg() defaulted to the literal "company.com" — a real domain owned
+    # by someone else. On 2026-08-07 the two companies here held "company.com"
+    # and "acme.com" while the tenant actually owned agentstore.it.com and
+    # agents.agentstore.it.com, so the widest rule in this function was pointing
+    # at domains the buyer had no relationship with.
+    #
+    # COMPANY_DOMAIN (the container env) is deliberately not consulted: it is
+    # injected from that same unverified record.
+    domains = {_agent_own_domain()}
+    for d in allow.get("companyDomains") or []:
+        d = str(d).strip().lower()
+        if d:
+            domains.add(d)
+    # Single-value fallback for an older platform that has not been redeployed.
+    # The API now sources this from the verified list too.
+    legacy = str(allow.get("companyDomain") or "").strip().lower()
+    if legacy:
+        domains.add(legacy)
 
     if manager and addr == manager:
         return True

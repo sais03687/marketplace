@@ -88,7 +88,14 @@ model Company {
   id               String                  @id @default(cuid())
   clerkOrgId       String                  @unique
   name             String
+  /// Display only. Never use this to decide who an agent may email — it is
+  /// unverified free text and defaulted to the literal "company.com", a real
+  /// domain owned by someone else. verifiedDomains is the boundary.
   domain           String
+  /// Domains Microsoft says this buyer's tenant actually owns, from
+  /// /organization -> verifiedDomains. Empty means "we do not know yet", which
+  /// grants nothing — the agent's own mail domain still covers its colleagues.
+  verifiedDomains  Json                    @default("[]")
   timezone         String                  @default("America/New_York")
   stripeCustomerId String?
   plan             CompanyPlan             @default(PAY_PER_AGENT)

@@ -8,7 +8,7 @@ import {
 } from "../clients/docker.js";
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
-import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError, getVerifiedDomains } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor, hooksTokenFor } from "../utils/agent-token.js";
 
@@ -178,6 +178,24 @@ export async function provisionJob(
 
   if (workspaceProvider === "MICROSOFT" && config.microsoftTenantId) {
     const buyerTenantId = (deployment as any).buyerMicrosoftTenantId as string | null;
+
+    // Record what Microsoft says this tenant owns. This, not Company.domain, is
+    // what decides who the agent may start a conversation with — Company.domain
+    // is unverified free text that defaults to "company.com".
+    //
+    // Non-fatal: an empty list grants nothing, and the agent's own mail domain
+    // still covers its colleagues, so a Graph hiccup narrows the boundary rather
+    // than widening it.
+    try {
+      const verified = await getVerifiedDomains(buyerTenantId || config.microsoftTenantId);
+      await prisma.company.update({
+        where: { id: deployment.companyId },
+        data: { verifiedDomains: verified },
+      });
+      console.log(`[provision] Verified tenant domains: ${verified.join(", ") || "(none)"}`);
+    } catch (err: any) {
+      console.warn(`[provision] Could not read verified domains: ${err.message}`);
+    }
 
     if (buyerTenantId) {
       // ── Buyer-org mode: create the agent's licensed mailbox in the buyer's tenant ──

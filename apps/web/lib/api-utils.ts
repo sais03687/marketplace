@@ -90,7 +90,11 @@ export async function requireOrg(): Promise<
       data: {
         clerkOrgId: orgId,
         name: "My Company",
-        domain: "company.com",
+        // Empty, not "company.com". That default was a real registered domain,
+        // and Company.domain was being used as an email allowlist — so every
+        // auto-created company authorised its agent to start conversations with
+        // strangers there. The boundary now reads Company.verifiedDomains.
+        domain: "",
       },
     });
   }
