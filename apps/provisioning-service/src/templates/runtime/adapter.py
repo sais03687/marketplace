@@ -3223,6 +3223,41 @@ async def _handle_message(message: str, context: dict):
 
         if action in ("send_email", "reply_email"):
             recipient = result.get("to") or context.get("sender", "")
+
+            # Refuse before asking, when the answer could not be yes — the same
+            # reasoning SHARING_ACTIONS uses in execute_action. Queueing an
+            # approval for a send the platform will refuse anyway asks the buyer
+            # a question whose answer cannot matter.
+            #
+            # Until 2026-08-07 the recipient boundary lived only inside
+            # send_email, which runs *after* this gate. So an out-of-bounds
+            # request produced neither a refusal the agent could relay nor an
+            # approval the buyer could act on: the agent re-emitted the same
+            # action until its step budget ran out and answered "I worked on this
+            # but ran out of steps before I could finish". Observed live asking
+            # it to email jordan.blake@northwind-partners.com.
+            #
+            # This is the platform saying no, not the agent guessing — the
+            # distinction that #45 turned on. The agent still emits the action.
+            #
+            # reply_email is exempt deliberately: answering someone who wrote in
+            # first is not reaching outside the organisation, and the sender
+            # allowlist already governs who could write in.
+            if action == "send_email":
+                try:
+                    await _refuse_external_email(recipient)
+                except ActionRefused as refusal:
+                    print(f"[adapter] {refusal}", flush=True)
+                    if _check_and_increment("emails"):
+                        await reply_email(
+                            message_id=context.get("message_id", ""),
+                            text=str(refusal),
+                            fallback_to=_extract_email(context.get("sender", "")),
+                            fallback_subject=context.get("subject", ""),
+                            fallback_thread_id=context.get("thread_id"),
+                        )
+                    return
+
             risk_from_llm = result.get("risk_assessment") or {}
             needs_approval_policy, policy_reason = _should_require_approval(
                 recipient, risk_from_llm
