@@ -120,7 +120,14 @@ export async function settlePauseCredit(
   console.log(
     `[pause-credit] Credited ${(creditCents / 100).toFixed(2)} to ${customerId} for ` +
       `${pausedDays.toFixed(2)} paused days on ${deploymentId}` +
-      (opts.invoiceId ? ` (invoice ${opts.invoiceId})` : " (next invoice)"),
+      // Say where it actually went. This read "(next invoice)" for the fire path,
+      // which settles to customer balance — the same describing-intent-not-outcome
+      // habit that hid the half-rate coupon never being removed.
+      (opts.toCustomerBalance
+        ? " (customer balance)"
+        : opts.invoiceId
+          ? ` (invoice ${opts.invoiceId})`
+          : " (next invoice)"),
   );
 
   return { creditedCents: creditCents, pausedDays };
