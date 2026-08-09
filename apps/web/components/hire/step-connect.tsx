@@ -119,7 +119,17 @@ function LicensingSummary({
     ["Outlook calendar", data.capabilities.calendar, "Read and manage events"],
     ["SharePoint files", data.capabilities.sharepoint, "Read and edit shared files and Excel workbooks"],
     ["Its own OneDrive", data.capabilities.onedrive, "Personal file storage for the agent"],
-    ["Microsoft Teams", data.capabilities.teams, "Direct messages and approvals in Teams"],
+    // "after you install it" is load-bearing, not hedging. The platform cannot
+    // install this for you: Microsoft refuses app-only uploads to a tenant app
+    // catalog with 403 and there is no consent that changes it. Until this line
+    // said so, every buyer was sold Teams at checkout and every hire silently
+    // failed to deliver it. The package is downloadable from the agent's
+    // Settings page and takes a minute to sideload.
+    [
+      "Microsoft Teams",
+      data.capabilities.teams,
+      "Direct messages and approvals — after you install the app from the agent's Settings page",
+    ],
   ];
 
   // No seat anywhere: the hire will fail, so say so before payment rather than after.

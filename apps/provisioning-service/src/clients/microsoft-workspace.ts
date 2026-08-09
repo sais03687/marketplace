@@ -915,7 +915,7 @@ export async function getUserByEmail(
  * Build the Teams app zip package in memory from the teams-app/ directory.
  * Returns a Buffer containing the zip file.
  */
-function buildTeamsAppZip(): Buffer {
+export function buildTeamsAppZip(): Buffer {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const teamsAppDir = path.resolve(__dirname, "../../teams-app");
 
