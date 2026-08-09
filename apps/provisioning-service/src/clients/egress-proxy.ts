@@ -143,6 +143,35 @@ export async function startNetgate(
   return { proxyUrl: egressProxyUrl(deploymentId), hostPort };
 }
 
+/**
+ * Hosts this deployment's agent tried to reach and was refused.
+ *
+ * tinyproxy runs with FilterDefaultDeny and logs every refusal, so the netgate's
+ * own log is the record of what the package reached for. Used by vetting to tell
+ * a creator "you tried to reach api.openai.com" instead of "the container did not
+ * become healthy", which is the same sentence for an OOM, a crash on import, and
+ * a hang on a blocked call.
+ *
+ * Best-effort: a missing netgate or unreadable log yields an empty list, because
+ * a diagnostic that throws would replace the real failure with its own.
+ */
+export async function blockedEgressHosts(deploymentId: string): Promise<string[]> {
+  try {
+    const logs = await docker
+      .getContainer(netgateName(deploymentId))
+      .logs({ stdout: true, stderr: true, tail: 1000 });
+    const text = Buffer.isBuffer(logs) ? logs.toString("utf8") : String(logs);
+    const hosts = new Set<string>();
+    for (const m of text.matchAll(/filtered domain\s+"?([^"\s]+)"?/gi)) {
+      const host = (m[1] ?? "").trim();
+      if (host) hosts.add(host);
+    }
+    return [...hosts];
+  } catch {
+    return [];
+  }
+}
+
 export async function stopEgressProxy(deploymentId: string): Promise<void> {
   const name = netgateName(deploymentId);
   try {

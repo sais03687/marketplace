@@ -10,6 +10,8 @@
  */
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, cpSync, readdirSync, statSync } from "node:fs";
+import { startNetgate, stopEgressProxy, netgateName, baselineAllowedDomains, blockedEgressHosts } from "../clients/egress-proxy.js";
+import { createAgentNetwork, removeAgentNetwork } from "../clients/docker.js";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -202,6 +204,9 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
   let buildDir: string | null = null;
   let imageName: string | null = null;
   let container: Dockerode.Container | null = null;
+  let vetNetwork: string | null = null;
+  let vetId: string | null = null;
+  let vetNetgate: { proxyUrl: string; hostPort: number } | null = null;
 
   try {
     // ── Step 1: Download package ──────────────────────────────────────────────
@@ -243,7 +248,18 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           // that names the symbol, rather than an opaque health-check timeout.
           const agentSrc = readFileSync(join(packageDir!, "agent.py"), "utf-8");
           for (const fn of ["run_agent", "resume_agent"]) {
-            if (!new RegExp(`^\s*(async\s+)?def\s+${fn}\s*\(`, "m").test(agentSrc)) {
+            // String.raw, because a plain template literal eats the backslashes.
+            // `\s` is not a recognised escape there, so it collapsed to a bare
+            // "s" and the pattern became ^s*(asyncs+)?defs+run_agents*( — an
+            // unterminated group. new RegExp threw, the outermost handler caught
+            // it, and every custom package failed vetting with "Unexpected
+            // error". No submission has ever passed automated vetting; the one
+            // live agent version is MANUALLY_APPROVED, which is what hid it.
+            //
+            // String.raw rather than doubling every backslash: the doubled form
+            // is what someone will quietly get wrong again.
+            const defPattern = String.raw`^\s*(async\s+)?def\s+${fn}\s*\(`;
+            if (!new RegExp(defPattern, "m").test(agentSrc)) {
               findings.push(`agent.py does not define ${fn}() — the platform imports it at startup`);
             }
           }
@@ -345,6 +361,8 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
         const healthLogs: string[] = [];
         try {
           const containerName = `vet-${randomBytes(4).toString("hex")}`;
+          // Network and netgate names derive from this via .slice(0, 8).
+          vetId = containerName.slice(4) + "vetting";
           const envVars = [
             `DEPLOYMENT_ID=vet-${randomBytes(4).toString("hex")}`,
             `AGENT_EMAIL=test@vet.internal`,
@@ -370,14 +388,37 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `PORT=4000`,
           ];
 
+          // Reproduce production's network, not just its resource limits.
+          //
+          // Vetting used to run on the default bridge with unrestricted internet.
+          // Production puts every agent on an Internal network with no route off
+          // the host, reachable only through an egress proxy that allows Graph and
+          // the platform. So a package calling a third-party API passed vetting and
+          // then failed in a buyer's tenant — the sandbox certified an environment
+          // the agent would never actually run in.
+          vetNetwork = await createAgentNetwork(vetId!);
+          vetNetgate = await startNetgate(vetId!, vetNetwork, containerName);
+
           container = await docker.createContainer({
             Image: imageName!,
             name: containerName,
-            Env: envVars,
+            Env: [
+              ...envVars,
+              // Convenience so ordinary HTTP clients find the proxy. The absent
+              // route is the actual control.
+              `HTTP_PROXY=${vetNetgate.proxyUrl}`,
+              `HTTPS_PROXY=${vetNetgate.proxyUrl}`,
+              `http_proxy=${vetNetgate.proxyUrl}`,
+              `https_proxy=${vetNetgate.proxyUrl}`,
+              `NO_PROXY=localhost,127.0.0.1,${netgateName(vetId!)}`,
+              `no_proxy=localhost,127.0.0.1,${netgateName(vetId!)}`,
+            ],
             ExposedPorts: { "4000/tcp": {} },
             HostConfig: {
-              // Loopback only — vetting runs unreviewed third-party code.
-              PortBindings: { "4000/tcp": [{ HostIp: "127.0.0.1", HostPort: "0" }] },
+              // No PortBindings: Docker will not publish a port for a container on
+              // an Internal network. The netgate publishes the gateway instead,
+              // exactly as in production.
+              NetworkMode: vetNetwork,
               Memory: 512 * 1024 * 1024,
               MemorySwap: 512 * 1024 * 1024,
               NanoCpus: 1_000_000_000,
@@ -390,11 +431,11 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           healthLogs.push(`Container started: ${containerName}`);
           healthLogs.push(`Image: ${imageName}`);
 
-          const info = await container.inspect();
-          const bindings = info.NetworkSettings.Ports["4000/tcp"];
-          if (!bindings || bindings.length === 0) throw new Error("No port binding");
-          hostPort = parseInt(bindings[0].HostPort, 10);
-          healthLogs.push(`Port binding: 0.0.0.0:${hostPort} → 4000/tcp`);
+          // The container is on an Internal network and publishes nothing itself.
+          // Reach it through the netgate, exactly as the poller does in production.
+          hostPort = vetNetgate!.hostPort;
+          healthLogs.push(`Reachable via netgate on 127.0.0.1:${hostPort} → 4000/tcp`);
+          healthLogs.push(`Egress: proxy only — ${baselineAllowedDomains().join(", ")}`);
 
           // Poll health up to 60s
           const deadline = Date.now() + 60_000;
@@ -412,9 +453,54 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             healthLogs.push(`[attempt ${attempt}] not yet ready (${elapsed(t)})`);
             await new Promise((r) => setTimeout(r, 1000));
           }
-          if (!healthy) throw new Error("Container did not become healthy within 60s");
+          if (!healthy) {
+            // Say what actually happened. "did not become healthy within 60s" is
+            // true of an OOM kill, a crash on import, and a package hanging on a
+            // blocked outbound call alike — three different problems a creator
+            // would fix three different ways.
+            const why: string[] = [];
+            try {
+              const st = (await container.inspect()).State;
+              if (st.OOMKilled) {
+                why.push("the container was killed for exceeding its 512 MB memory limit");
+              }
+              if (typeof st.ExitCode === "number" && st.ExitCode !== 0 && !st.Running) {
+                why.push(`the process exited with code ${st.ExitCode}`);
+              }
+            } catch { /* inspect is best-effort diagnosis */ }
+
+            const blocked = await blockedEgressHosts(vetId!);
+            if (blocked.length > 0) {
+              why.push(
+                `it tried to reach ${blocked.join(", ")}, which the egress proxy does not ` +
+                  `allow — agents may only reach Microsoft Graph and the platform`,
+              );
+              healthLogs.push(`Blocked outbound: ${blocked.join(", ")}`);
+            }
+
+            throw new Error(
+              why.length > 0
+                ? `Container did not become healthy within 60s — ${why.join("; ")}`
+                : "Container did not become healthy within 60s",
+            );
+          }
 
           report.steps.push({ name: "Health check", status: "pass", detail: `started in ${elapsed(t)}`, logLines: healthLogs });
+
+          // A package can start cleanly and still be reaching for hosts it will
+          // never have in production. Surface that as its own finding rather than
+          // letting it pass silently and fail in a buyer's tenant.
+          const blockedWhileHealthy = await blockedEgressHosts(vetId!);
+          if (blockedWhileHealthy.length > 0) {
+            report.steps.push({
+              name: "Egress",
+              status: "fail",
+              detail:
+                `Package tried to reach ${blockedWhileHealthy.join(", ")}. Agents run with no ` +
+                `route off the host; only Microsoft Graph and the platform are reachable.`,
+            });
+            report.overallStatus = "fail";
+          }
         } catch (e: any) {
           healthLogs.push(`FAILED: ${e.message}`);
           report.steps.push({ name: "Health check", status: "fail", detail: e.message.slice(0, 200), logLines: healthLogs });
@@ -587,6 +673,12 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
     if (container) {
       try { await container.stop({ t: 5 }); } catch {}
       try { await container.remove({ force: true }); } catch {}
+    }
+    if (vetNetgate) {
+      try { await stopEgressProxy(vetId!); } catch {}
+    }
+    if (vetNetwork) {
+      try { await removeAgentNetwork(vetId!); } catch {}
     }
     if (imageName) {
       try { const img = docker.getImage(imageName); await img.remove({ force: true }); } catch {}
