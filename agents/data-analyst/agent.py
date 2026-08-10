@@ -292,6 +292,11 @@ class AgentState(BaseModel):
     # equivalent counter used to be incremented inside the router, where the
     # assignment was discarded and the guard it fed never fired.
     none_streak: int = 0
+    # The last action emitted, as type plus arguments, and how many times it has
+    # been emitted unchanged in a row. Distinct from none_streak: that counts a
+    # model refusing to act, this counts one acting to no effect.
+    last_action_sig: str = ""
+    repeat_streak: int = 0
     # A real multi-step task spends five steps before it can even answer:
     # drive_list, excel_list_sheets, excel_read, mcp_call, reply. At eight, one
     # wrong turn or a retried tool call left nothing for the reply — the chart
@@ -704,6 +709,27 @@ async def reason_and_act(state: AgentState) -> AgentState:
     else:
         state.none_streak = 0
 
+    # The same action, with the same arguments, over and over.
+    #
+    # none_streak above only catches a model that declines to act. A model that
+    # acts identically forever looks busy and is not: on 2026-08-10 an onboarding
+    # run emitted inbox_list ten times in a row against an empty mailbox, spent
+    # ten of its twelve iterations, and finished with nothing to say. Waiting for
+    # a reply is not work, and the eleventh call cannot return what the tenth
+    # did not.
+    #
+    # Counted here, in a node, for the same reason none_streak is: a router
+    # cannot keep a counter.
+    signature = json.dumps(
+        {"type": action_type, "params": (action.get("params") if isinstance(action, dict) else {}) or {}},
+        default=str, sort_keys=True,
+    )
+    if action_type != "none" and signature == state.last_action_sig:
+        state.repeat_streak += 1
+    else:
+        state.repeat_streak = 0
+    state.last_action_sig = signature
+
     return state
 
 
@@ -867,6 +893,19 @@ def route_after_reasoning(state: AgentState) -> str:
     # built their chart. One more pass, for the reply only, then finalize.
     if state.iteration >= state.max_iterations:
         return "wrap_up" if state.actions_taken else "finalize"
+
+    # The same call, unchanged, for the third time. Executing it again cannot
+    # tell the agent anything the last two did not, and the steps it burns are
+    # the ones the reply needed. Two identical repeats are tolerated — a retry
+    # after a transient failure is legitimate — and the third ends the loop.
+    if state.repeat_streak >= 2:
+        print(
+            f"[agent] same action {state.repeat_streak + 1} times running "
+            f"({(state.analysis.get('action') or {}).get('type', '?')}) — "
+            "stopping the loop and writing the reply",
+            flush=True,
+        )
+        return "wrap_up" if state.actions_taken else "verify_deliverables"
 
     action = state.analysis.get("action") or {}
     if isinstance(action, dict) and action.get("type", "none") != "none":
