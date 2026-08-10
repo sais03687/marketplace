@@ -507,15 +507,37 @@ async def reason_and_act(state: AgentState) -> AgentState:
     # that has been told for several turns to pick the next action will otherwise
     # pick another one.
     if state.context.get("_wrapping_up"):
+        # Two callers, and they are not the same situation. Saying "you have no
+        # steps left" to a run that has ten of twelve remaining is simply false,
+        # and it was the only thing this pass said about why it was happening.
+        # The run that exposed it reasoned "now I need to consolidate the results
+        # and reply", returned action none, wrote no final_response, and the
+        # requester got a list of steps instead of their answer.
+        if state.context.get("_approved_action_executing"):
+            why = (
+                "The action you asked for has been approved and carried out. "
+                "Everything the request needed is now done."
+            )
+        else:
+            why = "You have no steps left."
+
         message_content += (
-            "\n\n[SYSTEM] You have no steps left. Do NOT choose another action — "
-            "set \"completed\": true and \"action\": {\"type\": \"none\"}, and write "
-            "final_response now.\n"
-            "Answer from the results you already have. Say what you found, and if "
-            "some part of the request is unfinished say which part and why, so the "
-            "person knows where things stand. Do not claim to have done anything "
-            "that is not in the results above. A partial answer is useful; silence "
-            "is not."
+            f"\n\n[SYSTEM] {why} This turn produces the reply and nothing else.\n"
+            "\n"
+            "Set \"completed\": true and \"action\": {\"type\": \"none\"}, and put the "
+            "reply itself in final_response.text. That field is what gets sent. If "
+            "you leave it empty the requester receives nothing of use, however good "
+            "your reasoning was.\n"
+            "\n"
+            "Answer the question they actually asked, using the numbers in the "
+            "results above. Lead with the figures — totals, comparisons, whichever "
+            "was requested — not with a description of the steps you took. They can "
+            "see the file; what they cannot see is the answer.\n"
+            "\n"
+            "If you produced a file, mention it in one line at the end. Do not make "
+            "the message about it, and do not list the tools you called. If some "
+            "part of the request is genuinely unfinished, say which part and why. "
+            "Never claim anything the results above do not support."
         )
 
     # Format actions taken so far
