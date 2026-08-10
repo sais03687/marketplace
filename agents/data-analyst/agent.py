@@ -86,11 +86,30 @@ def set_file_resolver(fn) -> None:
     _file_resolver = fn
 
 
-def _resolve_upload_content(ref: str) -> bytes:
+# Leading bytes that identify the formats this agent uploads. Used to refuse
+# content that decoded successfully but is plainly not the file it claims to be.
+_FILE_SIGNATURES = {
+    ".xlsx": b"PK\x03\x04",
+    ".docx": b"PK\x03\x04",
+    ".zip": b"PK\x03\x04",
+    ".pdf": b"%PDF",
+    ".png": b"\x89PNG",
+}
+
+
+def _resolve_upload_content(ref: str, filename: str = "") -> bytes:
     """Bytes for an upload, from either a platform handle or inline base64.
 
-    Handles are preferred and are what the sandbox now returns. Inline base64 is
-    still accepted so an agent can upload something it constructed itself.
+    Handles are what the sandbox returns and are the normal path. Inline base64
+    is still accepted for something the agent built itself.
+
+    The validation below exists because a permissive fallback is worse than a
+    failure here. On 2026-08-10 the model invented an id —
+    "01HBC6OG2ER5CGZHDAARELS5LRVXTARXSZ" — for a file it had never written; its
+    Python had only printed to stdout, so no handle existed. That string happens
+    to be valid base64, so it decoded to about 25 bytes of noise and was uploaded
+    to SharePoint as an .xlsx. No error was raised anywhere. A corrupt file
+    delivered silently is worse than an upload that refuses and says why.
     """
     ref = (ref or "").strip()
     if not ref:
@@ -110,8 +129,31 @@ def _resolve_upload_content(ref: str) -> bytes:
             "Re-create the file and upload the id returned with it."
         )
 
-    padded = ref + "=" * (-len(ref) % 4)
-    return base64.b64decode(padded)
+    try:
+        content = base64.b64decode(ref + "=" * (-len(ref) % 4))
+    except Exception as exc:
+        raise ValueError(
+            f"content_base64 is neither a file id nor valid base64 ({exc}). "
+            "Write the file to /tmp/output/ in the sandbox and pass the file_id it returns."
+        ) from exc
+
+    # An identifier mistaken for content. Real files are not 25 bytes.
+    if len(content) < 64:
+        raise ValueError(
+            f"content_base64 decoded to only {len(content)} bytes, which is not a file. "
+            "If you meant to upload something the sandbox produced, write it to "
+            "/tmp/output/ and pass the file_id returned with it — do not invent an id."
+        )
+
+    suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    expected = _FILE_SIGNATURES.get(suffix)
+    if expected and not content.startswith(expected):
+        raise ValueError(
+            f"the content does not look like a {suffix} file. "
+            "Generate it in the sandbox and upload the file_id it returns."
+        )
+
+    return content
 
 
 _here = Path(__file__).parent
@@ -730,8 +772,8 @@ async def execute_action(state: AgentState) -> AgentState:
             state.actions_taken.append(f"Read file: {item_id[:20]}")
 
         elif action_type == "drive_upload" and _mt:
-            content = _resolve_upload_content(params.get("content_base64", ""))
             filename = params.get("filename", "output.xlsx")
+            content = _resolve_upload_content(params.get("content_base64", ""), filename)
             resp = await _mt.drive_upload(filename, content)
             result_text = f"Uploaded {filename} to SharePoint: {resp.get('webUrl', '')}"
             state.actions_taken.append(f"Upload: {filename}")
