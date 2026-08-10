@@ -1024,7 +1024,13 @@ export function startProxyServer() {
 
           const fwdResp = await fetch(`${containerUrl}/internal/resolve-approval`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              // Releases an action a human was asked to approve, so it carries
+              // the deployment's token. Until 2026-08-10 it carried nothing and
+              // the gateway asked for nothing.
+              "x-deployment-token": config.approvalWebhookToken,
+            },
             body: JSON.stringify({ approvalId, action, editedText, rejectionReason }),
           });
 

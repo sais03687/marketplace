@@ -1667,6 +1667,46 @@ def _require_hooks_auth(request: Request) -> None:
         presented = presented[7:]
     if not hmac.compare_digest(presented, _HOOKS_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _require_internal_auth(request: Request) -> None:
+    """Reject /internal calls that change state without this deployment's token.
+
+    The /hooks routes were given a token on 2026-08-06. The /internal routes
+    were not, and two of them release an action a human was asked to approve:
+    a POST to /internal/resolve-approval with no credential resumed a suspended
+    run as APPROVED. Confirmed on 2026-08-10, three times, against uploads that
+    were waiting on the buyer.
+
+    The gap is worse than it looks from the status code. Resolution here writes
+    a file and resumes the graph; the approval record lives in the marketplace
+    database and is never touched. So an approval granted this way releases the
+    work and leaves the record saying PENDING — no trace, and the buyer's own
+    audit trail disagrees with what the agent did. An approval that can be
+    granted without a record is not an approval.
+
+    Same shape as the hooks guard, and deliberately the same failure mode: no
+    token configured means refuse, because a credential that is optional is the
+    thing nobody notices is missing. The header is x-deployment-token, which is
+    what update.ts has been sending all along to a route that never read it.
+    """
+    if not APPROVAL_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Gateway has no APPROVAL_WEBHOOK_TOKEN configured; refusing "
+                "unauthenticated internal call"
+            ),
+        )
+    presented = request.headers.get("x-deployment-token", "")
+    if not presented:
+        presented = request.headers.get("authorization", "")
+        if presented.startswith("Bearer "):
+            presented = presented[7:]
+    if not hmac.compare_digest(presented, APPROVAL_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 _ms_token_cache: dict[str, Any] = {}
 
 
@@ -2380,8 +2420,9 @@ class UpdateSkillsPayload(BaseModel):
 
 
 @app.post("/internal/update-skills")
-async def update_skills(body: UpdateSkillsPayload):
+async def update_skills(body: UpdateSkillsPayload, request: Request):
     """Write skill/memory files to disk. Paths are relative to /agent/."""
+    _require_internal_auth(request)
     written = []
     for rel_path, content in body.files.items():
         # Prevent path traversal
@@ -2487,9 +2528,10 @@ async def _deliver_orphaned_send(approval_id: str, resolution: dict) -> None:
 
 
 @app.post("/internal/approvals/{approval_id}/resolve")
-async def resolve_approval(approval_id: str, body: ApprovalResolution):
+async def resolve_approval(approval_id: str, body: ApprovalResolution, request: Request):
     """Receive an approval resolution from the marketplace and write it to disk,
     then resume the interrupted LangGraph if one is pending."""
+    _require_internal_auth(request)
     resolution = {
         "status": body.status,
         "resolutionAction": body.resolutionAction,
@@ -2543,8 +2585,9 @@ class ResolveApprovalAlt(BaseModel):
 
 
 @app.post("/internal/resolve-approval")
-async def resolve_approval_alt(body: ResolveApprovalAlt):
+async def resolve_approval_alt(body: ResolveApprovalAlt, request: Request):
     """Alternate resolution endpoint used by the marketplace web app."""
+    _require_internal_auth(request)
     resolution = {
         "status": body.action,
         "resolutionAction": body.editedText,

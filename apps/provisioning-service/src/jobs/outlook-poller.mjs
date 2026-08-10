@@ -32,6 +32,10 @@ const OUTLOOK_AGENT_EMAIL = process.env.OUTLOOK_AGENT_EMAIL;
 const OUTLOOK_TOKEN_URL = process.env.OUTLOOK_TOKEN_URL;
 const DEPLOYMENT_ID = process.env.DEPLOYMENT_ID || "";
 const HOOKS_TOKEN = process.env.OPENCLAW_HOOKS_TOKEN;
+// Separate from HOOKS_TOKEN on purpose: that one admits inbound mail, this one
+// releases an action a human was asked to approve. Inherited from the
+// provisioning service's own environment, which already holds it.
+const APPROVAL_TOKEN = process.env.APPROVAL_WEBHOOK_TOKEN || "";
 const INBOX = process.env.POLLER_INBOX || OUTLOOK_AGENT_EMAIL;
 const GATEWAY_URL = process.env.POLLER_GATEWAY_URL || "http://127.0.0.1:18789";
 const MARKETPLACE_URL = process.env.MARKETPLACE_URL || "http://localhost:3002";
@@ -785,7 +789,10 @@ async function poll() {
               const status = classification.decision === "reject" ? "REJECTED" : "APPROVED";
               const resolveResp = await fetch(`${GATEWAY_URL}/internal/approvals/${approvalId}/resolve`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-deployment-token": APPROVAL_TOKEN,
+                },
                 body: JSON.stringify({
                   status,
                   resolutionAction: status === "APPROVED" ? (classification.note || "Approved via email reply") : null,
