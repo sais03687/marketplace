@@ -1706,6 +1706,27 @@ RESULT_CHAR_LIMIT = 4000
 # defence over anything about to be sent.
 _INTERNAL_MARKERS = ("file_id", "sandbox:", '"note"', '"stderr"', '"returncode"', "size_bytes")
 
+# Results that are the run talking to itself. execute_action records failures,
+# approval outcomes and its own dispatch notes in the same list as findings, so
+# a composed reply quoted them to the buyer as though they were the answer. On
+# 2026-08-10 one carried a raw Graph 400 — endpoint, query string and the
+# internal message id — and another read "Manager decision: APPROVED —
+# Approved — proceed as planned."
+#
+# A prefix list rather than dropping all prose, because some plain results are
+# genuinely the answer: the text of a file the agent was asked to read, or the
+# confirmation of an event it created.
+_INTERNAL_PREFIXES = (
+    "Error:",
+    "ERROR",
+    "Manager decision:",
+    "Action '",
+    "Email action recorded",
+    "Unknown action type",
+    "Deleted item",
+    "DELIVERABLE CHECK",
+)
+
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"')\]]+")
 
 # The sandbox's scratch directory. A run that prints "Excel file created at
@@ -1803,11 +1824,28 @@ def _cell(value: Any) -> str:
 
     Rounded to two decimals because that is what the figures are: money and
     percentages. 154.8780487805 is the division, not the answer.
+
+    Numeric *strings* are rounded too. Everything read back out of a sheet
+    arrives as text, so keying on the Python type alone let a whole table
+    through unformatted — a buyer was sent 942.9881198347 units on
+    2026-08-10, in the same message as a correctly rounded one.
+
+    Values below 1 are left exactly as they are. Those are ratios and rates,
+    where two decimals is not rounding but discarding: 0.1031 would become
+    0.10 and a 10.31% growth figure would lose its point.
     """
     if value is None:
         return ""
     if isinstance(value, bool):
         return "yes" if value else "no"
+    if isinstance(value, str):
+        raw = value.strip()
+        if not re.fullmatch(r"-?\d[\d,]*(?:\.\d+)?", raw or "x"):
+            return value
+        try:
+            value = Decimal(raw.replace(",", ""))
+        except InvalidOperation:
+            return value
     if isinstance(value, (int, float, Decimal)):
         try:
             d = Decimal(str(value))
@@ -1815,6 +1853,8 @@ def _cell(value: Any) -> str:
             return str(value)
         if d == d.to_integral_value():
             return f"{d.quantize(Decimal(1)):,}"
+        if abs(d) < 1:
+            return str(d)
         return f"{d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
     return str(value)
 
@@ -1849,8 +1889,9 @@ def _render_result(raw: str) -> str:
         return ""
     text = raw.strip()
 
-    # Internal hand-backs are addressed to the model, not to the requester.
-    if text.startswith("DELIVERABLE CHECK"):
+    # Hand-backs, failures and approval bookkeeping are the run talking to
+    # itself, not to the requester.
+    if text.startswith(_INTERNAL_PREFIXES):
         return ""
 
     # Where the file went is delivery, not findings. _delivered_file_line renders
