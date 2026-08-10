@@ -17,9 +17,11 @@ Graph flow (ReAct loop):
 """
 
 import os
+import re
 import json
 import asyncio
 import base64
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from pathlib import Path
 
@@ -1340,11 +1342,10 @@ async def finalize(state: AgentState) -> AgentState:
         #
         # Internal observations are filtered: a hand-back from the deliverable
         # check is a message to the model, not to the buyer.
-        findings = [
-            r for r in state.action_results[-6:]
-            if isinstance(r, str) and r.strip()
-            and not r.startswith("DELIVERABLE CHECK")
-        ]
+        # Rendered, not pasted. These entries are sandbox envelopes — stdout,
+        # stderr, returncode and a files array of handles — and sending one to a
+        # buyer tells them nothing and exposes internals besides.
+        findings = _buyer_readable(state.action_results)
         steps = "\n".join(f"- {a}" for a in state.actions_taken[-6:])
         # Say what is actually known, which is only that no summary was written.
         #
@@ -1355,19 +1356,37 @@ async def finalize(state: AgentState) -> AgentState:
         # buyer was told the work was unfinished, and advised to make a request
         # smaller that had not been too large.
         out_of_steps = state.iteration >= state.max_iterations
-        if out_of_steps:
+        if findings:
+            # Findings lead, whether or not the steps ran out. This used to test
+            # out_of_steps first, so a run that computed the whole answer and
+            # then exhausted its budget sent the step names and threw the answer
+            # away — the one case where the requester most needed what was
+            # already in hand. Running out is a caveat on the results, not a
+            # replacement for them.
+            link = _delivered_file_line(state.action_results)
+            result_text = (
+                "Here are the results of the work you asked for.\n\n"
+                f"{findings}"
+            )
+            if link:
+                result_text += f"\n\n{link}"
+            if out_of_steps:
+                result_text += (
+                    "\n\nI ran out of steps before I could write this up properly, "
+                    "so it may be incomplete. Ask me again and I'll pick it up from "
+                    "here."
+                )
+            else:
+                result_text += (
+                    "\n\nTell me if you'd like this summarised differently or in "
+                    "another format."
+                )
+        elif out_of_steps:
             result_text = (
                 "I ran out of steps before I could finish, so this is partial.\n\n"
                 f"What I completed:\n{steps}\n\nAsk me again and I'll pick it up from "
                 "here — narrowing the request to one part will usually get it done in "
                 "a single go."
-            )
-        elif findings:
-            body = "\n\n".join(f.strip()[:1200] for f in findings[-3:])
-            result_text = (
-                "Here are the results of the work you asked for. I wasn't able to "
-                f"write them up properly, so this is the raw output:\n\n{body}\n\n"
-                "Tell me if you'd like this summarised or in a different format."
             )
         else:
             result_text = (
@@ -1609,6 +1628,311 @@ def build_graph() -> StateGraph:
 # iterations, so this is a real budget rather than an arbitrary number: a handful
 # of steps at this size stays well within the context window.
 RESULT_CHAR_LIMIT = 4000
+
+
+# ─── Rendering results for the person who asked ──────────────────────────────
+#
+# Two paths send a reply the model did not write: wrap_up, when it stays silent,
+# and finalize's fallback behind it. Both pasted action_results into the mail
+# verbatim. For an mcp_call that entry is json.dumps of the entire sandbox
+# envelope, which on this deployment reads:
+#
+#   {"stdout": "[{\"Region\":\"North\",\"Total Revenue (Q3)\":146050, ...}]\n",
+#    "stderr": "", "returncode": 0,
+#    "files": [{"name": "...xlsx", "file_id": "sandbox:270a9673d7b4",
+#               "size_bytes": 5478, "note": "Pass this file_id as ..."}]}
+#
+# On 2026-08-10 a buyer who asked for Q3 revenue by region was sent that, twice
+# in one message and undeduplicated, with the figures they wanted present only
+# as backslash-escaped JSON inside it. The note is addressed to the model, the
+# file_id is a handle to a process that has since exited, and returncode and
+# stderr describe machinery the buyer is not operating.
+#
+# Everything the request asked for is in stdout, and the agent prints it there
+# as JSON records. So parse those and lay them out as a table. The rest of the
+# envelope is internal and is never emitted.
+
+# Keys are taken exactly as the sandbox prints them. They arrive already
+# readable — "Total Revenue (Q3)", "QoQ Growth (%)" — and an earlier draft that
+# title-cased them turned the second into "Qoq Growth (%)". The code that wrote
+# the header is not better at naming the column than the code that computed it.
+
+# Envelope fields that must never reach a buyer, checked as a last line of
+# defence over anything about to be sent.
+_INTERNAL_MARKERS = ("file_id", "sandbox:", '"note"', '"stderr"', '"returncode"', "size_bytes")
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"')\]]+")
+
+# Pulls stdout out of an envelope that json.loads cannot take. Results are cut
+# to 2000 characters before they are stored, so any run printing more than that
+# leaves invalid JSON behind — the common case for a large table, and precisely
+# when the buyer most needs it rendered rather than dumped.
+_STDOUT_FIELD = re.compile(r'"stdout"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+
+def _unescape(fragment: str) -> str:
+    """Decode a JSON string body that may have been truncated mid-value."""
+    try:
+        return json.loads(f'"{fragment}"')
+    except ValueError:
+        # Truncation can sever a trailing escape. Drop it and decode the rest by
+        # hand rather than losing the whole payload to one broken character.
+        cleaned = fragment.rstrip("\\")
+        for esc, real in (("\\n", "\n"), ("\\t", "\t"), ("\\r", "\r"),
+                          ('\\"', '"'), ("\\/", "/"), ("\\\\", "\\")):
+            cleaned = cleaned.replace(esc, real)
+        return cleaned
+
+
+def _json_values(text: str) -> list:
+    """Every complete JSON array or object embedded in `text`, in order."""
+    found: list = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] not in "[{":
+            i += 1
+            continue
+        depth, in_str, esc, j = 0, False, False, i
+        while j < n:
+            c = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif c == "\\":
+                    esc = True
+                elif c == '"':
+                    in_str = False
+            elif c == '"':
+                in_str = True
+            elif c in "[{":
+                depth += 1
+            elif c in "]}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j < n and depth == 0:
+            try:
+                found.append(json.loads(text[i:j + 1]))
+            except ValueError:
+                pass
+            i = j + 1
+        else:
+            i += 1  # unbalanced — a truncated tail, nothing to salvage here
+    return found
+
+
+def _as_records(value: Any) -> list[dict]:
+    """`value` as a list of row dicts, or [] if it is not tabular."""
+    if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+        return value
+    if isinstance(value, dict) and value and all(isinstance(v, dict) for v in value.values()):
+        # {"North": {...}, "South": {...}} — the outer key is the row label.
+        return [{"Item": k, **v} for k, v in value.items()]
+    return []
+
+
+def _cell(value: Any) -> str:
+    """One value as the buyer should read it.
+
+    Rounded to two decimals because that is what the figures are: money and
+    percentages. 154.8780487805 is the division, not the answer.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            d = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return str(value)
+        if d == d.to_integral_value():
+            return f"{d.quantize(Decimal(1)):,}"
+        return f"{d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
+    return str(value)
+
+
+def _markdown_table(records: list[dict]) -> str:
+    """Records as a markdown table.
+
+    Markdown because the mail is rendered with the tables extension before it is
+    sent, so this arrives as a real table in the buyer's client and still reads
+    as one for anything that shows the plain text.
+    """
+    columns: list[str] = []
+    for row in records:
+        for key in row:
+            if key not in columns:
+                columns.append(str(key))
+    if not columns:
+        return ""
+
+    header = "| " + " | ".join(columns) + " |"
+    rule = "| " + " | ".join("---" for _ in columns) + " |"
+    body = [
+        "| " + " | ".join(_cell(row.get(c)) for c in columns) + " |"
+        for row in records
+    ]
+    return "\n".join([header, rule, *body])
+
+
+def _render_result(raw: str) -> str:
+    """One action result as buyer-facing text, or "" if it holds nothing for them."""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    text = raw.strip()
+
+    # Internal hand-backs are addressed to the model, not to the requester.
+    if text.startswith("DELIVERABLE CHECK"):
+        return ""
+
+    # Where the file went is delivery, not findings. _delivered_file_line renders
+    # it once, at the end, as a sentence. Letting it through here as well is what
+    # put the SharePoint URL in the reply twice.
+    if text.startswith(("Uploaded ", "SUCCESS: Wrote", "Appended ")):
+        return ""
+
+    # A sandbox envelope: everything worth sending is in stdout.
+    stdout, complete = None, True
+    if text.startswith("{"):
+        parsed = None
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and (
+            "stdout" in parsed or "returncode" in parsed or "files" in parsed
+        ):
+            stdout = str(parsed.get("stdout") or "")
+        elif parsed is None:
+            m = _STDOUT_FIELD.search(text)
+            if m:
+                stdout, complete = _unescape(m.group(1)), False
+
+    if stdout is not None:
+        return _render_stdout(stdout, complete=complete)
+
+    # Not an envelope, and written for a person already — but only forwarded once
+    # it is clear it carries no machinery.
+    if any(marker in text for marker in _INTERNAL_MARKERS):
+        return ""
+    return text
+
+
+def _render_stdout(stdout: str, *, complete: bool = True) -> str:
+    """Printed output as a table where it is tabular, and as prose where it is not."""
+    stdout = (stdout or "").strip()
+    if not stdout:
+        return ""
+
+    # Rows arrive two ways: as one JSON array, and — when the result was cut at
+    # 2000 characters and the array lost its closing bracket — as the individual
+    # objects that survived inside it. Salvaging those is the difference between
+    # a short table and a wall of raw JSON, and truncation is exactly the case
+    # where the output was big enough to need a table.
+    values = _json_values(stdout)
+    groups: list[list[dict]] = []
+    loose: list[dict] = []
+    consumed: list = []
+    for value in values:
+        records = _as_records(value)
+        if records:
+            if loose:
+                groups.append(loose)
+                loose = []
+            groups.append(records)
+            consumed.append(value)
+        elif isinstance(value, dict) and value and not any(
+            isinstance(v, (dict, list)) for v in value.values()
+        ):
+            loose.append(value)
+            consumed.append(value)
+    if loose:
+        groups.append(loose)
+
+    tables = [t for t in (_markdown_table(g) for g in groups) if t]
+    if not tables:
+        # Nothing tabular — the print statements themselves are the finding.
+        return "" if any(m in stdout for m in _INTERNAL_MARKERS) else stdout
+
+    # Prose printed alongside the records is kept, minus the records themselves.
+    leftover = stdout
+    for value in consumed:
+        leftover = leftover.replace(json.dumps(value, separators=(",", ":")), " ")
+    commentary = "\n".join(
+        line.strip() for line in leftover.splitlines()
+        if line.strip() and not line.strip().lstrip(",").startswith(("[", "{"))
+    ).strip()
+
+    parts = [p for p in (commentary, *tables) if p]
+    if not complete:
+        # Say so. A table that silently lost its last rows is the failure this
+        # codebase already knows by name: confident, wrong, and invisible.
+        parts.append(
+            "_(The analysis output was longer than I can quote in full, so this "
+            "table may be missing its last rows — the file has all of them.)_"
+        )
+    return "\n\n".join(parts)
+
+
+def _buyer_readable(results: list, limit: int = 3) -> str:
+    """The findings in `results`, rendered for the person who asked.
+
+    Deduplicated: the agent re-runs its analysis after a hand-back, so the same
+    table is produced two and three times in a run. The buyer wants it once.
+    """
+    rendered: list[str] = []
+    for raw in results or []:
+        block = _render_result(raw)
+        if block and block not in rendered:
+            rendered.append(block)
+    return "\n\n".join(rendered[-limit:])
+
+
+def _delivered_file_line(results: list) -> str:
+    """A one-line pointer to the file that was actually delivered, if there is one."""
+    for raw in reversed([r for r in (results or []) if isinstance(r, str)]):
+        if not raw.startswith(("Uploaded ", "SUCCESS: Wrote")):
+            continue
+        match = _URL_IN_TEXT.search(raw)
+        if not match:
+            continue
+        where = "OneDrive" if "OneDrive" in raw else "SharePoint"
+        name = ""
+        if raw.startswith("Uploaded ") and " to " in raw:
+            name = raw[len("Uploaded "):raw.index(" to ")].strip()
+        subject = f"The file ({name})" if name else "The file"
+        return f"{subject} is on {where}: {match.group(0)}"
+
+    # A share link created in its own step, rather than the upload's own URL.
+    for raw in reversed([r for r in (results or []) if isinstance(r, str)]):
+        if not raw.startswith("{"):
+            continue
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("link"):
+            return f"Shareable link: {obj['link']}"
+    return ""
+
+
+def _compose_reply(state: "AgentState") -> str:
+    """A reply built from the results, for when the model will not write one."""
+    body = _buyer_readable(state.action_results)
+    if not body:
+        return ""
+    parts = ["Here are the results you asked for.", "", body]
+    link = _delivered_file_line(state.action_results)
+    if link:
+        parts += ["", link]
+    parts += [
+        "",
+        "Tell me if you'd like this broken down differently, or any of it "
+        "expanded on.",
+    ]
+    return "\n".join(parts)
 
 
 def _fmt_result(result: str) -> str:
