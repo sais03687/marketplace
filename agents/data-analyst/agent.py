@@ -727,6 +727,31 @@ def route_after_reasoning(state: AgentState) -> str:
         # the second visit even if the model leaves it empty again.
         final = state.analysis.get("final_response") or {}
         text = (final.get("text") or "").strip() if isinstance(final, dict) else ""
+
+        # completed=true used to be honoured on the spot, which threw away any
+        # action the model had asked for in the same breath. On 2026-08-10 a run
+        # built the workbook, returned completed=true with action=drive_upload and
+        # no reply text, and the upload was discarded: the file never reached
+        # SharePoint, nothing was attached, and the requester got the
+        # partial-progress fallback listing "execute_python" as the work.
+        #
+        # A model claiming to be finished while still asking for an action, and
+        # having written no reply, is contradicting itself — and the action is the
+        # more reliable half, because it is the deliverable. So run it.
+        #
+        # Gated on empty text so a genuine completion that carries a summary is
+        # never hijacked by a stale action, and on the step budget so this cannot
+        # push a run past its ceiling.
+        pending = state.analysis.get("action") or {}
+        pending_type = pending.get("type", "none") if isinstance(pending, dict) else "none"
+        if not text and pending_type != "none" and state.iteration < state.max_iterations:
+            print(
+                f"[agent] completed=true but '{pending_type}' has not run and no reply "
+                "was written — executing it rather than calling the task done",
+                flush=True,
+            )
+            return "execute_action"
+
         if not text and state.actions_taken and not state.context.get("_wrapping_up"):
             print(
                 "[agent] completed=true but no reply text — one pass to write it",
