@@ -86,6 +86,20 @@ def set_file_resolver(fn) -> None:
     _file_resolver = fn
 
 
+# Checks the summary about to be sent against the files actually produced, and
+# returns the figures asserted in one but absent from the other. Platform-side
+# for the same reason as the resolver above: it needs the real bytes, and asking
+# the model whether its own file is complete re-asks the question that produced
+# the file.
+_deliverable_verifier = None
+
+
+def set_deliverable_verifier(fn) -> None:
+    """Called by the adapter with an async fn(summary_text) -> list[str]."""
+    global _deliverable_verifier
+    _deliverable_verifier = fn
+
+
 # Leading bytes that identify the formats this agent uploads. Used to refuse
 # content that decoded successfully but is plainly not the file it claims to be.
 _FILE_SIGNATURES = {
@@ -254,6 +268,16 @@ class AgentState(BaseModel):
     # wrong turn or a retried tool call left nothing for the reply — the chart
     # request on 2026-08-03 used nine and finished with none.
     max_iterations: int = 12
+
+    # Figures the composed reply asserts that the delivered file does not
+    # contain, and how many times we have handed them back. Two attempts, because
+    # a model that has failed to act on the same concrete list twice is not going
+    # to on the third, and the buyer is waiting.
+    deliverable_gaps: list = Field(default_factory=list)
+    verify_attempts: int = 0
+    max_verify_attempts: int = 2
+    # Set once the last attempt has been spent and the gap survived it.
+    deliverable_unfixable: bool = False
 
     # Output
     result: dict = Field(default_factory=dict)
@@ -460,6 +484,7 @@ Produce a JSON response (no markdown fences):
 - Use request_decision when you need the manager's judgment (ambiguous instructions, scope decisions, sensitive data, conflicting data). Do NOT use it for routine tasks you can handle yourself.
 - Do NOT use mcp_call/python-sandbox for simple calculations. You can do arithmetic (averages, percentages, growth rates) directly in your reasoning. Only use mcp_call for complex data processing that truly requires code execution.
 - The python-sandbox has its own private filesystem that nobody else can see, and it is thrown away when the run ends. Writing a file there does not put it on SharePoint and does not deliver it to anyone. If you were asked to create or update a file, you must finish with drive_upload, excel_write or excel_append — otherwise the work does not exist as far as the person who asked is concerned, and saying you have done it would be false.
+- The file you produce is the deliverable, not a sketch of it. It must stand on its own and cover everything the request asked for — someone opening it will not have your reply next to them. If your reply states a figure, a breakdown or a comparison, the file has to contain it too; a summary that is richer than the file it points at means the file is unfinished. The platform reads your file and checks this, and will hand back anything you left out.
 - ALWAYS use drive_list FIRST to browse available files before using drive_search. SharePoint search indexing can be delayed, so drive_search may return empty even when files exist. Use drive_list to discover files, then excel_read or drive_read_text to read their contents.
 - When asked about data in a spreadsheet, use drive_list to find .xlsx files, then excel_list_sheets to discover worksheet names, then excel_read to read the data. Do NOT assume the sheet is named "Sheet1" — always use excel_list_sheets first. You can do math and analysis on the returned values.
 - NEVER return action=none when responding to an email. Always reply_email with a helpful response, even if you cannot find the data. Explain what you searched, what you found (or didn't find), and what you recommend as next steps.
@@ -685,7 +710,7 @@ def route_after_reasoning(state: AgentState) -> str:
     decision that needs to persist is made in reason_and_act or wrap_up.
     """
     if not isinstance(state.analysis, dict):
-        return "finalize"
+        return "verify_deliverables"
 
     if state.analysis.get("completed", False):
         # Completed, but did it actually write the answer?
@@ -708,11 +733,11 @@ def route_after_reasoning(state: AgentState) -> str:
                 flush=True,
             )
             return "wrap_up"
-        return "finalize"
+        return "verify_deliverables"
 
     # Already written the closing reply — nothing follows it.
     if state.context.get("_wrapping_up"):
-        return "finalize"
+        return "verify_deliverables"
 
     # Out of steps, but not out of things to say. Going straight to finalize hands
     # it whatever final_response exists, and mid-task there is none — the requester
@@ -738,7 +763,7 @@ def route_after_reasoning(state: AgentState) -> str:
 
     if state.none_streak > 2:
         print(f"[agent] action=none {state.none_streak} turns running — finalizing", flush=True)
-    return "finalize"
+    return "verify_deliverables"
 
 
 async def execute_action(state: AgentState) -> AgentState:
@@ -1096,6 +1121,98 @@ def route_after_execution(state: AgentState) -> str:
     return "reason_and_act"
 
 
+async def verify_deliverables(state: AgentState) -> AgentState:
+    """Compare the reply about to be sent against the files it describes.
+
+    The failure this exists for is not the agent running out of room — it is the
+    agent believing it has finished. On 2026-08-10 a run wrote a summary quoting
+    seven figures, uploaded a workbook containing three, and stopped, having used
+    2 of 12 iterations. Nothing was hard about finishing; it never looked.
+
+    So the platform looks, and hands back the specific figures rather than a
+    verdict. "Your file is missing 152.94 and 16.50%" is actionable in one step;
+    "your file is incomplete" invites the model to disagree.
+    """
+    state.deliverable_gaps = []
+
+    if _deliverable_verifier is None:
+        return state
+
+    analysis = state.analysis if isinstance(state.analysis, dict) else {}
+    final = analysis.get("final_response") or {}
+    text = (final.get("text") or "").strip() if isinstance(final, dict) else ""
+    if not text:
+        return state  # nothing asserted yet; finalize's own fallback covers this
+
+    try:
+        missing = await _deliverable_verifier(text)
+    except Exception as e:
+        # A broken check must never hold up a correct answer.
+        print(f"[agent] Deliverable check failed to run ({e}) — sending as-is", flush=True)
+        return state
+
+    if not missing:
+        return state
+
+    state.deliverable_gaps = list(missing)
+
+    if state.verify_attempts >= state.max_verify_attempts:
+        print(
+            f"[agent] Deliverable check: still missing {missing} after "
+            f"{state.verify_attempts} attempts — sending with a note",
+            flush=True,
+        )
+        state.deliverable_unfixable = True
+        return state
+
+    state.verify_attempts += 1
+
+    # wrap_up sets this so route_after_reasoning knows the closing reply is
+    # written and nothing follows it. Handing back without clearing it sends the
+    # agent to reason_and_act, which reads the flag and returns here immediately
+    # — a loop that burns both attempts without the file ever being touched.
+    # Clearing it is what makes the hand-back an acting pass rather than a
+    # formality, and it matters most here: the approved-upload path is exactly
+    # where a summary and a file diverge.
+    state.context.pop("_wrapping_up", None)
+
+    figures = ", ".join(missing[:8])
+    state.actions_taken.append(f"Deliverable check: {len(missing)} figure(s) missing from the file")
+    state.action_results.append(
+        "DELIVERABLE CHECK — the platform read the file you produced and compared "
+        f"it against the reply you wrote. These figures appear in your reply but "
+        f"not in the file: {figures}.\n"
+        "The file is the deliverable, so it has to carry everything the reply "
+        "claims. Rebuild it with those figures included — write it to /tmp/output/ "
+        "again and upload the new file_id — then write the reply. This is a real "
+        "gap the platform measured, not a suggestion."
+    )
+    print(
+        f"[agent] Deliverable check: handing back {len(missing)} missing figure(s) "
+        f"(attempt {state.verify_attempts}/{state.max_verify_attempts})",
+        flush=True,
+    )
+    return state
+
+
+def route_after_verify(state: AgentState) -> str:
+    """Send the agent back to fix its file, if it has anything left to fix it with.
+
+    `deliverable_unfixable` rather than a count comparison: the node leaves
+    verify_attempts at the maximum both when it has just spent the last attempt
+    (go back and use it) and when that attempt has already failed (give up), so
+    the count alone cannot separate them.
+    """
+    if not state.deliverable_gaps or state.deliverable_unfixable:
+        return "finalize"
+    if state.iteration >= state.max_iterations:
+        # Out of steps. Deliver the work and say it ran out — no reserve budget,
+        # because "how many extra steps" has no principled answer.
+        print("[agent] Deliverable gap found but out of steps — delivering as-is", flush=True)
+        return "finalize"
+    return "reason_and_act"
+
+
 async def finalize(state: AgentState) -> AgentState:
     """Build the final result dict that the adapter will act on."""
     # Cleared here rather than in the router that reads it, because this is a node
@@ -1161,6 +1278,25 @@ async def finalize(state: AgentState) -> AgentState:
         print(
             f"[agent] No final text after real work (out_of_steps={out_of_steps}) "
             "— sending a partial-progress reply",
+            flush=True,
+        )
+
+    # A gap the agent could not close. Say so, at the end and after the work —
+    # the requester wanted an answer, not a status report, and a caveat that
+    # leads is the shape of the reply that got complained about on 2026-08-10.
+    if state.deliverable_gaps and result_text.strip():
+        figures = ", ".join(str(g) for g in state.deliverable_gaps[:8])
+        if state.iteration >= state.max_iterations:
+            why = "I ran out of steps before I could get them in"
+        else:
+            why = "I could not get them into the file"
+        result_text = (
+            f"{result_text.rstrip()}\n\n---\n"
+            f"One thing to flag: the figures above are right, but the attached file "
+            f"is missing {figures} — {why}. Ask me and I'll send a corrected file."
+        )
+        print(
+            f"[agent] Delivering with a deliverable-gap note ({len(state.deliverable_gaps)} figures)",
             flush=True,
         )
 
@@ -1337,6 +1473,7 @@ def build_graph() -> StateGraph:
     graph.add_node("reason_and_act", reason_and_act)
     graph.add_node("execute_action", execute_action)
     graph.add_node("wrap_up", wrap_up)
+    graph.add_node("verify_deliverables", verify_deliverables)
     graph.add_node("finalize", finalize)
     graph.add_node("maybe_contribute", maybe_contribute)
 
@@ -1347,8 +1484,16 @@ def build_graph() -> StateGraph:
     # After executing an action, either finalize (if it was an approved blocked action)
     # or loop back to reasoning for the next step.
     graph.add_conditional_edges("execute_action", route_after_execution)
-    # Fixed edge: the closing pass cannot lead anywhere but the end.
-    graph.add_edge("wrap_up", "finalize")
+    # Every route to finalize passes through the deliverable check first, so a
+    # reply cannot describe a file the file does not contain.
+    #
+    # This used to be a fixed wrap_up → finalize edge, so the closing pass could
+    # not loop back into a write it had just executed. The check can now send it
+    # back, which is the point — but it is bounded by max_verify_attempts, and it
+    # only fires on a gap the platform measured in the file itself, so it cannot
+    # become the open-ended loop the fixed edge was guarding against.
+    graph.add_edge("wrap_up", "verify_deliverables")
+    graph.add_conditional_edges("verify_deliverables", route_after_verify)
     graph.add_edge("finalize", "maybe_contribute")
     graph.add_edge("maybe_contribute", END)
 
@@ -1399,6 +1544,7 @@ async def run_agent(
     mcp_fn=None,
     graph_fn=None,
     file_resolver_fn=None,
+    verify_fn=None,
     thread_id: str = "",
 ) -> dict:
     """Entry point called by the platform adapter for every incoming message.
@@ -1431,6 +1577,8 @@ async def run_agent(
     # Sandbox handles resolve through the adapter; see _resolve_upload_content.
     if file_resolver_fn is not None:
         set_file_resolver(file_resolver_fn)
+    if verify_fn is not None:
+        set_deliverable_verifier(verify_fn)
 
     # Store functions in module-level registry (not in state — can't be serialized)
     _thread_fns[tid] = {
@@ -1493,6 +1641,7 @@ async def resume_agent(
     mcp_fn=None,
     graph_fn=None,
     file_resolver_fn=None,
+    verify_fn=None,
 ) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
 
@@ -1520,6 +1669,8 @@ async def resume_agent(
     # Sandbox handles resolve through the adapter; see _resolve_upload_content.
     if file_resolver_fn is not None:
         set_file_resolver(file_resolver_fn)
+    if verify_fn is not None:
+        set_deliverable_verifier(verify_fn)
     if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):
         _thread_fns[thread_id] = {
             "contribute_fn": contribute_fn,

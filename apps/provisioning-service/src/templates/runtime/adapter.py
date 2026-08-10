@@ -17,6 +17,7 @@ import asyncio
 import contextvars
 from typing import Any
 from pathlib import Path
+from decimal import Decimal, InvalidOperation
 
 import httpx
 import uvicorn
@@ -347,6 +348,173 @@ def resolve_sandbox_file(ref: str) -> bytes | None:
     """Bytes for a handle from _register_sandbox_files, or None if it is not one."""
     entry = _SANDBOX_FILES.get((ref or "").strip())
     return entry["bytes"] if entry else None
+
+
+# ─── Deliverable verification ────────────────────────────────────────────────
+#
+# An agent writes two things: a summary and a file. Nothing made them agree.
+# On 2026-08-10 a run sent a summary quoting seven figures alongside a workbook
+# containing three of them, having used 2 of its 12 iterations — it was not out
+# of resources, it simply never compared the two and assumed it was done.
+#
+# So the platform compares them, because it can: it holds the bytes (they are
+# handles now, not model context) and the sandbox already has the parsers. The
+# model is never asked whether its own file is complete — that is the same
+# question that produced the file.
+#
+# The check is deliberately one-directional and numeric. A figure asserted in
+# the summary should be findable in the file that backs it. The reverse is not
+# a defect (a workbook may hold detail the summary omits), and prose is not
+# checkable this way at all.
+
+_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
+# A bare integer under this is nearly always a count, an ordinal, a step number
+# or a month — "3 regions", "top 5", "Q3". Requiring a decimal point or real
+# magnitude is what keeps this from firing on every sentence.
+_SUBSTANTIVE_MIN = 100
+
+
+def _normalise_number(raw: str) -> Decimal | None:
+    try:
+        return Decimal(raw.replace(",", ""))
+    except (InvalidOperation, AttributeError):
+        return None
+
+
+def _summary_figures(text: str) -> list[tuple[str, Decimal]]:
+    """Figures a summary asserts, as (as-written, value), skipping incidentals."""
+    out: list[tuple[str, Decimal]] = []
+    seen: set[Decimal] = set()
+    for m in _NUMBER_RE.finditer(text or ""):
+        raw = m.group(0).rstrip(".,")
+        val = _normalise_number(raw)
+        if val is None:
+            continue
+        has_decimal = "." in raw
+        # Years read as substantive by magnitude but are almost never a cell
+        # value. Only skip when bare — "2026" is a year, "2,026.50" is money.
+        if not has_decimal and "," not in raw and 1900 <= val <= 2100:
+            continue
+        if not has_decimal and abs(val) < _SUBSTANTIVE_MIN:
+            continue
+        if val in seen:
+            continue
+        seen.add(val)
+        out.append((raw, val))
+    return out
+
+
+def _file_figures(blob: str) -> list[Decimal]:
+    vals: list[Decimal] = []
+    for m in _NUMBER_RE.finditer(blob or ""):
+        val = _normalise_number(m.group(0).rstrip(".,"))
+        if val is not None:
+            vals.append(val)
+    return vals
+
+
+def _figure_present(target: Decimal, raw: str, haystack: list[Decimal]) -> bool:
+    """Is `target` in the file, allowing for the rounding a summary applies?
+
+    A summary says £152.94 where the cell holds 152.9382. Comparing exactly
+    would flag every rounded figure, so both sides are rounded to the precision
+    the summary chose to state.
+    """
+    places = len(raw.split(".")[1]) if "." in raw else 0
+    quantum = Decimal(1).scaleb(-places)
+    try:
+        want = target.quantize(quantum)
+    except InvalidOperation:
+        return False
+    for got in haystack:
+        try:
+            if got.quantize(quantum) == want:
+                return True
+        except InvalidOperation:
+            continue
+    return False
+
+
+# Extension → sandbox parser. Anything absent is either read directly (text
+# formats) or unverifiable (images), and unverifiable never counts as a failure.
+_PARSE_TOOLS = {
+    "xlsx": "parse_xlsx",
+    "xlsm": "parse_xlsx",
+    "pdf": "parse_pdf",
+    "docx": "parse_docx",
+}
+_TEXT_EXTS = {"csv", "tsv", "txt", "json", "md"}
+
+
+async def _file_text(name: str, raw: bytes) -> str | None:
+    """Readable content of a delivered file, or None if it cannot be parsed."""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+    if ext in _TEXT_EXTS:
+        try:
+            return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    tool = _PARSE_TOOLS.get(ext)
+    if not tool:
+        return None  # images and unknown formats — nothing to check against
+
+    try:
+        parsed = await call_mcp_tool(
+            "python-sandbox",
+            tool,
+            {"file_content_base64": base64.b64encode(raw).decode()},
+        )
+    except Exception as e:
+        print(f"[adapter] Deliverable check: could not parse {name}: {e}", flush=True)
+        return None
+
+    if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
+        parsed = parsed["result"]
+    if not isinstance(parsed, dict) or parsed.get("error"):
+        return None
+
+    # parse_xlsx returns sheets, the others return text (+ tables for PDF).
+    # Flattening to one blob is enough: the question is only whether a figure
+    # appears somewhere in the file the summary points at.
+    return json.dumps(parsed, default=str)
+
+
+async def verify_deliverables(summary_text: str, file_ids: list[str]) -> list[str]:
+    """Figures the summary asserts that appear in none of the delivered files.
+
+    Empty means consistent — including when there is nothing checkable, which
+    is why a parse failure is silent rather than an accusation.
+    """
+    figures = _summary_figures(summary_text)
+    if not figures or not file_ids:
+        return []
+
+    haystack: list[Decimal] = []
+    checked_any = False
+    for fid in file_ids:
+        entry = _SANDBOX_FILES.get((fid or "").strip())
+        if not entry:
+            continue
+        blob = await _file_text(entry["name"], entry["bytes"])
+        if blob is None:
+            continue
+        checked_any = True
+        haystack.extend(_file_figures(blob))
+
+    if not checked_any:
+        return []
+
+    missing = [raw for raw, val in figures if not _figure_present(val, raw, haystack)]
+    if missing:
+        print(
+            f"[adapter] Deliverable check: {len(missing)} of {len(figures)} figures "
+            f"in the summary are absent from the file(s): {', '.join(missing[:8])}",
+            flush=True,
+        )
+    return missing
 
 
 async def call_mcp_tool(server_type: str, tool_name: str, arguments: dict) -> dict:
@@ -3197,6 +3365,8 @@ async def _handle_message(message: str, context: dict):
 
         # Capture files generated by MCP tools (for email attachments)
         _email_captured_files: list[dict] = []
+        # Handles for the same files, scoped to this run, for the deliverable check
+        _run_file_ids: list[str] = []
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
             mcp_result = await call_mcp_tool(server, tool, arguments)
@@ -3217,7 +3387,16 @@ async def _handle_message(message: str, context: dict):
             # Attachment capture above keeps the real bytes — that path is
             # adapter-side and never enters the model's context. This swaps the
             # base64 for a handle in what the *agent* sees.
-            return _register_sandbox_files(mcp_result)
+            registered = _register_sandbox_files(mcp_result)
+            # Remember what this run produced. _SANDBOX_FILES is process-wide and
+            # outlives the run, so verifying against it would check a summary
+            # against a previous request's artefacts.
+            if isinstance(registered, dict):
+                for f in registered.get("files") or []:
+                    fid = f.get("file_id") if isinstance(f, dict) else None
+                    if fid and fid not in _run_file_ids:
+                        _run_file_ids.append(fid)
+            return registered
 
         # Use a unique thread_id for checkpointing (enables interrupt/resume)
         session_key = context.get("session_key", "default")
@@ -3234,6 +3413,7 @@ async def _handle_message(message: str, context: dict):
             thread_id=thread_id,
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
+            verify_fn=lambda text: verify_deliverables(text, list(_run_file_ids)),
         )
 
         if not isinstance(result, dict):
