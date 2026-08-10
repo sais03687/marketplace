@@ -1202,7 +1202,11 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     state.context.pop("_wrapping_up", None)
 
     figures = ", ".join(missing[:8])
-    state.actions_taken.append(f"Deliverable check: {len(missing)} figure(s) missing from the file")
+    # Deliberately NOT appended to actions_taken. finalize's fallback prints that
+    # list to the requester, and on 2026-08-10 a buyer was emailed
+    # "- Deliverable check: 2 figure(s) missing from the file" — an internal
+    # diagnostic, in the reply, describing a gap they had no way to act on.
+    # action_results is the model-facing channel; actions_taken is buyer-facing.
     state.action_results.append(
         "DELIVERABLE CHECK — the platform read the file you produced and compared "
         f"it against the reply you wrote. These figures appear in your reply but "
