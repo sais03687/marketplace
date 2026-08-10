@@ -2134,7 +2134,9 @@ async def _deliver_orphaned_send(approval_id: str, resolution: dict) -> None:
     if status == "EDITED" and resolution.get("resolutionAction"):
         text = resolution["resolutionAction"]
 
-    recipient = payload.get("to") or ""
+    # Already extracted when the pending send was recorded, but re-extracting is
+    # free and means no path into Graph depends on that having been done.
+    recipient = _extract_email(payload.get("to") or "")
     try:
         if payload.get("action") == "reply_email":
             await reply_email(
@@ -2453,14 +2455,20 @@ async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> Non
 
     # Also handle email sends if the resumed agent wants to send an email
     if result.get("action") in ("send_email", "reply_email") and result.get("to"):
+        # Same extraction as the email path below: the agent may hand back a
+        # display-name form, and Graph refuses anything it cannot resolve.
+        teams_recipient = _extract_email(result["to"])
+        if not teams_recipient:
+            print(f"[adapter] Post-resume email skipped: unusable recipient {result['to']!r}", flush=True)
+            return
         try:
             await send_email(
-                to=result["to"],
+                to=teams_recipient,
                 subject=result.get("subject", ""),
                 text=result.get("text", reply_text),
                 thread_id=result.get("thread_id"),
             )
-            print(f"[adapter] Post-resume email sent to {result['to']}", flush=True)
+            print(f"[adapter] Post-resume email sent to {teams_recipient}", flush=True)
         except Exception as e:
             print(f"[adapter] Post-resume email send failed: {e}", flush=True)
 
@@ -2470,9 +2478,26 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
     action = result.get("action", "none")
 
     if action in ("send_email", "reply_email"):
-        recipient = result.get("to") or ctx.get("sender", "")
+        # Extract the bare address. ctx["sender"] is the raw From header, so it
+        # arrives as 'Sai Suram <sai@example.com>', and Graph rejects that:
+        #
+        #   400 ErrorInvalidRecipients — Recipient 'Sai Suram <sai@…>' is not
+        #   resolved. All recipients must be resolved before a message can be
+        #   submitted.
+        #
+        # The first-pass path has always called _extract_email here; this one,
+        # which runs after an approval resumes the graph, did not. So every
+        # approval-gated task did its work, uploaded its file, and then failed to
+        # deliver the result — the buyer approved an action and got nothing back.
+        # Observed on 2026-08-10 on a real Q3 analysis: SharePoint upload
+        # succeeded, reply died with the 400 above.
+        recipient = _extract_email(result.get("to") or ctx.get("sender", ""))
         if not recipient:
-            print(f"[adapter] Cannot deliver email result: no recipient", flush=True)
+            print(
+                f"[adapter] Cannot deliver email result: no usable recipient in "
+                f"{result.get('to') or ctx.get('sender', '')!r}",
+                flush=True,
+            )
             return
 
         try:
@@ -3222,7 +3247,8 @@ async def _handle_message(message: str, context: dict):
             return
 
         if action in ("send_email", "reply_email"):
-            recipient = result.get("to") or context.get("sender", "")
+            # Bare address, for the boundary check below and for Graph itself.
+            recipient = _extract_email(result.get("to") or context.get("sender", ""))
 
             # Refuse before asking, when the answer could not be yes — the same
             # reasoning SHARING_ACTIONS uses in execute_action. Queueing an
@@ -3362,9 +3388,11 @@ async def _handle_message(message: str, context: dict):
                 print(f"[adapter] Attaching {len(_att)} file(s) to email", flush=True)
 
             if action == "send_email":
-                send_to = result.get("to") or context.get("sender", "")
+                # Bare address only — Graph rejects a display-name form with
+                # 400 ErrorInvalidRecipients. See the note in _deliver_email_result.
+                send_to = _extract_email(result.get("to") or context.get("sender", ""))
                 if not send_to:
-                    print("[adapter] send_email skipped: no recipient (to=None)", flush=True)
+                    print("[adapter] send_email skipped: no usable recipient", flush=True)
                     return
                 await send_email(
                     to=send_to,
@@ -3430,7 +3458,7 @@ async def _handle_message(message: str, context: dict):
                 retry_action = retry_result.get("action", "none")
                 print(f"[adapter] Retry returned action={retry_action}", flush=True)
                 if retry_action in ("send_email", "reply_email") and retry_result.get("text"):
-                    recipient = retry_result.get("to") or context.get("sender", "")
+                    recipient = _extract_email(retry_result.get("to") or context.get("sender", ""))
                     retry_thread = retry_result.get("thread_id") or context.get("thread_id")
                     may_send, send_text = await _clear_email_for_sending(
                         draft=retry_result["text"],
