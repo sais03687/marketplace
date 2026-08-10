@@ -1781,6 +1781,20 @@ def _as_records(value: Any) -> list[dict]:
     if isinstance(value, dict) and value and all(isinstance(v, dict) for v in value.values()):
         # {"North": {...}, "South": {...}} — the outer key is the row label.
         return [{"Item": k, **v} for k, v in value.items()]
+    # A grid: the shape excel_read returns, as a header row followed by data
+    # rows. Sheets are read by range rather than by extent, so most of those
+    # rows and columns are empty padding — A1:Z100 of a four-row table is 96
+    # blank rows, and on 2026-08-10 all of them were sent to a buyer.
+    if isinstance(value, list) and len(value) >= 2 and all(isinstance(v, list) for v in value):
+        grid = [[("" if c is None else str(c)).strip() for c in row] for row in value]
+        width = max(len(r) for r in grid)
+        grid = [r + [""] * (width - len(r)) for r in grid]
+        keep = [i for i in range(width) if any(r[i] for r in grid)]
+        grid = [[r[i] for i in keep] for r in grid]
+        grid = [r for r in grid if any(r)]
+        if len(grid) >= 2 and grid[0] and all(grid[0]):
+            headers = grid[0]
+            return [dict(zip(headers, row)) for row in grid[1:]]
     return []
 
 
@@ -1865,6 +1879,24 @@ def _render_result(raw: str) -> str:
     if stdout is not None:
         return _render_stdout(stdout, complete=complete)
 
+    # A tool result that is itself JSON — excel_read's grid, drive_list's file
+    # array, excel_list_sheets' ["Sheet1"]. Render it if it is tabular, and
+    # otherwise say nothing.
+    #
+    # Falling through to "send the text" here was the original bug wearing a
+    # different hat. On 2026-08-10 the composed reply opened with a bare
+    # ["Q3 Revenue Analysis"] and fifty rows of ["", "", "", ...] before it
+    # reached the table the buyer had asked for. JSON is not prose, and a
+    # requester who wanted revenue by region has no use for either.
+    if text.startswith(("[", "{")):
+        for value in _json_values(text):
+            records = _as_records(value)
+            if records:
+                table = _markdown_table(records)
+                if table:
+                    return table
+        return ""
+
     # Not an envelope, and written for a person already — but only forwarded once
     # it is clear it carries no machinery.
     if any(marker in text for marker in _INTERNAL_MARKERS):
@@ -1935,18 +1967,56 @@ def _render_stdout(stdout: str, *, complete: bool = True) -> str:
     return "\n\n".join(parts)
 
 
+def _table_columns(block: str) -> frozenset[str] | None:
+    """The column names of a rendered table, or None if it is not one."""
+    first = block.split("\n", 1)[0]
+    if not first.startswith("|"):
+        return None
+    return frozenset(c.strip() for c in first.strip("|").split("|") if c.strip())
+
+
+# A webUrl column means this table is a directory listing — what drive_list and
+# drive_search return while the agent is finding its way to the data. It is
+# navigation, and it carries raw Drive item IDs. The buyer asked what the
+# numbers are, not which files the agent opened on the way to them.
+_LISTING_COLUMNS = {"weburl", "id", "item_id", "driveid", "parentreference"}
+
+
+def _is_listing(block: str) -> bool:
+    cols = _table_columns(block)
+    return cols is not None and any(c.lower() in _LISTING_COLUMNS for c in cols)
+
+
 def _buyer_readable(results: list, limit: int = 3) -> str:
     """The findings in `results`, rendered for the person who asked.
 
-    Deduplicated: the agent re-runs its analysis after a hand-back, so the same
-    table is produced two and three times in a run. The buyer wants it once.
+    Deduplicated twice over. The agent re-runs its analysis after a hand-back,
+    so an identical table is produced two and three times in a run — and it also
+    reads a sheet back after writing to it, so the reply carried the same
+    figures once without the new column and again with it.
+
+    A table whose columns are contained in a later table's is that same table at
+    an earlier stage, so the later one replaces it. Tables that merely differ
+    are both kept: two different cuts of the data are two findings, not one
+    restated.
     """
     rendered: list[str] = []
     for raw in results or []:
         block = _render_result(raw)
-        if block and block not in rendered:
+        if block and block not in rendered and not _is_listing(block):
             rendered.append(block)
-    return "\n\n".join(rendered[-limit:])
+
+    kept: list[str] = []
+    for i, block in enumerate(rendered):
+        cols = _table_columns(block)
+        if cols is not None and any(
+            (later := _table_columns(other)) is not None and cols < later
+            for other in rendered[i + 1:]
+        ):
+            continue  # superseded by a fuller version of the same table
+        kept.append(block)
+
+    return "\n\n".join(kept[-limit:])
 
 
 def _delivered_file_line(results: list) -> str:
