@@ -67,6 +67,53 @@ llm = ChatOpenAI(
 
 # ─── Load behavioral docs ────────────────────────────────────────────────────
 
+
+# Resolver for sandbox file handles, injected by the platform adapter.
+#
+# Files the sandbox produces are held by the platform and referenced by an id
+# like "sandbox:ab12cd34" rather than passed through this process as base64. The
+# model used to have to copy the whole base64 string into the upload action,
+# which it cannot do reliably — a real run produced 1877 characters, not a valid
+# base64 length, and the upload failed. The `b64 += "=" * (-len(b64) % 4)` that
+# used to live in drive_upload repaired missing padding and could do nothing
+# about truncation.
+_file_resolver = None
+
+
+def set_file_resolver(fn) -> None:
+    """Called by the adapter with a fn mapping a sandbox handle to bytes."""
+    global _file_resolver
+    _file_resolver = fn
+
+
+def _resolve_upload_content(ref: str) -> bytes:
+    """Bytes for an upload, from either a platform handle or inline base64.
+
+    Handles are preferred and are what the sandbox now returns. Inline base64 is
+    still accepted so an agent can upload something it constructed itself.
+    """
+    ref = (ref or "").strip()
+    if not ref:
+        raise ValueError("no content supplied for upload")
+
+    if _file_resolver is not None:
+        resolved = _file_resolver(ref)
+        if resolved is not None:
+            return resolved
+
+    if ref.startswith("sandbox:"):
+        # Looks like a handle but the platform does not know it — usually a stale
+        # id from an earlier run. Say that, rather than failing on a base64 decode
+        # of the word "sandbox".
+        raise ValueError(
+            f"{ref} is not a file the platform is holding. "
+            "Re-create the file and upload the id returned with it."
+        )
+
+    padded = ref + "=" * (-len(ref) % 4)
+    return base64.b64decode(padded)
+
+
 _here = Path(__file__).parent
 _tools_md = (_here / "TOOLS.md").read_text() if (_here / "TOOLS.md").exists() else ""
 _agents_md = (_here / "AGENTS.md").read_text() if (_here / "AGENTS.md").exists() else ""
@@ -303,7 +350,7 @@ Produce a JSON response (no markdown fences):
 | drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
 | drive_read_text | Read content of plain text files (.txt, .csv, .md, .json). Do NOT use for .xlsx files. | item_id |
-| drive_upload | Upload a file to your SharePoint folder. | filename, content_base64, content_type |
+| drive_upload | Upload a file to your SharePoint folder. For a file the sandbox produced, pass its `file_id` as `content_base64` — the platform holds the bytes and swaps them in. Never copy base64 out of a tool result. | filename, content_base64, content_type |
 | drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
 | drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
 | my_drive_share | Same as drive_share, but for a file in your own OneDrive. | item_id, recipients (list of emails), role, message (optional) |
@@ -315,7 +362,7 @@ Produce a JSON response (no markdown fences):
 | my_drive_list | List files in your own OneDrive (separate from the shared SharePoint folder). | subfolder (optional) |
 | my_drive_read | Read a text file from your OneDrive. | item_id |
 | my_drive_search | Search your OneDrive by name/keyword. | query |
-| my_drive_upload | Upload a file to your OneDrive. | filename, content_base64, content_type |
+| my_drive_upload | Upload a file to your OneDrive. Same `file_id` rule as drive_upload. | filename, content_base64, content_type |
 | inbox_list | List messages in your mailbox. | limit (default 10), unread_only (default true) |
 | inbox_read | Read one message in full. | message_id |
 | inbox_search | Search your mailbox. | query, limit (default 10) |
@@ -683,7 +730,7 @@ async def execute_action(state: AgentState) -> AgentState:
             state.actions_taken.append(f"Read file: {item_id[:20]}")
 
         elif action_type == "drive_upload" and _mt:
-            b64 = params.get("content_base64", ""); b64 += "=" * (-len(b64) % 4); content = base64.b64decode(b64)
+            content = _resolve_upload_content(params.get("content_base64", ""))
             filename = params.get("filename", "output.xlsx")
             resp = await _mt.drive_upload(filename, content)
             result_text = f"Uploaded {filename} to SharePoint: {resp.get('webUrl', '')}"
@@ -1199,6 +1246,7 @@ async def run_agent(
     use_fn=None,
     mcp_fn=None,
     graph_fn=None,
+    file_resolver_fn=None,
     thread_id: str = "",
 ) -> dict:
     """Entry point called by the platform adapter for every incoming message.
@@ -1228,6 +1276,9 @@ async def run_agent(
     # provide it.
     if graph_fn is not None and _mt is not None:
         _mt.set_graph_fn(graph_fn)
+    # Sandbox handles resolve through the adapter; see _resolve_upload_content.
+    if file_resolver_fn is not None:
+        set_file_resolver(file_resolver_fn)
 
     # Store functions in module-level registry (not in state — can't be serialized)
     _thread_fns[tid] = {
@@ -1289,6 +1340,7 @@ async def resume_agent(
     use_fn=None,
     mcp_fn=None,
     graph_fn=None,
+    file_resolver_fn=None,
 ) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
 
@@ -1313,6 +1365,9 @@ async def resume_agent(
     # process never restarted — it rewrites the same values run_agent set.
     if graph_fn is not None and _mt is not None:
         _mt.set_graph_fn(graph_fn)
+    # Sandbox handles resolve through the adapter; see _resolve_upload_content.
+    if file_resolver_fn is not None:
+        set_file_resolver(file_resolver_fn)
     if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):
         _thread_fns[thread_id] = {
             "contribute_fn": contribute_fn,

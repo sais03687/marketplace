@@ -8,6 +8,7 @@ Implements the 3-endpoint adapter contract:
 """
 
 import base64
+import uuid
 import json
 import os
 import re
@@ -292,6 +293,60 @@ async def _discover_mcp_tools() -> None:
                         await _aio.sleep(2)
                     else:
                         print(f"[mcp] Failed to discover tools from {integration}: {e}", flush=True)
+
+
+# Files produced by the sandbox, held here rather than shown to the model.
+#
+# The sandbox returns anything written to /tmp/output/ as base64 in the tool
+# result. That result goes into the model's context, and to upload the file the
+# model then had to reproduce the base64 verbatim in the action params. Models
+# cannot reliably copy a few thousand characters: on 2026-08-10 a workbook came
+# back as 1877 characters, which is not a valid base64 length at all, and the
+# upload failed with "Invalid base64-encoded string". agent.py had already grown
+# a `b64 += "=" * (-len(b64) % 4)` line, which repairs missing padding and can do
+# nothing about truncation.
+#
+# It also wasted the run. A 10 KB workbook is ~13k base64 characters, roughly 4k
+# tokens, re-emitted on every attempt — which is a large part of why these runs
+# ended in "ran out of steps".
+#
+# So the bytes stay here and the model gets a handle. It decides *what* to
+# upload; the platform moves it.
+_SANDBOX_FILES: dict[str, dict] = {}
+_SANDBOX_FILE_LIMIT = 32  # per process; oldest evicted, these are single-run artefacts
+
+
+def _register_sandbox_files(mcp_result: Any) -> Any:
+    """Swap base64 file contents in an MCP result for handles the agent can pass on."""
+    if not isinstance(mcp_result, dict) or not mcp_result.get("files"):
+        return mcp_result
+
+    for f in mcp_result["files"]:
+        b64 = f.pop("base64_content", None)
+        if not b64:
+            continue
+        try:
+            raw = base64.b64decode(b64)
+        except Exception as exc:
+            print(f"[adapter] Sandbox file {f.get('name')!r} could not be decoded: {exc}", flush=True)
+            continue
+
+        file_id = f"sandbox:{uuid.uuid4().hex[:12]}"
+        _SANDBOX_FILES[file_id] = {"name": f.get("name", "output"), "bytes": raw}
+        while len(_SANDBOX_FILES) > _SANDBOX_FILE_LIMIT:
+            _SANDBOX_FILES.pop(next(iter(_SANDBOX_FILES)))
+
+        f["file_id"] = file_id
+        f["size_bytes"] = len(raw)
+        f["note"] = "Pass this file_id as content_base64 to upload it. The contents are held by the platform."
+
+    return mcp_result
+
+
+def resolve_sandbox_file(ref: str) -> bytes | None:
+    """Bytes for a handle from _register_sandbox_files, or None if it is not one."""
+    entry = _SANDBOX_FILES.get((ref or "").strip())
+    return entry["bytes"] if entry else None
 
 
 async def call_mcp_tool(server_type: str, tool_name: str, arguments: dict) -> dict:
@@ -2897,7 +2952,9 @@ async def receive_teams_message(request: Request):
                                 "base64": b64,
                                 "contentType": ct_map.get(ext, "application/octet-stream"),
                             })
-            return result
+            # Same as the email path: the capture above keeps the bytes, the
+            # agent gets a handle.
+            return _register_sandbox_files(result)
 
         # Wrap message with Teams-specific instructions so the agent replies
         # in chat style rather than email style.
@@ -2949,6 +3006,7 @@ async def receive_teams_message(request: Request):
             graph_fn=graph_request,
             thread_id=thread_id,
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
+                file_resolver_fn=resolve_sandbox_file,
         )
 
         if not isinstance(result, dict):
@@ -2997,6 +3055,7 @@ async def receive_teams_message(request: Request):
                 graph_fn=graph_request,
                 thread_id=retry_thread_id,
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
+                file_resolver_fn=resolve_sandbox_file,
             )
             # Check if the retry hit an interrupt (blocked action)
             if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
@@ -3155,7 +3214,10 @@ async def _handle_message(message: str, context: dict):
                             "content_base64": b64,
                             "contentType": ct_map.get(ext, "application/octet-stream"),
                         })
-            return mcp_result
+            # Attachment capture above keeps the real bytes — that path is
+            # adapter-side and never enters the model's context. This swaps the
+            # base64 for a handle in what the *agent* sees.
+            return _register_sandbox_files(mcp_result)
 
         # Use a unique thread_id for checkpointing (enables interrupt/resume)
         session_key = context.get("session_key", "default")
@@ -3171,6 +3233,7 @@ async def _handle_message(message: str, context: dict):
             graph_fn=graph_request,
             thread_id=thread_id,
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
+            file_resolver_fn=resolve_sandbox_file,
         )
 
         if not isinstance(result, dict):

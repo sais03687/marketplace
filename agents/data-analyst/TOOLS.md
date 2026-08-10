@@ -30,7 +30,7 @@ does not reach anybody — it silently does nothing and your task stalls.
 | Read a text/CSV/JSON file | `drive_read_text` |
 | Analyse a dataset | `excel_read` or `drive_read_text`, then `mcp_call` with server `python-sandbox` |
 | Create a chart or parse a PDF | `mcp_call` with `python-sandbox` |
-| Put a file on SharePoint | `drive_upload` |
+| Put a file on SharePoint | `drive_upload`, passing the `file_id` the sandbox returned |
 | Update a spreadsheet | `excel_write` (fixed range) or `excel_append` (add rows at the end) |
 | Give someone access to a file | `drive_share` for named people, `drive_create_link` for a link |
 | Check your mail | `inbox_list`, then `inbox_read` for one message, or `inbox_search` |
