@@ -698,7 +698,33 @@ async def wrap_up(state: AgentState) -> AgentState:
         f"[agent] {why} after {len(state.actions_taken)} action(s) — final pass for the reply",
         flush=True,
     )
-    return await reason_and_act(state)
+    state = await reason_and_act(state)
+
+    # One pass used to be the whole of wrap_up, and its output was accepted
+    # whatever it was. On 2026-08-10 the model answered this pass with
+    # action=none and an empty final_response.text on every run, so finalize's
+    # fallback fired and the buyer was emailed a list of internal steps instead
+    # of their answer — twice in one thread, the second time after they had
+    # replied "Send me the data and the summary."
+    #
+    # So don't accept silence. Sample once more; models fail this
+    # non-deterministically and a second attempt is cheap next to a wasted run.
+    if _reply_text_of(state):
+        return state
+
+    print("[agent] wrap_up produced no reply text — one more attempt", flush=True)
+    state = await reason_and_act(state)
+    if not _reply_text_of(state):
+        print("[agent] wrap_up still silent — composing the reply from results", flush=True)
+
+    return state
+
+
+def _reply_text_of(state: AgentState) -> str:
+    """The reply the model has written so far, if any."""
+    analysis = state.analysis if isinstance(state.analysis, dict) else {}
+    final = analysis.get("final_response") or {}
+    return (final.get("text") or "").strip() if isinstance(final, dict) else ""
 
 
 def route_after_reasoning(state: AgentState) -> str:
@@ -1280,6 +1306,18 @@ async def finalize(state: AgentState) -> AgentState:
     # always ignore an instruction — say so rather than returning nothing. Someone
     # is waiting on an answer, and "I got partway" beats no answer at all.
     if not result_text.strip() and state.actions_taken:
+        # This used to list actions_taken — the *names* of the steps ("MCP
+        # python-sandbox/execute_python"), which tell the requester nothing about
+        # their question. What they asked for is in action_results: the computed
+        # output. So lead with the findings and keep the step names out of it.
+        #
+        # Internal observations are filtered: a hand-back from the deliverable
+        # check is a message to the model, not to the buyer.
+        findings = [
+            r for r in state.action_results[-6:]
+            if isinstance(r, str) and r.strip()
+            and not r.startswith("DELIVERABLE CHECK")
+        ]
         steps = "\n".join(f"- {a}" for a in state.actions_taken[-6:])
         # Say what is actually known, which is only that no summary was written.
         #
@@ -1296,6 +1334,13 @@ async def finalize(state: AgentState) -> AgentState:
                 f"What I completed:\n{steps}\n\nAsk me again and I'll pick it up from "
                 "here — narrowing the request to one part will usually get it done in "
                 "a single go."
+            )
+        elif findings:
+            body = "\n\n".join(f.strip()[:1200] for f in findings[-3:])
+            result_text = (
+                "Here are the results of the work you asked for. I wasn't able to "
+                f"write them up properly, so this is the raw output:\n\n{body}\n\n"
+                "Tell me if you'd like this summarised or in a different format."
             )
         else:
             result_text = (
