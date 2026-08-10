@@ -337,7 +337,8 @@ export async function spawnCustomAgent(
       agentEmail: env.AGENT_EMAIL,
       agentId: env.AGENT_ID,
       gatewayUrl: `http://127.0.0.1:${hostPort}`,
-      hooksToken: "",
+      // Omitted so startPoller derives it. Passing "" here dated from when the
+      // gateway had no authentication, and it silently defeated the derivation.
       marketplaceUrl: env.MARKETPLACE_URL || config.approvalWebhookUrl || "http://localhost:3002",
       outlookEmail: env.WORKSPACE_EMAIL || env.AGENT_EMAIL,
     });

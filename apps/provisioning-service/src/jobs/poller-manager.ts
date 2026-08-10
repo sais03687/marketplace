@@ -188,8 +188,14 @@ export function startPoller(opts: PollerOpts): ChildProcess {
   const pollAddress = opts.outlookEmail || opts.agentEmail;
   const baseEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
+    // `||`, not `??`. custom-runner passes hooksToken: "" — a leftover from when
+    // the gateway was unauthenticated — and ?? only falls through on null or
+    // undefined, so an empty string counted as a real token. The poller then
+    // presented nothing, the container rejected it, and every inbound email died
+    // with "[fwd] Gateway: 401". Caught by sending the agent a real email; every
+    // synthetic test had passed because I supplied the token by hand.
     OPENCLAW_HOOKS_TOKEN:
-      opts.hooksToken ?? hooksTokenFor(opts.deploymentId, process.env.PROVISIONING_SECRET || ""),
+      opts.hooksToken || hooksTokenFor(opts.deploymentId, process.env.PROVISIONING_SECRET || ""),
     POLLER_GATEWAY_URL: opts.gatewayUrl,
     MARKETPLACE_URL: opts.marketplaceUrl,
     DEPLOYMENT_ID: opts.deploymentId,
