@@ -1045,6 +1045,65 @@ export function startProxyServer() {
       return;
     }
 
+    // Push a changed approval policy into a running container.
+    //
+    // The web app used to POST the container's /internal/approval-policy
+    // directly, using deployment.containerName — which is "http://localhost:32793".
+    // That address means the VPS only. The web app runs on Vercel, where
+    // localhost is Vercel's own loopback and nothing is listening, and the call
+    // was wrapped in .catch(() => {}). So it failed every time, silently, and
+    // dashboard policy changes never reached a running agent: they took effect
+    // at the next provision, or not at all.
+    //
+    // The buyer saw the new policy on the settings page either way, which is the
+    // dangerous half. Someone tightening "never" to "always" after a scare was
+    // told it had been applied while the agent carried on unsupervised.
+    //
+    // Same shape as forward-resolve above, for the same reason: this service can
+    // reach the container and the web app cannot.
+    if (req.method === "POST" && req.url === "/internal/forward-policy") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const { containerName, policy } = JSON.parse(body) as {
+            containerName?: string;
+            policy?: Record<string, unknown>;
+          };
+          if (!containerName || !policy || Object.keys(policy).length === 0) {
+            return send(res, 400, { error: "containerName and a non-empty policy required" });
+          }
+
+          const containerUrl = containerName.startsWith("http")
+            ? containerName
+            : `http://${containerName}:4100`;
+
+          const fwdResp = await fetch(`${containerUrl}/internal/approval-policy`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-deployment-token": config.approvalWebhookToken,
+            },
+            body: JSON.stringify(policy),
+          });
+
+          const fwdBody = await fwdResp.text();
+          console.log(
+            `[forward-policy] ${JSON.stringify(policy)} → ${containerUrl} → ${fwdResp.status}`,
+          );
+          send(res, fwdResp.status, fwdBody ? JSON.parse(fwdBody) : { forwarded: true });
+        } catch (err: any) {
+          console.error("[forward-policy] Error:", err.message);
+          send(res, 502, { error: `Container unreachable: ${err.message}` });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/teams-install") {
       let body = "";
       req.on("data", (chunk: string) => { body += chunk; });

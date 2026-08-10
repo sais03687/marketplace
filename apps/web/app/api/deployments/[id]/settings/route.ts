@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { jsonSuccess, parseBody, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
+import { pushApprovalPolicy } from "@/lib/approval-policy";
 
 const autonomyConfigSchema = z
   .object({
@@ -56,37 +57,38 @@ export async function PATCH(
     data: updateData,
   });
 
-  // Hot-reload approval policy into the running container (best-effort).
+  // Push the changed approval policy into the running container.
+  //
+  // This used to POST deployment.containerName directly — "http://localhost:32793",
+  // an address that means the VPS. This route runs on Vercel, where localhost is
+  // Vercel's own loopback, so the call could never arrive; and it was wrapped in
+  // .catch(() => {}), so nobody ever found out. The settings page reported
+  // success while the running agent kept the old policy until its next provision.
+  //
+  // A policy that says "always ask" on screen and "never ask" in the container is
+  // the wrong way round to be silent about, so the result is now reported.
+  let policyApplied: boolean | undefined;
   if (data.autonomyConfig && deployment.containerName) {
-    try {
-      const mergedAc = updateData.autonomyConfig as Record<string, unknown> | undefined;
-      // Write approval_policy.json via the adapter's internal API.
-      {
-        const ac = data.autonomyConfig;
-        const override: Record<string, unknown> = {};
-        if (ac.approvalPolicy) override.policy = ac.approvalPolicy;
-        if (typeof ac.approvalRiskThreshold === "number")
-          override.riskThreshold = ac.approvalRiskThreshold;
-        if (Array.isArray(ac.autoApproveList))
-          override.autoApprove = ac.autoApproveList;
-        if (Array.isArray(ac.requireApprovalList))
-          override.requireApproval = ac.requireApprovalList;
+    const ac = data.autonomyConfig;
+    const override: Record<string, unknown> = {};
+    if (ac.approvalPolicy) override.policy = ac.approvalPolicy;
+    if (typeof ac.approvalRiskThreshold === "number")
+      override.riskThreshold = ac.approvalRiskThreshold;
+    if (Array.isArray(ac.autoApproveList))
+      override.autoApprove = ac.autoApproveList;
+    if (Array.isArray(ac.requireApprovalList))
+      override.requireApproval = ac.requireApprovalList;
 
-        if (Object.keys(override).length > 0) {
-          const baseUrl = deployment.containerName.startsWith("http")
-            ? deployment.containerName
-            : `http://${deployment.containerName}:4100`;
-          await fetch(`${baseUrl}/internal/approval-policy`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(override),
-          }).catch(() => {});
-        }
-      }
-    } catch {
-      // best-effort; takes effect on next provision
+    if (Object.keys(override).length > 0) {
+      policyApplied = await pushApprovalPolicy(deployment.containerName, override);
     }
   }
 
-  return jsonSuccess(updated);
+  // The stored settings are authoritative and were saved; policyApplied says
+  // whether the agent already running has picked them up. When it has not, the
+  // change lands at the next provision — true either way, but the caller should
+  // be able to tell the difference rather than assuming the stronger one.
+  return jsonSuccess(
+    policyApplied === undefined ? updated : { ...updated, policyApplied },
+  );
 }

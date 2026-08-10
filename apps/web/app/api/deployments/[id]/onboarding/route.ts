@@ -6,6 +6,7 @@ import {
   requireDeploymentAccess,
 } from "@/lib/api-utils";
 import { mergeWithPlatformQuestions } from "@/lib/platform-questions";
+import { pushApprovalPolicy } from "@/lib/approval-policy";
 
 export async function GET(
   request: Request,
@@ -150,16 +151,25 @@ export async function POST(
       if (Array.isArray(autonomyPatch.requireApprovalList)) {
         override.requireApproval = autonomyPatch.requireApprovalList;
       }
-      const baseUrl = deployment.containerName.startsWith("http")
-        ? deployment.containerName
-        : `http://${deployment.containerName}:4100`;
-      await fetch(`${baseUrl}/internal/approval-policy`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(override),
-      }).catch(() => {});
-    } catch {
-      // best-effort; policy will take effect on next provision
+      // Routed through the provisioning service, which can reach the container.
+      // Posting containerName from here never worked: it is a localhost address
+      // on the VPS and this runs on Vercel. See lib/approval-policy.ts.
+      //
+      // Onboarding is where the buyer picks their approval policy for the first
+      // time, so a silent failure here means an agent starting work under a
+      // policy its owner never chose.
+      const applied = await pushApprovalPolicy(deployment.containerName, override);
+      if (!applied) {
+        console.error(
+          `[onboarding] ${id}: answers saved, but the approval policy did not reach ` +
+            `the running container. It applies at the next provision.`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `[onboarding] ${id}: could not push the approval policy:`,
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
