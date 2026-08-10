@@ -518,8 +518,15 @@ async def reason_and_act(state: AgentState) -> AgentState:
                 "The action you asked for has been approved and carried out. "
                 "Everything the request needed is now done."
             )
-        else:
+        elif state.iteration >= state.max_iterations:
             why = "You have no steps left."
+        else:
+            # Reached from route_after_reasoning: the model called the task
+            # complete and left final_response.text empty.
+            why = (
+                "You marked this task complete but did not write the reply, so "
+                "the requester has not been told anything yet."
+            )
 
         message_content += (
             f"\n\n[SYSTEM] {why} This turn produces the reply and nothing else.\n"
@@ -679,7 +686,28 @@ def route_after_reasoning(state: AgentState) -> str:
     """
     if not isinstance(state.analysis, dict):
         return "finalize"
+
     if state.analysis.get("completed", False):
+        # Completed, but did it actually write the answer?
+        #
+        # finalize only packages final_response; it composes nothing. So a model
+        # that sets completed: true and leaves final_response.text empty ends the
+        # run silently, and the empty-text fallback sends a list of steps instead
+        # of the result. Observed repeatedly on 2026-08-10: the analysis was
+        # correct, the workbook was attached to the mail, and the requester was
+        # told "I did not manage to write up the results".
+        #
+        # wrap_up is the pass that composes. Send the run there once — it sets
+        # _wrapping_up and has a fixed edge to finalize, so this cannot recur on
+        # the second visit even if the model leaves it empty again.
+        final = state.analysis.get("final_response") or {}
+        text = (final.get("text") or "").strip() if isinstance(final, dict) else ""
+        if not text and state.actions_taken and not state.context.get("_wrapping_up"):
+            print(
+                "[agent] completed=true but no reply text — one pass to write it",
+                flush=True,
+            )
+            return "wrap_up"
         return "finalize"
 
     # Already written the closing reply — nothing follows it.
