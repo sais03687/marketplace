@@ -59,7 +59,13 @@ TOOLS = [
             "Limits: 30s per execution, 256MB memory. Load large inputs in chunks — "
             "exceeding the memory limit kills the process without a traceback.\n"
             "\n"
-            "Files written to /tmp/output/ are returned as base64-encoded content."
+            "Files written to /tmp/output/ come back as a file_id, not as content. The "
+            "platform holds the bytes; pass that file_id straight to drive_upload. You "
+            "will not see the file contents and do not need to.\n"
+            "\n"
+            "This is the only way to get a file out of the sandbox. Uploads accept a "
+            "file_id and reject file content, so never paste base64 and never invent an "
+            "id — if you have not written a file, you do not have one to upload."
         ),
         "inputSchema": {
             "type": "object",

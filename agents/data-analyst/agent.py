@@ -120,14 +120,34 @@ def _resolve_upload_content(ref: str, filename: str = "") -> bytes:
         if resolved is not None:
             return resolved
 
-    if ref.startswith("sandbox:"):
-        # Looks like a handle but the platform does not know it — usually a stale
-        # id from an earlier run. Say that, rather than failing on a base64 decode
-        # of the word "sandbox".
+        # A handle is the only accepted form when the platform is holding files.
+        #
+        # Inline base64 used to be allowed here as a fallback for content the
+        # agent built itself. That is a narrow case, and it was bought at the
+        # price of an entire class of bug: anything base64-shaped was treated as
+        # a file. The validation below catches a short or wrongly-signed blob,
+        # but only for extensions someone thought to list — a fabricated string
+        # named report.csv would still have gone through.
+        #
+        # Refusing outright turns that from "we check the shapes we anticipated"
+        # into "the model cannot supply file content at all". If the agent has
+        # bytes, it writes them in the sandbox and uploads the id it gets back.
         raise ValueError(
-            f"{ref} is not a file the platform is holding. "
-            "Re-create the file and upload the id returned with it."
+            f"{ref[:40]!r} is not a file id the platform is holding. Uploads take a "
+            "file_id, not file content: write the file to /tmp/output/ in the "
+            "python-sandbox and pass the file_id returned with it. Do not paste "
+            "base64 and do not invent an id."
         )
+
+    # No resolver injected. That means this is not running under the platform
+    # adapter — a test harness, or a call site that forgot to pass one. Accept
+    # validated inline content so those keep working, and say so, because
+    # silently taking model-supplied bytes is the thing being removed above.
+    print(
+        "[agent] WARNING: no file resolver injected; falling back to inline base64. "
+        "On the platform this path should be unreachable.",
+        flush=True,
+    )
 
     try:
         content = base64.b64decode(ref + "=" * (-len(ref) % 4))
@@ -392,7 +412,7 @@ Produce a JSON response (no markdown fences):
 | drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
 | drive_read_text | Read content of plain text files (.txt, .csv, .md, .json). Do NOT use for .xlsx files. | item_id |
-| drive_upload | Upload a file to your SharePoint folder. For a file the sandbox produced, pass its `file_id` as `content_base64` — the platform holds the bytes and swaps them in. Never copy base64 out of a tool result. | filename, content_base64, content_type |
+| drive_upload | Upload a file to your SharePoint folder. `content_base64` takes the `file_id` the sandbox returned — never file content. To upload anything, write it to `/tmp/output/` in the python-sandbox first and pass the id you get back. | filename, content_base64, content_type |
 | drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
 | drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
 | my_drive_share | Same as drive_share, but for a file in your own OneDrive. | item_id, recipients (list of emails), role, message (optional) |
