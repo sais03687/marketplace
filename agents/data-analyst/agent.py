@@ -305,6 +305,12 @@ class AgentState(BaseModel):
     deliverable_gaps: list = Field(default_factory=list)
     verify_attempts: int = 0
     max_verify_attempts: int = 2
+    # Figures the run rebuilt by inverting an already-rounded value, and how many
+    # times that has been handed back. Separate from the gaps above: that check
+    # asks whether the file backs the reply, this one asks whether the arithmetic
+    # was sound in the first place, and a wrong number agrees with itself.
+    rebuilt_figures: list = Field(default_factory=list)
+    rebuild_attempts: int = 0
     # Set once the last attempt has been spent and the gap survived it.
     deliverable_unfixable: bool = False
 
@@ -1249,7 +1255,44 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     verdict. "Your file is missing 152.94 and 16.50%" is actionable in one step;
     "your file is incomplete" invites the model to disagree.
     """
+    # Both cleared on entry. They are answers about the run as it stands now,
+    # and a stale list here is a router that keeps sending the agent back to fix
+    # something it has already fixed.
     state.deliverable_gaps = []
+    state.rebuilt_figures = []
+
+    # Checked before the file check, and against the results rather than the
+    # reply, because this is an error in the work itself and not in the write-up.
+    # The rounded figure it was rebuilt from is usually only in the sandbox
+    # output and the workbook, so by the time it reaches a summary it has often
+    # been rounded again and looks perfectly ordinary.
+    if state.content and state.rebuild_attempts < state.max_verify_attempts:
+        produced = "\n".join(
+            r for r in state.action_results[-4:]
+            if isinstance(r, str) and not r.startswith(_INTERNAL_PREFIXES)
+        )
+        rebuilt = _rebuilt_figures(produced, state.content)
+        if rebuilt:
+            state.rebuilt_figures = list(rebuilt)
+            state.rebuild_attempts += 1
+            pairs = "; ".join(f"{got} should be {want}" for got, want in rebuilt[:6])
+            print(
+                f"[agent] Rebuilt-figure check: {len(rebuilt)} figure(s) derived from "
+                f"rounded values ({pairs}) — handing back "
+                f"(attempt {state.rebuild_attempts}/{state.max_verify_attempts})",
+                flush=True,
+            )
+            state.context.pop("_wrapping_up", None)
+            state.action_results.append(
+                "ROUNDED-INPUT CHECK — the platform compared the figures you "
+                f"produced against the ones in the request. These do not match: {pairs}.\n"
+                "You recovered a value by dividing by a figure that had already "
+                "been rounded, which cannot return the number it came from. The "
+                "exact values are in the request itself — use those, recompute "
+                "from them, and write the corrected file. This is measured "
+                "arithmetic drift, not a style note."
+            )
+            return state
 
     if _deliverable_verifier is None:
         return state
@@ -1323,6 +1366,12 @@ def route_after_verify(state: AgentState) -> str:
     (go back and use it) and when that attempt has already failed (give up), so
     the count alone cannot separate them.
     """
+    # Arithmetic drift takes priority over a missing figure: a number that is
+    # wrong is worse than a number that is absent, and correcting it changes the
+    # file the other check is about to read.
+    if state.rebuilt_figures and state.iteration < state.max_iterations:
+        return "reason_and_act"
+
     if not state.deliverable_gaps or state.deliverable_unfixable:
         return "finalize"
     if state.iteration >= state.max_iterations:
@@ -2006,6 +2055,71 @@ def _render_stdout(stdout: str, *, complete: bool = True) -> str:
             "table may be missing its last rows — the file has all of them.)_"
         )
     return "\n\n".join(parts)
+
+
+# ─── Figures rebuilt from rounded ones ───────────────────────────────────────
+#
+# Asked to add a units column, a run on 2026-08-10 read the per-unit figure back
+# out of the spreadsheet it had just written — 154.88, rounded for display — and
+# divided revenue by it:
+#
+#   146050 / 154.88 = 942.9881198347     the requester had written 943
+#
+# It did this for all three regions, and the numbers went into the workbook and
+# the reply. Nothing caught it. The deliverable check compares the reply against
+# the file, and both agreed: they were wrong together.
+#
+# The requester's own email held the exact figure. Inverting a rounded value can
+# never recover the input it came from, and there is no reason to try when the
+# input is in the request — so the platform measures the drift and hands it back.
+#
+# The test is deliberately narrow, because a false accusation costs an
+# iteration: the value given must be whole, the value produced must carry three
+# or more decimals, and the two must agree to within a tenth of a percent. A
+# genuinely derived statistic does not land that close to a figure it was never
+# computed from. Checked against the run above, it catches all three and leaves
+# 154.88, 10.31 and 0.1031 alone.
+_RECONSTRUCTION_TOLERANCE = Decimal("0.001")
+
+
+def _decimal_places(raw: str) -> int:
+    return len(raw.split(".")[1]) if "." in raw else 0
+
+
+def _rebuilt_figures(produced: str, given: str) -> list[tuple[str, str]]:
+    """(produced, should-have-been) for figures rebuilt from a rounded value."""
+    givens = [
+        (raw, val) for raw, val in _summary_figures_local(given)
+        if _decimal_places(raw) == 0
+    ]
+    if not givens:
+        return []
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for raw, val in _summary_figures_local(produced):
+        if _decimal_places(raw) < 3 or raw in seen:
+            continue
+        for g_raw, g_val in givens:
+            if val == g_val or not g_val:
+                continue
+            if abs(val - g_val) / abs(g_val) < _RECONSTRUCTION_TOLERANCE:
+                out.append((raw, g_raw))
+                seen.add(raw)
+                break
+    return out
+
+
+def _summary_figures_local(text: str) -> list[tuple[str, Decimal]]:
+    """Numbers in `text`, ignoring URLs — the agent-side twin of the platform's."""
+    out: list[tuple[str, Decimal]] = []
+    for m in re.finditer(r"-?\d[\d,]*(?:\.\d+)?", _URL_IN_TEXT.sub(" ", text or "")):
+        raw = m.group(0).rstrip(".,")
+        try:
+            out.append((raw, Decimal(raw.replace(",", ""))))
+        except InvalidOperation:
+            continue
+    return out
 
 
 def _table_columns(block: str) -> frozenset[str] | None:

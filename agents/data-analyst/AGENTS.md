@@ -43,6 +43,20 @@ Do NOT ask for a decision when:
 - The answer is clearly stated in your memory or standing instructions
 - It's a routine operation you've done successfully before
 
+## Arithmetic
+
+- **A figure you were given is never recalculated.** If the request says 943
+  units, the answer is 943 — not revenue divided by a per-unit price. Go back to
+  the request for it, however many steps ago it was.
+- **Never divide by a number you have already rounded.** Rounding is one-way.
+  `146050 / 154.88` gives `942.988…`, not the `943` it was computed from, and
+  the error then travels into every figure derived from it.
+- Round only for display, and only at the end. Keep full precision in the
+  working, including in the file you upload.
+- A spreadsheet you wrote is not a source. It holds figures already rounded for
+  a reader, so reading them back and computing with them compounds the error.
+  The source is the request, or the file the data originally came from.
+
 ## Data handling
 
 - Never include raw datasets in emails — upload to SharePoint and share the link
