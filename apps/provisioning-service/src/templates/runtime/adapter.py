@@ -1553,6 +1553,20 @@ def _should_require_action_approval(
         if str(args.get("scope", "")).lower() == "anonymous":
             return True, f"{action} creates a link anyone can open"
 
+        # An organisation-scoped link is bounded by the tenant: opening it
+        # requires a sign-in the buyer's own directory issued. It has no
+        # recipient list because it does not need one, which the fail-safe below
+        # read as "recipient unknown" and escalated — so the safe scope, the one
+        # the tools guide tells the agent to prefer, was the one that always
+        # interrupted a human. Every file request carried a third approval
+        # prompt on top of the upload and the send.
+        #
+        # Being inside the organisation is the whole question these rules ask,
+        # and this scope answers it by construction rather than by an address
+        # that has to be matched. Placed above the recipient check, not below it.
+        if str(args.get("scope", "")).lower() == "organization":
+            return False, f"{action} is scoped to the organisation"
+
         recipients = args.get("recipients") or args.get("emails") or []
         if isinstance(recipients, str):
             recipients = [recipients]
@@ -1697,6 +1711,18 @@ async def _refuse_external_sharing(action: str, args: dict) -> None:
             f"receives it, so it cannot be limited to the organisation. Share with "
             f"named people instead, or use scope=\"organization\"."
         )
+
+    # The scope this function exists to insist on. An organisation-scoped link
+    # is only openable by someone the buyer's directory authenticates, so it is
+    # inside by construction — there is no address to check because no address
+    # is what grants access.
+    #
+    # Until now it fell through to the recipient check below and was refused
+    # 100% of the time for having no recipients: the refusal message advised
+    # using scope="organization", which is what had just been refused. An agent
+    # asked to link a file it had uploaded could not do it at all.
+    if scope == "organization":
+        return
 
     recipients = args.get("recipients") or args.get("emails") or []
     if isinstance(recipients, str):

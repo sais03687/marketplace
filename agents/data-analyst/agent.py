@@ -231,6 +231,33 @@ BLOCKED_ACTIONS = {
     "my_drive_create_link",
 }
 
+# The exception to the set above, and the only one.
+#
+# Everything blocked for sharing is blocked because it can move data out of the
+# tenant. An organisation-scoped link cannot: opening it requires a sign-in the
+# buyer's own directory issued, so it reaches exactly the people who could
+# already be granted the file, and no one else. The reasoning that put sharing
+# on the list — the agent grants access blind, and cannot see who already has
+# it — does not apply where the audience is "the organisation" either.
+#
+# Being on the list anyway cost every file request a third approval prompt, on
+# top of the upload and the reply, for the scope TOOLS.md tells the agent to
+# prefer. And the prompt could not be answered usefully: the platform refused
+# the call after approval regardless, because an org-scoped link has no
+# recipient list for the recipient check to read. Approving it changed nothing.
+#
+# Anonymous stays blocked, and stays refused. That one really is a link anyone
+# who ever receives it can open.
+def _needs_manager_approval(action_type: str, params: dict) -> bool:
+    """Does this specific call need a human, given what it is actually doing?"""
+    if action_type not in BLOCKED_ACTIONS:
+        return False
+    if action_type in ("drive_create_link", "my_drive_create_link"):
+        # Absent scope is not org scope. my_drive_create_link defaults to
+        # anonymous, so silence here has to keep the gate rather than open it.
+        return str((params or {}).get("scope", "")).lower() != "organization"
+    return True
+
 # ─── Thread-local function registry ─────────────────────────────────────────
 # Functions can't be serialized by the checkpointer (msgpack), so we store
 # them in a module-level dict keyed by thread_id. Nodes look them up at
@@ -828,7 +855,7 @@ async def execute_action(state: AgentState) -> AgentState:
 
     try:
         # ── Interrupt for blocked actions (requires manager approval) ────────
-        if action_type in BLOCKED_ACTIONS:
+        if _needs_manager_approval(action_type, params):
             print(f"[agent] BLOCKED action '{action_type}' — interrupting for approval", flush=True)
             resolution = interrupt({
                 "action": action_type,
