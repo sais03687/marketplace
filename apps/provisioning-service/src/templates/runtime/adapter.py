@@ -316,6 +316,19 @@ async def _discover_mcp_tools() -> None:
 _SANDBOX_FILES: dict[str, dict] = {}
 _SANDBOX_FILE_LIMIT = 32  # per process; oldest evicted, these are single-run artefacts
 
+# Handles produced by the run currently in flight, for the deliverable check.
+#
+# This is module state rather than a per-request closure because a run does not
+# end at the first reply: a blocked action suspends it, and _resume_and_deliver
+# picks it up later with no access to anything the original call held. When this
+# lived in a closure, a resumed run registered nothing, so the file regenerated
+# after a hand-back was never seen and the check compared the new summary against
+# the stale upload.
+#
+# Cleared when a new inbound message starts a run, never on resume — a resume is
+# a continuation of the same run and must keep the set it has built up.
+_RUN_FILE_IDS: list[str] = []
+
 
 def _register_sandbox_files(mcp_result: Any) -> Any:
     """Swap base64 file contents in an MCP result for handles the agent can pass on."""
@@ -336,6 +349,11 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
         _SANDBOX_FILES[file_id] = {"name": f.get("name", "output"), "bytes": raw}
         while len(_SANDBOX_FILES) > _SANDBOX_FILE_LIMIT:
             _SANDBOX_FILES.pop(next(iter(_SANDBOX_FILES)))
+
+        if file_id not in _RUN_FILE_IDS:
+            _RUN_FILE_IDS.append(file_id)
+            while len(_RUN_FILE_IDS) > _SANDBOX_FILE_LIMIT:
+                _RUN_FILE_IDS.pop(0)
 
         f["file_id"] = file_id
         f["size_bytes"] = len(raw)
@@ -482,12 +500,15 @@ async def _file_text(name: str, raw: bytes) -> str | None:
     return json.dumps(parsed, default=str)
 
 
-async def verify_deliverables(summary_text: str, file_ids: list[str]) -> list[str]:
+async def verify_deliverables(summary_text: str, file_ids: list[str] | None = None) -> list[str]:
     """Figures the summary asserts that appear in none of the delivered files.
 
     Empty means consistent — including when there is nothing checkable, which
     is why a parse failure is silent rather than an accusation.
     """
+    if file_ids is None:
+        file_ids = list(_RUN_FILE_IDS)
+
     figures = _summary_figures(summary_text)
     if not figures or not file_ids:
         return []
@@ -515,6 +536,40 @@ async def verify_deliverables(summary_text: str, file_ids: list[str]) -> list[st
             flush=True,
         )
     return missing
+
+
+_CONTENT_TYPES = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "csv": "text/csv",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+# Files produced during a resumed run. The initial run keeps its own list in a
+# closure for attachment delivery; a resume has no closure to inherit, so this
+# holds them at module level for the resume delivery path to pick up.
+_RESUME_CAPTURED_FILES: list[dict] = []
+
+
+async def _resume_capturing_mcp_fn(server: str, tool: str, arguments: dict):
+    """call_mcp_tool with the same instrumentation the initial run's wrapper adds."""
+    mcp_result = await call_mcp_tool(server, tool, arguments)
+    if isinstance(mcp_result, dict) and mcp_result.get("files"):
+        for f in mcp_result["files"]:
+            name = f.get("name", "output")
+            b64 = f.get("base64_content", "")
+            if b64:
+                ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                _RESUME_CAPTURED_FILES.append({
+                    "name": name,
+                    "content_base64": b64,
+                    "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
+                })
+    return _register_sandbox_files(mcp_result)
 
 
 async def call_mcp_tool(server_type: str, tool_name: str, arguments: dict) -> dict:
@@ -2553,7 +2608,16 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             search_fn=search_knowledge,
             use_fn=report_usage,
             graph_fn=graph_request,
-            **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+            # The raw call_mcp_tool used to be handed over here, so everything the
+            # capturing wrapper does was lost the moment a run was suspended for
+            # approval: file bytes went back through the model as base64 instead
+            # of handles, nothing was captured for attachment, and the file
+            # regenerated after a deliverable hand-back was never registered.
+            # Resuming is the *second half of the same run* and needs the same
+            # instrumentation the first half had.
+            **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
+            file_resolver_fn=resolve_sandbox_file,
+            verify_fn=verify_deliverables,
         )
     except Exception as e:
         print(f"[adapter] resume_agent failed: {e}", flush=True)
@@ -3365,8 +3429,11 @@ async def _handle_message(message: str, context: dict):
 
         # Capture files generated by MCP tools (for email attachments)
         _email_captured_files: list[dict] = []
-        # Handles for the same files, scoped to this run, for the deliverable check
-        _run_file_ids: list[str] = []
+        # A new inbound message is a new run, so the previous run's handles must
+        # not be checked against this run's summary. Resumes deliberately do not
+        # clear this — they continue the run that registered them.
+        _RUN_FILE_IDS.clear()
+        _RESUME_CAPTURED_FILES.clear()
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
             mcp_result = await call_mcp_tool(server, tool, arguments)
@@ -3376,27 +3443,17 @@ async def _handle_message(message: str, context: dict):
                     b64 = f.get("base64_content", "")
                     if b64:
                         ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-                        ct_map = {"png": "image/png", "jpg": "image/jpeg", "csv": "text/csv",
-                                  "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                  "pdf": "application/pdf"}
                         _email_captured_files.append({
                             "name": name,
                             "content_base64": b64,
-                            "contentType": ct_map.get(ext, "application/octet-stream"),
+                            "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
                         })
             # Attachment capture above keeps the real bytes — that path is
             # adapter-side and never enters the model's context. This swaps the
             # base64 for a handle in what the *agent* sees.
-            registered = _register_sandbox_files(mcp_result)
-            # Remember what this run produced. _SANDBOX_FILES is process-wide and
-            # outlives the run, so verifying against it would check a summary
-            # against a previous request's artefacts.
-            if isinstance(registered, dict):
-                for f in registered.get("files") or []:
-                    fid = f.get("file_id") if isinstance(f, dict) else None
-                    if fid and fid not in _run_file_ids:
-                        _run_file_ids.append(fid)
-            return registered
+            # Registration records the handle in _RUN_FILE_IDS for the
+            # deliverable check; see the note there on why that is module state.
+            return _register_sandbox_files(mcp_result)
 
         # Use a unique thread_id for checkpointing (enables interrupt/resume)
         session_key = context.get("session_key", "default")
@@ -3413,7 +3470,7 @@ async def _handle_message(message: str, context: dict):
             thread_id=thread_id,
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
-            verify_fn=lambda text: verify_deliverables(text, list(_run_file_ids)),
+            verify_fn=verify_deliverables,
         )
 
         if not isinstance(result, dict):
