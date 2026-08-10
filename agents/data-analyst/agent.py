@@ -1425,10 +1425,19 @@ async def finalize(state: AgentState) -> AgentState:
                 "a single go."
             )
         else:
+            # No findings to quote. Where the file went is still worth saying —
+            # it is the deliverable, and the requester can open it now rather
+            # than waiting for a summary they have to ask for.
+            link = _delivered_file_line(state.action_results)
             result_text = (
                 "I completed the work below, but did not manage to write up the "
-                f"results.\n\nWhat I completed:\n{steps}\n\nAsk me for the summary and "
-                "I'll send it — the work itself is done, so this should be quick."
+                f"results.\n\nWhat I completed:\n{steps}"
+            )
+            if link:
+                result_text += f"\n\n{link}"
+            result_text += (
+                "\n\nAsk me for the summary and I'll send it — the work itself is "
+                "done, so this should be quick."
             )
         result_action = "reply_email"
         print(
@@ -1699,6 +1708,13 @@ _INTERNAL_MARKERS = ("file_id", "sandbox:", '"note"', '"stderr"', '"returncode"'
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"')\]]+")
 
+# The sandbox's scratch directory. A run that prints "Excel file created at
+# /tmp/output/q3.xlsx" is narrating a filesystem the buyer has no access to and
+# that ceases to exist when the run ends — and where the file actually went is
+# stated separately, as a SharePoint link. Observed live on 2026-08-10: this was
+# the entire printed output of a run, so it was the entire fallback reply.
+_SANDBOX_PATH = re.compile(r"/tmp/(?:output|input)\b\S*")
+
 # Pulls stdout out of an envelope that json.loads cannot take. Results are cut
 # to 2000 characters before they are stored, so any run printing more than that
 # leaves invalid JSON behind — the common case for a large table, and precisely
@@ -1889,8 +1905,15 @@ def _render_stdout(stdout: str, *, complete: bool = True) -> str:
 
     tables = [t for t in (_markdown_table(g) for g in groups) if t]
     if not tables:
-        # Nothing tabular — the print statements themselves are the finding.
-        return "" if any(m in stdout for m in _INTERNAL_MARKERS) else stdout
+        # Nothing tabular — the print statements themselves are the finding,
+        # minus any line that only reports where a file was written inside the
+        # sandbox. That is bookkeeping about a directory the buyer cannot reach.
+        if any(m in stdout for m in _INTERNAL_MARKERS):
+            return ""
+        return "\n".join(
+            line for line in stdout.splitlines()
+            if line.strip() and not _SANDBOX_PATH.search(line)
+        ).strip()
 
     # Prose printed alongside the records is kept, minus the records themselves.
     leftover = stdout
@@ -1957,17 +1980,32 @@ def _delivered_file_line(results: list) -> str:
 def _compose_reply(state: "AgentState") -> str:
     """A reply built from the results, for when the model will not write one."""
     body = _buyer_readable(state.action_results)
-    if not body:
-        return ""
-    parts = ["Here are the results you asked for.", "", body]
     link = _delivered_file_line(state.action_results)
-    if link:
-        parts += ["", link]
-    parts += [
-        "",
-        "Tell me if you'd like this broken down differently, or any of it "
-        "expanded on.",
-    ]
+    if not body and not link:
+        return ""
+
+    if body:
+        parts = ["Here are the results you asked for.", "", body]
+        if link:
+            parts += ["", link]
+        parts += [
+            "",
+            "Tell me if you'd like this broken down differently, or any of it "
+            "expanded on.",
+        ]
+    else:
+        # The work produced a file but printed nothing quotable. Point at the
+        # file rather than inventing a summary of it — and say plainly that the
+        # figures are in there, which is true and checkable, instead of
+        # narrating the sandbox.
+        parts = [
+            "I've finished the analysis and put the results in the file below.",
+            "",
+            link,
+            "",
+            "I wasn't able to summarise the figures in this message — ask me "
+            "and I'll send them inline.",
+        ]
     return "\n".join(parts)
 
 
