@@ -632,8 +632,16 @@ async def wrap_up(state: AgentState) -> AgentState:
     than by a flag that has to survive.
     """
     state.context["_wrapping_up"] = True
+    # Two callers now: the step budget running out, and an approved action having
+    # just executed. Say which, so the log does not claim exhaustion for a run
+    # that used two of twelve iterations.
+    why = (
+        "approved action done"
+        if state.context.get("_approved_action_executing")
+        else "out of steps"
+    )
     print(
-        f"[agent] Out of steps after {len(state.actions_taken)} action(s) — final pass for the reply",
+        f"[agent] {why} after {len(state.actions_taken)} action(s) — final pass for the reply",
         flush=True,
     )
     return await reason_and_act(state)
@@ -1018,11 +1026,23 @@ def route_after_execution(state: AgentState) -> str:
     right and did nothing, since a conditional edge contributes only its return
     value.
     """
-    # If a blocked action was just approved and executed, go straight to finalize
-    # to compose the reply — don't re-reason (which causes repeated writes).
+    # A blocked action was approved and has now executed. Compose the reply, then
+    # stop — going back to reason_and_act would re-execute the write.
+    #
+    # This used to route to finalize, with a comment saying finalize would compose
+    # the reply. It does not: finalize only packages analysis["final_response"],
+    # and the analysis still in state is the pre-interrupt one that decided the
+    # write, which carries no reply text. So the run ended silent, and the
+    # empty-text fallback fired and told the requester the agent had run out of
+    # steps. Measured on 2026-08-10: 2 of 12 iterations used, the workbook
+    # correctly uploaded, and the buyer told it had not finished.
+    #
+    # wrap_up is the node that actually composes — one reasoning pass with
+    # _wrapping_up set, then a fixed edge to finalize, so it cannot loop back into
+    # the write.
     if state.context.get("_approved_action_executing"):
-        print(f"[agent] Approved action executed — going to finalize", flush=True)
-        return "finalize"
+        print("[agent] Approved action executed — composing the reply", flush=True)
+        return "wrap_up"
     return "reason_and_act"
 
 
@@ -1065,14 +1085,34 @@ async def finalize(state: AgentState) -> AgentState:
     # is waiting on an answer, and "I got partway" beats no answer at all.
     if not result_text.strip() and state.actions_taken:
         steps = "\n".join(f"- {a}" for a in state.actions_taken[-6:])
-        result_text = (
-            "I worked on this but ran out of steps before I could finish, so I do "
-            "not have a complete answer yet.\n\nWhat I did get through:\n"
-            f"{steps}\n\nAsk me again and I'll pick it up from here — narrowing the "
-            "request to one part will usually get it done in a single go."
-        )
+        # Say what is actually known, which is only that no summary was written.
+        #
+        # This used to assert the agent had "run out of steps" and advise
+        # narrowing the request. It never checked the step count: the condition
+        # is an empty reply after real work, and the run that prompted this had
+        # used two of twelve iterations and completed everything asked of it. The
+        # buyer was told the work was unfinished, and advised to make a request
+        # smaller that had not been too large.
+        out_of_steps = state.iteration >= state.max_iterations
+        if out_of_steps:
+            result_text = (
+                "I ran out of steps before I could finish, so this is partial.\n\n"
+                f"What I completed:\n{steps}\n\nAsk me again and I'll pick it up from "
+                "here — narrowing the request to one part will usually get it done in "
+                "a single go."
+            )
+        else:
+            result_text = (
+                "I completed the work below, but did not manage to write up the "
+                f"results.\n\nWhat I completed:\n{steps}\n\nAsk me for the summary and "
+                "I'll send it — the work itself is done, so this should be quick."
+            )
         result_action = "reply_email"
-        print("[agent] No final text after real work — sending a partial-progress reply", flush=True)
+        print(
+            f"[agent] No final text after real work (out_of_steps={out_of_steps}) "
+            "— sending a partial-progress reply",
+            flush=True,
+        )
 
     state.result = {
         "action": result_action,
