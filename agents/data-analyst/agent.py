@@ -743,9 +743,45 @@ async def wrap_up(state: AgentState) -> AgentState:
 
     print("[agent] wrap_up produced no reply text — one more attempt", flush=True)
     state = await reason_and_act(state)
-    if not _reply_text_of(state):
-        print("[agent] wrap_up still silent — composing the reply from results", flush=True)
+    if _reply_text_of(state):
+        return state
 
+    # Two passes, both silent. A third would be the same bet again: on
+    # 2026-08-10 this model answered every wrap-up pass of every run with
+    # action=none and an empty final_response.text, so resampling bought
+    # another empty field and another paid call, and the run fell through to
+    # finalize's fallback — which is how a buyer came to be sent the sandbox
+    # envelope instead of their figures.
+    #
+    # The results are already in hand. Composing from them needs no model at
+    # all, and the printed records are a better source for a table than a model
+    # retyping them would be. So stop asking and write it.
+    composed = _compose_reply(state)
+    if not composed:
+        # Nothing renderable — a run that genuinely produced no findings. Leave
+        # it to finalize, which says so honestly.
+        print("[agent] wrap_up silent and no results to compose from", flush=True)
+        return state
+
+    analysis = state.analysis if isinstance(state.analysis, dict) else {}
+    final = analysis.get("final_response")
+    final = dict(final) if isinstance(final, dict) else {}
+    # Only the text is authored here. to/subject/thread_id keep whatever the
+    # model set, because addressing is the one part of the reply it got right.
+    final["action"] = final.get("action") or "reply_email"
+    final["text"] = composed
+    analysis["final_response"] = final
+    # The run is over either way — say so, so nothing downstream reads this as a
+    # turn still holding an unexecuted action.
+    analysis["completed"] = True
+    analysis["action"] = {"type": "none"}
+    state.analysis = analysis
+
+    print(
+        f"[agent] wrap_up composed the reply from results ({len(composed)} chars) "
+        "— the model would not write one",
+        flush=True,
+    )
     return state
 
 
