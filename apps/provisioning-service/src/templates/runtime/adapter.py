@@ -392,6 +392,18 @@ _NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 # magnitude is what keeps this from firing on every sentence.
 _SUBSTANTIVE_MIN = 100
 
+# Digits inside a URL are addressing, not arithmetic. A SharePoint link carries
+# the document GUID —
+#   ...?sourcedoc=%7BD8DE1B2B-C758-4B89-8D04-F47D420F1F45%7D
+# — and its hex runs parse as perfectly ordinary numbers. On 2026-08-10 that
+# GUID produced phantom missing figures 758 and 420, the agent was handed them
+# as a real gap, and it rebuilt and re-uploaded the workbook trying to put two
+# fragments of its own download link into a revenue table.
+#
+# Stripped from both sides. In a summary a URL invents figures that were never
+# claimed; in a file it would vouch for one that was never there.
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+
 
 def _normalise_number(raw: str) -> Decimal | None:
     try:
@@ -404,7 +416,7 @@ def _summary_figures(text: str) -> list[tuple[str, Decimal]]:
     """Figures a summary asserts, as (as-written, value), skipping incidentals."""
     out: list[tuple[str, Decimal]] = []
     seen: set[Decimal] = set()
-    for m in _NUMBER_RE.finditer(text or ""):
+    for m in _NUMBER_RE.finditer(_URL_RE.sub(" ", text or "")):
         raw = m.group(0).rstrip(".,")
         val = _normalise_number(raw)
         if val is None:
@@ -425,7 +437,7 @@ def _summary_figures(text: str) -> list[tuple[str, Decimal]]:
 
 def _file_figures(blob: str) -> list[Decimal]:
     vals: list[Decimal] = []
-    for m in _NUMBER_RE.finditer(blob or ""):
+    for m in _NUMBER_RE.finditer(_URL_RE.sub(" ", blob or "")):
         val = _normalise_number(m.group(0).rstrip(".,"))
         if val is not None:
             vals.append(val)
