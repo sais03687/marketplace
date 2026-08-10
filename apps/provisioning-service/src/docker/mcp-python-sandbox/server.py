@@ -31,11 +31,35 @@ app = FastAPI(title="MCP Python Sandbox", version="1.0.0")
 TOOLS = [
     {
         "name": "execute_python",
+        # This string is the only thing the agent knows about the sandbox — it is
+        # written into MCP_TOOLS.md at startup and read by the model. It was
+        # listing five of the nine installed libraries, so pdfplumber and
+        # python-docx were invisible even though the agent is sold on "extracts
+        # data from PDFs and Word docs". It also only said what *was* present,
+        # which does not stop a model reaching for what is not: one run wasted an
+        # iteration on engine="xlsxwriter" before recovering.
+        #
+        # So: name everything, say plainly that the list is closed, and say why
+        # installing more will not work.
         "description": (
-            "Execute Python code with pandas, matplotlib, numpy, seaborn, and openpyxl available. "
-            "Code runs in a subprocess with a 30s timeout and 256MB memory limit. "
-            "Any files written to /tmp/output/ will be returned as base64-encoded content. "
-            "Use this for data analysis, visualization, and computation."
+            "Execute Python code for data analysis, visualisation, computation and "
+            "document parsing.\n"
+            "\n"
+            "Available libraries — this list is complete, nothing else is installed:\n"
+            "  data      pandas, numpy\n"
+            "  charts    matplotlib, seaborn\n"
+            "  excel     openpyxl, xlsxwriter (writing), xlrd (legacy .xls)\n"
+            "  documents pdfplumber (PDF), python-docx (Word)\n"
+            "  text      tabulate, charset-normalizer\n"
+            "\n"
+            "There is no network access, so pip install will hang until the timeout "
+            "rather than fetching anything. If you need something that is not listed, "
+            "solve it with what is here or say you cannot.\n"
+            "\n"
+            "Limits: 30s per execution, 256MB memory. Load large inputs in chunks — "
+            "exceeding the memory limit kills the process without a traceback.\n"
+            "\n"
+            "Files written to /tmp/output/ are returned as base64-encoded content."
         ),
         "inputSchema": {
             "type": "object",

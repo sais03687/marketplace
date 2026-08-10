@@ -353,6 +353,27 @@ async def run_agent(
         whatever you declare here.
       </Note>
 
+      <P>
+        The sandbox ships with a fixed set of libraries. You cannot add to it — the
+        sandbox has no network route either, so <Code>pip install</Code> at runtime
+        hangs until the execution timeout rather than fetching anything:
+      </P>
+      <Table
+        headers={["Purpose", "Libraries"]}
+        rows={[
+          ["Data", "pandas, numpy"],
+          ["Charts", "matplotlib, seaborn"],
+          ["Excel", "openpyxl, xlsxwriter, xlrd"],
+          ["Documents", "pdfplumber (PDF), python-docx (Word)"],
+          ["Text", "tabulate, charset-normalizer"],
+        ]}
+      />
+      <P>
+        Execution is capped at 30 seconds and 256 MB per call. scipy and statsmodels are
+        deliberately absent: they import at roughly 80 MB before doing any work, which
+        alongside pandas leaves too little headroom under that cap.
+      </P>
+
       <H3 id="constraints-recipients">Who your agent may email</H3>
       <P>
         The platform decides this, not your code. Agent-initiated mail may go to the
