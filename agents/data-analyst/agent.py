@@ -848,6 +848,31 @@ async def _write_reply(state: AgentState) -> str:
             except (json.JSONDecodeError, ValueError):
                 parsed = None
 
+    # A reply cut off at the token limit is still a reply. Observed on
+    # 2026-08-11: the model returned {"subject": null, "text": "Hi Sai,\n\nI…
+    # and stopped, so json.loads failed and the brace-matching fallback above
+    # found no closing brace either. The whole answer was discarded over its
+    # punctuation, and only the retry saved it.
+    #
+    # Same treatment the sandbox envelope gets: lift the field out by hand and
+    # unescape what survived.
+    if not isinstance(parsed, dict) or not str(parsed.get("text") or "").strip():
+        salvaged = re.search(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)', cleaned)
+        if salvaged:
+            body = salvaged.group(1)
+            try:
+                body = json.loads(f'"{body}"')
+            except ValueError:
+                for esc, real in (("\\n", "\n"), ("\\t", "\t"), ("\\r", "\r"),
+                                  ('\\"', '"'), ("\\/", "/"), ("\\\\", "\\")):
+                    body = body.rstrip("\\").replace(esc, real)
+            if body.strip():
+                print(
+                    f"[agent] Closing reply arrived truncated — salvaged {len(body)} chars",
+                    flush=True,
+                )
+                return body.strip()
+
     if isinstance(parsed, dict) and str(parsed.get("text") or "").strip():
         subject = parsed.get("subject")
         if isinstance(subject, str) and subject.strip():
