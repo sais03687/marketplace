@@ -3089,13 +3089,23 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
         except Exception as e:
             print(f"[adapter] Post-resume email delivery failed: {e}", flush=True)
     else:
-        # Agent returned action=none after approval — notify the manager
+        # Agent returned action=none after the decision — notify the manager.
+        #
+        # The subject used to say "Approved action completed" whatever the
+        # manager had chosen. On 2026-08-11 a rejected upload was reported to
+        # the buyer under that heading, which is simply false: they had declined
+        # it seconds earlier. Say which decision this is.
         manager_to = _manager_email()
+        decided = str((resolution or {}).get("status", "")).upper()
+        headline = {
+            "REJECTED": f"[{AGENT_NAME}] Action rejected — nothing was done",
+            "EXPIRED": f"[{AGENT_NAME}] Action expired without a decision",
+        }.get(decided, f"[{AGENT_NAME}] Approved action completed")
         if manager_to:
             try:
                 await send_email(
                     to=manager_to,
-                    subject=f"[{AGENT_NAME}] Approved action completed",
+                    subject=headline,
                     text=reply_text,
                 )
                 print(f"[adapter] Post-resume notification sent to manager", flush=True)

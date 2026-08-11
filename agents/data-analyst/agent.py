@@ -411,6 +411,10 @@ Write the reply.
 - If a file was produced, mention it in one line at the end. Do not make the
   message about it, and do not list the tools you called.
 - If part of the request is genuinely unfinished, say which part and why.
+- If a result says an action was rejected by the manager, that is a decision,
+  not a fault. Say plainly that it was not approved and so was not done. Do not
+  call it an error, do not say you are investigating, and do not promise to
+  retry or to follow up — nothing further will happen unless they ask again.
 - Write as yourself, to a colleague. No preamble about being an AI.
 - Sign off as "{agent_name}", and never with a placeholder. There is no
   "[Your Name]" to fill in later — this text is sent exactly as you write it.
