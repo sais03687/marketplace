@@ -834,6 +834,76 @@ async def _refuse_external_mail_recipients(action: str, body: dict) -> None:
         )
 
 
+def _reply_recipient(result: dict, context: dict) -> str:
+    """Who a finished run's reply goes to, falling back to the manager.
+
+    The address normally comes from the message being answered. /hooks/agent
+    carries no message: its context has no sender, no message_id, no subject and
+    no thread_id, because nothing emailed in — onboarding, crons and scheduled
+    work all arrive that way. So a run triggered by that hook that ends in
+    reply_email had nowhere to send it, and reply_email raised:
+
+      reply_email failed: no message_id and no fallback recipient available
+
+    The run was over by then. The work was done, the answer written, and it went
+    nowhere — no reply, no error to anyone, nothing in the buyer's inbox. From
+    their side the agent ignored them. Seen on 2026-08-10 on an onboarding run,
+    and it was never specific to onboarding.
+
+    The manager is the right last resort rather than a guess: they own the
+    deployment, they are already the recipient for every approval it raises, and
+    for hook-triggered work there is no one else it could be meant for. It is
+    also inside the organisation by definition, so the outbound boundary is
+    unaffected.
+
+    Silence is the worst outcome available here. Anything addressable beats it.
+    """
+    # Each candidate has to look deliverable, not merely non-empty. _extract_email
+    # pulls an address out of "Name <a@b.com>" but validates nothing, so it hands
+    # back "not-an-address" unchanged. Treating that as a hit skips the remaining
+    # fallbacks and gives Graph something it rejects with ErrorInvalidRecipients:
+    # the reply is lost either way, just later and with a worse error.
+    manager = _extract_email(_manager_email())
+    for source, raw in (
+        ("the reply itself", result.get("to")),
+        ("the message being answered", context.get("sender")),
+        ("the manager", manager),
+    ):
+        address = _extract_email(raw or "")
+        if not _looks_deliverable(address):
+            continue
+        if source == "the manager":
+            print(
+                f"[adapter] No recipient on the {context.get('hook_name') or 'inbound'} "
+                f"run — replying to the manager ({address}) rather than dropping it",
+                flush=True,
+            )
+        return address
+
+    # Nothing addressable anywhere, including the manager. Say so loudly: the
+    # run has finished its work and the answer is about to be discarded.
+    print(
+        f"[adapter] No deliverable recipient for the {context.get('hook_name') or 'inbound'} "
+        f"run and no usable manager address — the reply cannot be sent",
+        flush=True,
+    )
+    return ""
+
+
+def _looks_deliverable(address: str) -> bool:
+    """Could this plausibly be posted to Graph as a recipient?
+
+    Deliberately shallow. The job is to reject the things that reach this
+    function — an empty string, a name with no address in it, a leftover
+    placeholder — not to adjudicate RFC 5322.
+    """
+    address = (address or "").strip()
+    if not address or " " in address or address.count("@") != 1:
+        return False
+    local, _, domain = address.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+
+
 async def _refuse_external_email(to: str) -> None:
     """Raise unless an agent-initiated email stays inside the organisation.
 
@@ -3641,7 +3711,10 @@ async def _handle_message(message: str, context: dict):
 
         if action in ("send_email", "reply_email"):
             # Bare address, for the boundary check below and for Graph itself.
-            recipient = _extract_email(result.get("to") or context.get("sender", ""))
+            # Falls back to the manager rather than raising: a hook-triggered run
+            # has no inbound sender to answer, and losing the reply is worse than
+            # sending it to the person who owns the agent.
+            recipient = _reply_recipient(result, context)
 
             # Refuse before asking, when the answer could not be yes — the same
             # reasoning SHARING_ACTIONS uses in execute_action. Queueing an
@@ -3783,7 +3856,7 @@ async def _handle_message(message: str, context: dict):
             if action == "send_email":
                 # Bare address only — Graph rejects a display-name form with
                 # 400 ErrorInvalidRecipients. See the note in _deliver_email_result.
-                send_to = _extract_email(result.get("to") or context.get("sender", ""))
+                send_to = recipient
                 if not send_to:
                     print("[adapter] send_email skipped: no usable recipient", flush=True)
                     return
@@ -3798,7 +3871,10 @@ async def _handle_message(message: str, context: dict):
                 await reply_email(
                     message_id=result.get("message_id") or context.get("message_id", ""),
                     text=result["text"],
-                    fallback_to=_extract_email(result.get("to") or context.get("sender", "")),
+                    # Already resolved above, manager included. Recomputing it
+                    # here from the context is what left a hook-triggered run
+                    # with nothing to send to.
+                    fallback_to=recipient,
                     fallback_subject=context.get("subject", ""),
                     fallback_thread_id=result.get("thread_id") or context.get("thread_id"),
                     attachments=_att,
