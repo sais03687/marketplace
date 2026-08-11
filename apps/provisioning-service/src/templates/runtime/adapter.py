@@ -316,18 +316,60 @@ async def _discover_mcp_tools() -> None:
 _SANDBOX_FILES: dict[str, dict] = {}
 _SANDBOX_FILE_LIMIT = 32  # per process; oldest evicted, these are single-run artefacts
 
-# Handles produced by the run currently in flight, for the deliverable check.
+# Handles produced by a run, for the deliverable check, keyed by the run's
+# thread.
 #
-# This is module state rather than a per-request closure because a run does not
-# end at the first reply: a blocked action suspends it, and _resume_and_deliver
-# picks it up later with no access to anything the original call held. When this
-# lived in a closure, a resumed run registered nothing, so the file regenerated
-# after a hand-back was never seen and the check compared the new summary against
+# Two things have to be true at once, and a single shared list can only manage
+# one of them.
+#
+# A run does not end at its first reply: a blocked action suspends it, and
+# _resume_and_deliver picks it up later with no access to anything the original
+# call held. So this cannot live in a per-request closure — when it did, a
+# resumed run registered nothing and the check compared the new summary against
 # the stale upload.
 #
-# Cleared when a new inbound message starts a run, never on resume — a resume is
-# a continuation of the same run and must keep the set it has built up.
-_RUN_FILE_IDS: list[str] = []
+# But runs also overlap. The inbound hook is fire-and-forget — it starts the run
+# with asyncio.create_task and returns 200 immediately — and the poller posts a
+# whole batch of new mail in a loop, so several runs are in flight together
+# inside one container. As one shared list, cleared by whichever run started
+# most recently, they overwrote each other: measured on 2026-08-11, run A
+# registered sandbox:f8bb214eb48d and by the time it verified it saw
+# sandbox:5301317e47ab — run B's workbook. A's summary was then checked against
+# a file from someone else's request, which invents missing figures and can
+# equally vouch for a gap that is real.
+#
+# Keyed by thread instead: the thread id names the run, survives the suspend,
+# and is different for every conversation. The ContextVar carries it down to
+# module-level helpers without threading an argument through the whole call
+# stack, and asyncio copies the context into every task a run spawns, so nested
+# work inherits the right bucket.
+_RUN_FILES: dict[str, list[str]] = {}
+_RUN_FILES_LIMIT = 64  # threads retained; oldest evicted
+_current_run: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_current_run", default=""
+)
+
+
+def begin_run(thread_id: str) -> None:
+    """Start a fresh run on `thread_id`, discarding anything it held before."""
+    _current_run.set(thread_id or "")
+    if not thread_id:
+        return
+    _RUN_FILES[thread_id] = []
+    while len(_RUN_FILES) > _RUN_FILES_LIMIT:
+        _RUN_FILES.pop(next(iter(_RUN_FILES)))
+
+
+def attach_run(thread_id: str) -> None:
+    """Continue an existing run — a resume keeps the handles it has built up."""
+    _current_run.set(thread_id or "")
+    if thread_id:
+        _RUN_FILES.setdefault(thread_id, [])
+
+
+def current_run_files() -> list[str]:
+    """Handles registered by the run in flight on this context."""
+    return _RUN_FILES.setdefault(_current_run.get(""), [])
 
 
 def _register_sandbox_files(mcp_result: Any) -> Any:
@@ -350,10 +392,11 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
         while len(_SANDBOX_FILES) > _SANDBOX_FILE_LIMIT:
             _SANDBOX_FILES.pop(next(iter(_SANDBOX_FILES)))
 
-        if file_id not in _RUN_FILE_IDS:
-            _RUN_FILE_IDS.append(file_id)
-            while len(_RUN_FILE_IDS) > _SANDBOX_FILE_LIMIT:
-                _RUN_FILE_IDS.pop(0)
+        run_files = current_run_files()
+        if file_id not in run_files:
+            run_files.append(file_id)
+            while len(run_files) > _SANDBOX_FILE_LIMIT:
+                run_files.pop(0)
 
         f["file_id"] = file_id
         f["size_bytes"] = len(raw)
@@ -519,7 +562,7 @@ async def verify_deliverables(summary_text: str, file_ids: list[str] | None = No
     is why a parse failure is silent rather than an accusation.
     """
     if file_ids is None:
-        file_ids = list(_RUN_FILE_IDS)
+        file_ids = list(current_run_files())
 
     figures = _summary_figures(summary_text)
     if not figures or not file_ids:
@@ -2822,6 +2865,12 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
     channel = resume_info["channel"]
     channel_ctx = resume_info.get("channel_context", {})
 
+    # A resume runs in a fresh task, so it starts with an empty context and would
+    # otherwise register its files against no run at all — or, if another run
+    # happened to be in flight, against that one. Attach rather than begin: the
+    # handles from before the interrupt are still the same run's.
+    attach_run(thread_id)
+
     print(f"[adapter] Resuming graph for approval {approval_id} (thread={thread_id}, channel={channel})", flush=True)
 
     # Carry the manager's decision through to the Graph transport, so the action
@@ -3461,6 +3510,9 @@ async def receive_teams_message(request: Request):
 
         # Use a unique thread_id for checkpointing (enables interrupt/resume)
         thread_id = f"teams:{conversation_id}"
+        # Same reason as the email path: two conversations can be in flight at
+        # once, and unscoped runs share one bucket of file handles.
+        begin_run(thread_id)
 
         result = await run_agent(
             content=teams_content,
@@ -3660,12 +3712,19 @@ async def _handle_message(message: str, context: dict):
             "workspace_provider": WORKSPACE_PROVIDER,
         }
 
+        # Identifies the run, and has to be settled before anything registers a
+        # file against it.
+        session_key = context.get("session_key", "default")
+        thread_id = f"email:{session_key}"
+
         # Capture files generated by MCP tools (for email attachments)
         _email_captured_files: list[dict] = []
         # A new inbound message is a new run, so the previous run's handles must
-        # not be checked against this run's summary. Resumes deliberately do not
-        # clear this — they continue the run that registered them.
-        _RUN_FILE_IDS.clear()
+        # not be checked against this run's summary. Scoped to this thread, so a
+        # message arriving on another one cannot clear them: runs overlap, and a
+        # shared list meant the newest arrival wiped everyone else's. Resumes
+        # attach instead of beginning, and keep what they have built up.
+        begin_run(thread_id)
         _RESUME_CAPTURED_FILES.clear()
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
@@ -3684,13 +3743,9 @@ async def _handle_message(message: str, context: dict):
             # Attachment capture above keeps the real bytes — that path is
             # adapter-side and never enters the model's context. This swaps the
             # base64 for a handle in what the *agent* sees.
-            # Registration records the handle in _RUN_FILE_IDS for the
-            # deliverable check; see the note there on why that is module state.
+            # Registration records the handle against this run's thread for the
+            # deliverable check; see the note there on why it is keyed that way.
             return _register_sandbox_files(mcp_result)
-
-        # Use a unique thread_id for checkpointing (enables interrupt/resume)
-        session_key = context.get("session_key", "default")
-        thread_id = f"email:{session_key}"
 
         print(f"[adapter] Running agent graph...", flush=True)
         result = await run_agent(
