@@ -228,12 +228,32 @@ async function getPendingApprovals(threadId) {
       return `- ID: ${a.id} | Task: ${a.taskType} | Draft: "${draftPreview}${a.draft?.length > 80 ? "..." : ""}" (queued ${ago}h ago)`;
     });
 
+    // Worded as background, not as an instruction.
+    //
+    // This used to open "There are pending approvals in this thread that need
+    // syncing" and go on to "you MUST call resolve_approval ... before
+    // responding", with the condition — only if the sender is answering an
+    // approval — buried in the middle. The condition is exactly what got
+    // dropped. On 2026-08-11 an ordinary new request ("build a spreadsheet for
+    // the WEST region") arrived in a thread with something pending, and the run
+    // spent every iteration reasoning "I need to resolve the pending approval
+    // first" and never did the work it was asked for.
+    //
+    // The default has to be the common case, and the common case is that these
+    // have nothing to do with the message. Someone with work awaiting approval
+    // who then asks for something else is ordinary, not exceptional.
     return [
-      "[SYSTEM: There are pending approvals in this thread that need syncing.",
-      "If the sender's message is responding to an approval request (approving,",
-      "editing, or rejecting a proposed action), you MUST call resolve_approval",
-      "with the approval ID and appropriate action before responding.",
-      "Pending approvals:",
+      "[SYSTEM — background only, no action required.",
+      "Some earlier work in this thread is waiting on the manager's decision.",
+      "It is listed so you recognise it if the sender mentions it. It is not part",
+      "of their request, and it is not yours to settle — approvals are decided by",
+      "the manager, using the buttons in the approval email or the dashboard, and",
+      "nothing you do can resolve one.",
+      "",
+      "Unless this message is plainly the sender answering one of these, ignore",
+      "them entirely and do what has actually been asked.",
+      "",
+      "Awaiting a decision:",
       ...lines,
       "]",
       "",
