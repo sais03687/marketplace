@@ -2758,8 +2758,14 @@ async def health():
 
 
 @app.get("/internal/skills")
-async def skills():
-    """List skill directories under /agent/skills/."""
+async def skills(request: Request):
+    """List skill directories under /agent/skills/.
+
+    Authenticated for the same reason as /internal/memory: the sandbox can reach
+    it, and what an agent has been taught to do is not something its analysis
+    code needs to enumerate.
+    """
+    _require_internal_auth(request)
     skills_dir = WORKSPACE_DIR / "skills"
     result = []
     if skills_dir.is_dir():
@@ -2774,8 +2780,22 @@ async def skills():
 
 
 @app.get("/internal/memory")
-async def memory():
-    """Return MEMORY.md + all memory/*.md files as keyed JSON."""
+async def memory(request: Request):
+    """Return MEMORY.md + all memory/*.md files as keyed JSON.
+
+    Authenticated, because the sandbox can reach this. The write routes were
+    given a token on 2026-08-11 and the read routes were left open, on the
+    reasoning that reaching them needed a shell on the VPS. That was wrong: the
+    python sandbox sits on the same docker network, and a probe from inside it
+    got 200 and 721 bytes out of this endpoint.
+
+    Which matters more here than it would elsewhere, because the code running in
+    that sandbox is written by a model that has just read an untrusted email.
+    Memory holds the buyer's working knowledge — team members, their addresses,
+    how their data is arranged — and there is no reason for analysis code to be
+    able to read it.
+    """
+    _require_internal_auth(request)
     files: dict[str, str] = {}
     main_memory = WORKSPACE_DIR / "MEMORY.md"
     if main_memory.exists():

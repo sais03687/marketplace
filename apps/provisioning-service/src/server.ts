@@ -499,6 +499,11 @@ async function proxyContainer(
 
   try {
     const upstream = await fetch(`${containerUrl}${path}`, {
+      // /internal/memory and /internal/skills now require the deployment token.
+      // They are reachable from the python sandbox — same docker network — and
+      // the code running there is written by a model that has just read an
+      // untrusted email, so "only a shell could reach it" was never true.
+      headers: { "x-deployment-token": config.approvalWebhookToken },
       signal: AbortSignal.timeout(5000),
     });
     const data = await upstream.json();
