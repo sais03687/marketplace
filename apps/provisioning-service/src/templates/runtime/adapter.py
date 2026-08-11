@@ -2443,11 +2443,23 @@ class ApprovalPolicyPayload(BaseModel):
 
 
 @app.post("/internal/approval-policy")
-async def set_approval_policy(body: ApprovalPolicyPayload):
+async def set_approval_policy(body: ApprovalPolicyPayload, request: Request):
     """Write /agent/approval_policy.json. The adapter's _load_policy()
     reads this file on every approval check, so the new policy takes
     effect on the next outbound email without a container restart.
+
+    Authenticated, and this is the one that most needed it. The two resolve
+    routes release a single action; this decides whether a human is asked about
+    any of them ever again — "never" and the agent stops checking with anybody.
+
+    Adding the guard was held back at first for fear of locking out the callers,
+    which are the web app's settings and onboarding routes. It turned out they
+    have never reached this endpoint at all: they POST deployment.containerName,
+    which is a localhost address on the VPS, from Vercel. There was no working
+    caller to lock out. They now route through the provisioning service, which
+    can reach here and sends the token.
     """
+    _require_internal_auth(request)
     override: dict = {}
     if body.policy is not None:
         override["policy"] = body.policy
