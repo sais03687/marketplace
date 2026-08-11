@@ -1,0 +1,49 @@
+name: runtime tests
+
+# The agent runtime is deployed by copying files into a container, so nothing
+# here is caught by a build step — a broken reply renderer or a gate that stops
+# consulting the buyer's policy ships silently and is found by a buyer.
+#
+# Every test in tests/ encodes a bug that was in production on 2026-08-11.
+
+on:
+  push:
+    paths:
+      - "agents/data-analyst/**"
+      - "apps/provisioning-service/src/templates/runtime/**"
+      - "apps/provisioning-service/src/jobs/outlook-poller.mjs"
+      - "tests/**"
+      - ".github/workflows/runtime-tests.yml"
+  pull_request:
+    paths:
+      - "agents/data-analyst/**"
+      - "apps/provisioning-service/src/templates/runtime/**"
+      - "apps/provisioning-service/src/jobs/outlook-poller.mjs"
+      - "tests/**"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # node runs the poller's own functions rather than a reimplementation of
+      # them — see tests/test_inbound_message.py.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -r apps/provisioning-service/src/templates/runtime/platform-requirements.txt
+
+      - name: Run the tests
+        run: python -m pytest -q
