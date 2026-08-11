@@ -834,7 +834,7 @@ async def _refuse_external_mail_recipients(action: str, body: dict) -> None:
         )
 
 
-def _reply_recipient(result: dict, context: dict) -> str:
+def _reply_recipient(result: dict, context: dict, action: str = "") -> str:
     """Who a finished run's reply goes to, falling back to the manager.
 
     The address normally comes from the message being answered. /hooks/agent
@@ -864,11 +864,27 @@ def _reply_recipient(result: dict, context: dict) -> str:
     # fallbacks and gives Graph something it rejects with ErrorInvalidRecipients:
     # the reply is lost either way, just later and with a worse error.
     manager = _extract_email(_manager_email())
-    for source, raw in (
+
+    # A reply with nobody to reply to is not a reply — it is a status report to
+    # whoever owns the agent. Hook-triggered runs have no correspondent at all,
+    # and asking the model to name one invites it to invent one: on 2026-08-10 a
+    # run addressed its confirmation to "manager@acmecorp.com", an address that
+    # exists nowhere and that the outbound boundary refuses. Refused or merely
+    # undeliverable, the manager does not get it either way, which is the same
+    # silence this function exists to prevent.
+    #
+    # Only for reply_email. send_email names a recipient on purpose — a cron
+    # mailing the team its weekly report means that address — and the boundary
+    # is what governs whether it is allowed.
+    candidates = (
         ("the reply itself", result.get("to")),
         ("the message being answered", context.get("sender")),
         ("the manager", manager),
-    ):
+    )
+    if action == "reply_email" and not _extract_email(context.get("sender", "") or ""):
+        candidates = (("the manager", manager),) + candidates
+
+    for source, raw in candidates:
         address = _extract_email(raw or "")
         if not _looks_deliverable(address):
             continue
@@ -3714,7 +3730,7 @@ async def _handle_message(message: str, context: dict):
             # Falls back to the manager rather than raising: a hook-triggered run
             # has no inbound sender to answer, and losing the reply is worse than
             # sending it to the person who owns the agent.
-            recipient = _reply_recipient(result, context)
+            recipient = _reply_recipient(result, context, action)
 
             # Refuse before asking, when the answer could not be yes — the same
             # reasoning SHARING_ACTIONS uses in execute_action. Queueing an
