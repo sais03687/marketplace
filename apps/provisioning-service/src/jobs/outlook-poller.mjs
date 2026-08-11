@@ -476,7 +476,10 @@ async function listUnreadMessages(token) {
   // internetMessageHeaders is requested for bounce detection: Graph omits it unless
   // explicitly selected, so without it the header checks in isBounceMessage() would
   // read undefined and never fire — coverage that looks present and is not.
-  const select = "id,subject,body,from,toRecipients,ccRecipients,conversationId,receivedDateTime,hasAttachments,internetMessageId,internetMessageHeaders";
+  // uniqueBody is the new content of a reply with the quoted history excluded.
+  // Graph omits it unless it is asked for, and it is the only way to tell a real
+  // request from a reply that says nothing at all — see isEmptyMessage().
+  const select = "id,subject,body,uniqueBody,from,toRecipients,ccRecipients,conversationId,receivedDateTime,hasAttachments,internetMessageId,internetMessageHeaders";
   const url = `${GRAPH_BASE}/users/${userEnc}/mailFolders/Inbox/messages?$filter=${filter}&$orderby=${orderby}&$top=10&$select=${select}`;
 
   const res = await fetch(url, {
@@ -585,6 +588,49 @@ function isApprovalNotificationReply(msg) {
 }
 
 /** Reply in-thread with a fixed message. No model involved. */
+/**
+ * Did this message actually say anything?
+ *
+ * A reply carries the whole conversation quoted underneath it, so a message with
+ * nothing typed in it still arrives with plenty of text — the last thing the
+ * agent said. Handed that, the agent reads its own previous answer and sends it
+ * back as though it were new work. Seen on 2026-08-11: an empty reply produced a
+ * confident "I have already provided the revenue per unit for APAC as 222.00",
+ * which was true, unasked for, and looked like the agent ignoring the request.
+ *
+ * People send empty replies. They hit send before typing, they reply from a
+ * phone and the text lands in the wrong place, they mean to attach something and
+ * forget. The agent should notice rather than answer the quote.
+ *
+ * uniqueBody is Graph's answer to this: the new part only. It is trusted just
+ * when Graph returned it — absent means unknown, and unknown must not be treated
+ * as empty, or every message gets refused the day that field stops arriving.
+ */
+function isEmptyMessage(message) {
+  const unique = message?.uniqueBody?.content;
+  if (unique === undefined || unique === null) return false; // not available — do not guess
+  if (message?.hasAttachments) return false;                 // a file is content
+  return htmlToPlainText(unique).replace(/\s+/g, " ").trim().length === 0;
+}
+
+/**
+ * Would replying to this start a loop?
+ *
+ * Auto-responders answer, and an out-of-office is frequently empty once its
+ * quoted history is removed. Answering one with "your message was empty" invites
+ * it to answer back. Bounces are already handled earlier; this covers the rest.
+ */
+function isAutoSubmitted(message) {
+  for (const h of message?.internetMessageHeaders || []) {
+    const name = String(h?.name || "").toLowerCase();
+    const value = String(h?.value || "").toLowerCase();
+    if (name === "auto-submitted" && value && value !== "no") return true;
+    if (name === "x-autoreply" || name === "x-autorespond") return true;
+    if (name === "precedence" && ["bulk", "auto_reply", "junk"].includes(value)) return true;
+  }
+  return false;
+}
+
 async function sendCannedReply(token, messageId, text) {
   const userEnc = encodeURIComponent(OUTLOOK_AGENT_EMAIL);
   const msgEnc = encodeURIComponent(messageId);
@@ -857,6 +903,30 @@ async function poll() {
             "Open the approval email again and use the Approve or Reject button in it. " +
             "You can also decide from the Approvals page in your dashboard.",
         );
+        await markAsRead(token, msgId);
+        continue;
+      }
+
+      // Nothing was typed — only the quoted thread came through. Answer here
+      // rather than handing it to the agent, which would read the quoted history
+      // as the request and reply with whatever it last said.
+      if (isEmptyMessage(msg)) {
+        if (isAutoSubmitted(msg)) {
+          console.log(
+            `  [empty] From: ${fromFormatted} | Subject: ${msg.subject} — auto-reply, ignored`,
+          );
+        } else {
+          console.log(
+            `  [empty] From: ${fromFormatted} | Subject: ${msg.subject} — no new content, asked what they need`,
+          );
+          await sendCannedReply(
+            token,
+            msgId,
+            "I got your reply, but there was no message in it — only the earlier " +
+              "conversation quoted underneath.\n\n" +
+              "Send it again with what you'd like me to do and I'll pick it straight up.",
+          );
+        }
         await markAsRead(token, msgId);
         continue;
       }
