@@ -412,6 +412,8 @@ Write the reply.
   message about it, and do not list the tools you called.
 - If part of the request is genuinely unfinished, say which part and why.
 - Write as yourself, to a colleague. No preamble about being an AI.
+- Sign off as "{agent_name}", and never with a placeholder. There is no
+  "[Your Name]" to fill in later — this text is sent exactly as you write it.
 
 Produce a JSON object and nothing else (no markdown fences):
 {{

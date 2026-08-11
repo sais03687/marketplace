@@ -744,6 +744,30 @@ _EMAIL_PLACEHOLDERS = {
 }
 
 
+# The other kind of placeholder: the one the model writes itself, in the shape
+# a letter template uses. On 2026-08-11 a reply went to a buyer signed
+#
+#   Best regards,
+#   [Your Name]
+#   Data Analyst Two
+#
+# which reads as an unfinished draft sent by mistake. The scrubber above only
+# knew about {{AGENT_NAME}}, the kind the platform substitutes, so this passed
+# straight through.
+#
+# Matched against a fixed list rather than anything in square brackets, because
+# brackets are ordinary text — "[1]" in a citation, "[text](url)" in a markdown
+# link, "[redacted]" written deliberately. Only the handful of stock template
+# slots are touched.
+_BRACKET_PLACEHOLDER = re.compile(
+    r"\[\s*(your name|name|your full name|agent name|your title|title|"
+    r"your position|your role|your company|company|company name|"
+    r"your email|email address|recipient|recipient name|date|"
+    r"insert [^\]]{0,40})\s*\]",
+    re.IGNORECASE,
+)
+
+
 def scrub_placeholders(text: str) -> str:
     """Replace any literal {{AGENT_NAME}}-style placeholders with real values."""
     if not text:
@@ -755,7 +779,37 @@ def scrub_placeholders(text: str) -> str:
     # address can change while the container runs.
     if "{{MANAGER_EMAIL}}" in text:
         text = text.replace("{{MANAGER_EMAIL}}", _manager_email())
-    return text
+
+    def _fill(match: re.Match) -> str:
+        slot = match.group(1).strip().lower()
+        if "compan" in slot:
+            return COMPANY_NAME or ""
+        if "email" in slot:
+            return WORKSPACE_EMAIL or AGENT_EMAIL or ""
+        if "name" in slot or "title" in slot or "position" in slot or "role" in slot:
+            return AGENT_NAME or ""
+        return ""  # date, recipient, "insert ..." — nothing true to put there
+
+    text = _BRACKET_PLACEHOLDER.sub(_fill, text)
+
+    # A signature usually reads "[Your Name]" above the real name, so filling the
+    # slot writes it twice. Only an adjacent repeat of the agent's own name or
+    # the company's is dropped, and only when it is short — a table with two
+    # identical rows is legitimate and must survive.
+    repeatable = {n.strip().lower() for n in (AGENT_NAME, COMPANY_NAME) if n and len(n) < 60}
+    if repeatable:
+        lines, deduped = text.split("\n"), []
+        for line in lines:
+            key = line.strip().lower()
+            if key and key in repeatable and deduped and deduped[-1].strip().lower() == key:
+                continue
+            deduped.append(line)
+        text = "\n".join(deduped)
+
+    # Substituting a slot on its own line can leave the line blank, and two of
+    # them can leave a gap. Collapse only what this created.
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
 def render_markdown_email(text: str) -> str:
