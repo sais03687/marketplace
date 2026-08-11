@@ -137,7 +137,13 @@ except (TypeError, ValueError):
 # File shape: {"policy": str, "riskThreshold": float, "autoApprove": [str], "requireApproval": [str]}
 APPROVAL_OVERRIDE_PATH = Path("/agent/approval_policy.json")
 
-DATA_DIR = Path(f"/data/{DEPLOYMENT_ID}")
+# /data is the volume in the container and stays the default. Overridable only
+# so this module can be imported somewhere that volume does not exist — the
+# directories below are created at import, so without it the runtime cannot be
+# loaded off a container at all, which is what kept every test trapped behind a
+# docker cp.
+DATA_ROOT = Path(os.environ.get("AGENT_DATA_ROOT", "/data"))
+DATA_DIR = DATA_ROOT / DEPLOYMENT_ID
 WORKSPACE_DIR = Path("/agent/creator")
 RESOLUTIONS_DIR = DATA_DIR / "resolutions"
 RESOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)

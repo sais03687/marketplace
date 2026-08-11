@@ -22,12 +22,19 @@ file removes each:
 """
 import os
 import sys
+import tempfile
 import types
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 AGENT_DIR = REPO / "agents" / "data-analyst"
 RUNTIME_DIR = REPO / "apps" / "provisioning-service" / "src" / "templates" / "runtime"
+
+# 0. adapter.py creates its state directories at import time, under /data — the
+#    container's volume. On a CI runner that path is not writable, and on
+#    Windows it silently becomes C:\data, which is worse: it passes locally and
+#    fails everywhere else. Point it somewhere disposable instead.
+os.environ.setdefault("AGENT_DATA_ROOT", str(Path(tempfile.gettempdir()) / "agent-tests-data"))
 
 # 1. Secrets and identity the runtime expects to exist. Deliberately obvious
 #    placeholders: if one of these ever appears in a failure message, it is
