@@ -3970,7 +3970,24 @@ async def _handle_message(message: str, context: dict):
                     use_fn=report_usage,
                     graph_fn=graph_request,
                     thread_id=retry_thread_id,
-                    **({"mcp_fn": call_mcp_tool} if _mcp_servers else {}),
+                    # The same instrumentation the first attempt had. This used
+                    # to hand over the raw call_mcp_tool with no resolver and no
+                    # verifier, so a retry silently lost all three:
+                    #
+                    #   - nothing was captured, so a file the retry generated was
+                    #     never attached, while the reply said "see attached";
+                    #   - the agent got base64 back into its context instead of a
+                    #     handle, and drive_upload was handed content it cannot
+                    #     upload;
+                    #   - no file ids were registered, so the deliverable check
+                    #     had nothing to compare the reply against.
+                    #
+                    # The same mistake as the resume path, fixed there on
+                    # 2026-08-10. A retry is the same run having another go, and
+                    # needs what the first attempt was given.
+                    **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
+                    file_resolver_fn=resolve_sandbox_file,
+                    verify_fn=verify_deliverables,
                 )
                 # Check if the retry hit an interrupt (blocked action)
                 if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
