@@ -3214,6 +3214,11 @@ async def receive_hook(body: HookPayload, request: Request):
         "hook_name": body.name,
         "session_key": body.sessionKey,
         "agentmind_prompt": AGENTMIND_PROMPT,
+        # The buyer's approval policy, so the agent's own gate can answer the same
+        # question this adapter would. Without it that gate was a hardcoded set
+        # that interrupted before the policy was ever consulted, and a buyer on
+        # "never" was still stopped on every upload.
+        "approval_policy": _load_policy(),
     }
 
     # Run the agent asynchronously
@@ -3345,6 +3350,11 @@ async def receive_agentmail_webhook(request: Request):
         "hook_name": "AgentMail",
         "session_key": f"hook:agentmail:{thread_id}",
         "agentmind_prompt": AGENTMIND_PROMPT,
+        # The buyer's approval policy, so the agent's own gate can answer the same
+        # question this adapter would. Without it that gate was a hardcoded set
+        # that interrupted before the policy was ever consulted, and a buyer on
+        # "never" was still stopped on every upload.
+        "approval_policy": _load_policy(),
         "thread_id": thread_id,
         "message_id": message_id,
         "sender": sender,
@@ -3434,6 +3444,11 @@ async def receive_teams_message(request: Request):
         "hook_name": "Teams",
         "session_key": f"hook:teams:{conversation_id}",
         "agentmind_prompt": AGENTMIND_PROMPT,
+        # The buyer's approval policy, so the agent's own gate can answer the same
+        # question this adapter would. Without it that gate was a hardcoded set
+        # that interrupted before the policy was ever consulted, and a buyer on
+        # "never" was still stopped on every upload.
+        "approval_policy": _load_policy(),
         "teams_user_id": teams_user_id,
         "teams_user_name": teams_user_name,
         "google_sa_email": GOOGLE_SA_EMAIL,

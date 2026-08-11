@@ -250,14 +250,69 @@ BLOCKED_ACTIONS = {
 #
 # Anonymous stays blocked, and stays refused. That one really is a link anyone
 # who ever receives it can open.
-def _needs_manager_approval(action_type: str, params: dict) -> bool:
-    """Does this specific call need a human, given what it is actually doing?"""
+# Writes to the buyer's own data. No counterparty, so inside/outside does not
+# apply — the only question is whether this buyer wants writes reviewed. Mirrors
+# MUTATING_ACTIONS in the adapter, which is what decides the same question for
+# anything reaching Microsoft.
+_WRITE_ACTIONS = {
+    "excel_write",
+    "excel_append",
+    "drive_upload",
+    "my_drive_upload",
+    "calendar_delete",
+}
+
+
+def _needs_manager_approval(
+    action_type: str, params: dict, policy: dict | None = None
+) -> bool:
+    """Does this specific call need a human, given what it is actually doing?
+
+    The buyer's approval policy is consulted, which it previously was not. This
+    gate was a hardcoded set, and it runs *before* the platform's policy-aware
+    check — the agent interrupts, so nothing downstream ever gets asked. A buyer
+    who chose "Never ask — fully autonomous" was still stopped on every single
+    upload. Confirmed on 2026-08-11: the container was on never, the reply went
+    out unprompted as it should, and drive_upload interrupted anyway.
+
+    It failed safe, which is why it went unnoticed. It was still the setting not
+    doing what it says.
+
+    Sharing is deliberately not policy-dependent, matching the adapter: "never"
+    is a buyer asking to stop being interrupted about ordinary work, and reading
+    it as permission to publish a file anyone can open is not a consequence
+    anyone picks a notification preference to get.
+    """
     if action_type not in BLOCKED_ACTIONS:
         return False
+
     if action_type in ("drive_create_link", "my_drive_create_link"):
         # Absent scope is not org scope. my_drive_create_link defaults to
         # anonymous, so silence here has to keep the gate rather than open it.
         return str((params or {}).get("scope", "")).lower() != "organization"
+
+    if action_type in ("drive_share", "my_drive_share"):
+        return True  # named recipients — the platform checks who they are
+
+    if action_type in _WRITE_ACTIONS:
+        setting = str((policy or {}).get("policy", "") or "").lower()
+        if setting == "never":
+            return False
+        if setting == "risk-based":
+            # No score means it could not be assessed, not that it scored zero.
+            # Treating absent data as low risk is how an allowlist that failed to
+            # load once came to mean "allow everyone" — fail toward the human.
+            raw = (policy or {}).get("riskThreshold")
+            combined = (params or {}).get("_risk_combined")
+            try:
+                return float(combined) >= float(raw if raw is not None else 5)
+            except (TypeError, ValueError):
+                return True
+        # always, external-only, or unset. external-only speaks about
+        # recipients and these have none, so it has no opinion — writes stay
+        # reviewed, which is what every buyer has had until now.
+        return True
+
     return True
 
 # ─── Thread-local function registry ─────────────────────────────────────────
@@ -1120,7 +1175,15 @@ async def execute_action(state: AgentState) -> AgentState:
 
     try:
         # ── Interrupt for blocked actions (requires manager approval) ────────
-        if _needs_manager_approval(action_type, params):
+        # The buyer's policy comes from the platform, which owns it; the risk
+        # score comes from this turn's own reasoning, which is where it is
+        # produced. Passed together so the gate can answer the same question the
+        # adapter would, rather than a hardcoded approximation of it.
+        _risk = state.analysis.get("risk_assessment") or {}
+        _gate_params = {**params, "_risk_combined": _risk.get("combined")}
+        if _needs_manager_approval(
+            action_type, _gate_params, state.context.get("approval_policy")
+        ):
             print(f"[agent] BLOCKED action '{action_type}' — interrupting for approval", flush=True)
             resolution = interrupt({
                 "action": action_type,
