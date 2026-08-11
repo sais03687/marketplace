@@ -15,6 +15,7 @@ import re
 import time
 import asyncio
 import contextvars
+from datetime import datetime, timezone
 from typing import Any
 from pathlib import Path
 from decimal import Decimal, InvalidOperation
@@ -350,27 +351,214 @@ _current_run: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
+# What the run actually did in the sandbox, in order.
+#
+# The code was being thrown away. execute_action reads it out of the action's
+# arguments, passes it to the sandbox and lets the local go out of scope; the
+# result is then truncated to 2000 characters for the model, and all that
+# survives the turn is the string "MCP python-sandbox/execute_python". So there
+# was no way to show anyone what was run, and no way for anything to notice that
+# a script had failed — on 2026-08-11 one exited with returncode 1 and a
+# NameError, and its partial output was reported as findings.
+#
+# Recorded here rather than in the agent because this wrapper is the one place
+# that sees all of it at once: the code on the way in, the untruncated result on
+# the way out, and the image bytes before they are swapped for handles.
+#
+# Keyed by thread for the same reason the file handles are — runs overlap, and a
+# run suspended for approval resumes in a different task.
+_RUN_STEPS: dict[str, list[dict]] = {}
+_RUN_STEPS_LIMIT = 40  # steps per run; a rebuild loop cannot grow without bound
+
+
 def begin_run(thread_id: str) -> None:
     """Start a fresh run on `thread_id`, discarding anything it held before."""
     _current_run.set(thread_id or "")
     if not thread_id:
         return
     _RUN_FILES[thread_id] = []
+    _RUN_STEPS[thread_id] = []
     while len(_RUN_FILES) > _RUN_FILES_LIMIT:
-        _RUN_FILES.pop(next(iter(_RUN_FILES)))
+        oldest = next(iter(_RUN_FILES))
+        _RUN_FILES.pop(oldest)
+        _RUN_STEPS.pop(oldest, None)
 
 
 def attach_run(thread_id: str) -> None:
-    """Continue an existing run — a resume keeps the handles it has built up."""
+    """Continue an existing run — a resume keeps what it has built up."""
     _current_run.set(thread_id or "")
     if thread_id:
         _RUN_FILES.setdefault(thread_id, [])
+        _RUN_STEPS.setdefault(thread_id, [])
 
 
 def current_run_files() -> list[str]:
     """Handles registered by the run in flight on this context."""
     return _RUN_FILES.setdefault(_current_run.get(""), [])
 
+
+def current_run_steps() -> list[dict]:
+    """Sandbox steps recorded by the run in flight on this context."""
+    return _RUN_STEPS.setdefault(_current_run.get(""), [])
+
+
+def record_sandbox_step(tool: str, arguments: dict, result: Any) -> None:
+    """Keep one sandbox execution: what was run, what it printed, what it made.
+
+    Called before _register_sandbox_files swaps the image bytes for handles, so
+    the base64 is still here to embed. Only execute_python is recorded — the
+    parse_* tools take a file in and give text back, which is not working anyone
+    would want to read.
+
+    Never raises. This is bookkeeping for an attachment; it must not be able to
+    take down the run it is describing.
+    """
+    if tool != "execute_python" or not isinstance(result, dict):
+        return
+    try:
+        images = [
+            {"name": f.get("name", "chart.png"), "base64": f.get("base64_content", "")}
+            for f in (result.get("files") or [])
+            if str(f.get("name", "")).lower().endswith((".png", ".jpg", ".jpeg"))
+            and f.get("base64_content")
+        ]
+        steps = current_run_steps()
+        steps.append({
+            "code": str((arguments or {}).get("code", "")),
+            "stdout": str(result.get("stdout") or ""),
+            "stderr": str(result.get("stderr") or ""),
+            "returncode": result.get("returncode"),
+            "files": [f.get("name", "output") for f in (result.get("files") or [])],
+            "images": images,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        })
+        while len(steps) > _RUN_STEPS_LIMIT:
+            steps.pop(0)
+    except Exception as exc:
+        print(f"[adapter] Could not record sandbox step: {exc}", flush=True)
+
+
+def _nb_lines(text: str) -> list:
+    """Split for a notebook cell: every line keeps its newline except the last."""
+    if not text:
+        return []
+    parts = text.splitlines(keepends=True)
+    return parts
+
+
+def build_notebook(steps: list, *, request: str = "", subject: str = "") -> str:
+    """The run's sandbox work as a .ipynb, ready to attach.
+
+    A notebook rather than a transcript because the audience is someone reading
+    an analysis: the code, what it printed and the chart it drew belong next to
+    each other, in the order they happened. Jupyter, VS Code, Colab and GitHub
+    all render that; none of them need anything installed on our side, because
+    the format is just JSON and we already hold every part of it.
+
+    Failed steps are included, deliberately. A script that exited non-zero and
+    had its partial output reported as findings is exactly the thing nobody
+    could see before — the traceback is the most useful cell in the file.
+    """
+    cells = []
+
+    heading = ["# Working\n", "\n"]
+    if subject:
+        heading += [f"**Request:** {subject}\n", "\n"]
+    if request:
+        trimmed = request.strip()
+        if len(trimmed) > 1500:
+            trimmed = trimmed[:1500].rstrip() + " …"
+        heading += ["> " + line + "\n" for line in trimmed.splitlines()] + ["\n"]
+    heading += [
+        "Each cell below is one run in the sandbox, in the order it happened, "
+        "with whatever it printed and produced.\n",
+    ]
+    cells.append({
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": heading,
+    })
+
+    for i, step in enumerate(steps or [], start=1):
+        outputs = []
+
+        stdout = step.get("stdout") or ""
+        if stdout.strip():
+            outputs.append({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": _nb_lines(stdout),
+            })
+
+        stderr = step.get("stderr") or ""
+        if stderr.strip():
+            outputs.append({
+                "output_type": "stream",
+                "name": "stderr",
+                "text": _nb_lines(stderr),
+            })
+
+        for img in step.get("images") or []:
+            outputs.append({
+                "output_type": "display_data",
+                "metadata": {},
+                "data": {"image/png": img.get("base64", "")},
+            })
+
+        rc = step.get("returncode")
+        if rc not in (0, None):
+            outputs.append({
+                "output_type": "stream",
+                "name": "stderr",
+                "text": [f"\n[this step exited with code {rc} — it did not finish]\n"],
+            })
+
+        made = [f for f in (step.get("files") or [])]
+        if made:
+            outputs.append({
+                "output_type": "stream",
+                "name": "stdout",
+                "text": [f"\n[files written: {', '.join(made)}]\n"],
+            })
+
+        cells.append({
+            "cell_type": "code",
+            "execution_count": i,
+            "metadata": {},
+            "source": _nb_lines(step.get("code") or ""),
+            "outputs": outputs,
+        })
+
+    notebook = {
+        "cells": cells,
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {"name": "python", "version": "3.12"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    return json.dumps(notebook, indent=1)
+
+
+def notebook_attachment(steps: list, *, request: str = "", subject: str = "") -> dict | None:
+    """The notebook as an email attachment, or None when there is nothing to show."""
+    if not steps:
+        return None
+    try:
+        body = build_notebook(steps, request=request, subject=subject)
+    except Exception as exc:
+        print(f"[adapter] Could not build the working notebook: {exc}", flush=True)
+        return None
+    return {
+        "name": "working.ipynb",
+        "content_base64": base64.b64encode(body.encode("utf-8")).decode(),
+        "contentType": "application/x-ipynb+json",
+    }
 
 def _register_sandbox_files(mcp_result: Any) -> Any:
     """Swap base64 file contents in an MCP result for handles the agent can pass on."""
@@ -624,6 +812,7 @@ async def _resume_capturing_mcp_fn(server: str, tool: str, arguments: dict):
                     "content_base64": b64,
                     "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
                 })
+    record_sandbox_step(tool, arguments, mcp_result)
     return _register_sandbox_files(mcp_result)
 
 
@@ -3493,6 +3682,7 @@ async def receive_teams_message(request: Request):
                             })
             # Same as the email path: the capture above keeps the bytes, the
             # agent gets a handle.
+            record_sandbox_step(tool, arguments, result)
             return _register_sandbox_files(result)
 
         # Wrap message with Teams-specific instructions so the agent replies
@@ -3770,6 +3960,7 @@ async def _handle_message(message: str, context: dict):
             # base64 for a handle in what the *agent* sees.
             # Registration records the handle against this run's thread for the
             # deliverable check; see the note there on why it is keyed that way.
+            record_sandbox_step(tool, arguments, mcp_result)
             return _register_sandbox_files(mcp_result)
 
         print(f"[adapter] Running agent graph...", flush=True)
@@ -3999,9 +4190,29 @@ async def _handle_message(message: str, context: dict):
                 return
 
             # Prepare attachments from captured MCP files (if any)
-            _att = _email_captured_files if _email_captured_files else None
+            _att = list(_email_captured_files)
+
+            # The working, as a notebook: the code, what it printed, and any
+            # chart it drew, in order. Attached rather than written into the
+            # reply — the reply answers the question, and the method is for
+            # whoever wants to check it. Nothing here is summarised or
+            # described, so there is no second account of the work that can
+            # disagree with the first.
+            _nb = notebook_attachment(
+                current_run_steps(),
+                request=context.get("original_message", "") or message,
+                subject=context.get("subject", ""),
+            )
+            if _nb:
+                _att.append(_nb)
+
+            _att = _att or None
             if _att:
-                print(f"[adapter] Attaching {len(_att)} file(s) to email", flush=True)
+                print(
+                    f"[adapter] Attaching {len(_att)} file(s) to email"
+                    + (" (including the working notebook)" if _nb else ""),
+                    flush=True,
+                )
 
             if action == "send_email":
                 # Bare address only — Graph rejects a display-name form with
