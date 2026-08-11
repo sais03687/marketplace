@@ -359,6 +359,67 @@ async def search_commons(state: AgentState) -> AgentState:
     return state
 
 
+# The closing pass has its own prompt, and the reason is that the reasoning one
+# argues against it. That prompt is a ReAct loop: "Act: Choose ONE action to
+# take", "You MUST produce a COMPLETE JSON response with ALL fields including
+# action", "The action field is REQUIRED — never omit it", "If you still have
+# steps in your plan, pick the NEXT action to execute". The instruction to stop
+# and write the reply was appended to the *message*, several thousand tokens
+# away from all of that and far less emphatic.
+#
+# The model followed the louder half, which is the unsurprising outcome. On
+# 2026-08-10 a closing pass answered with excel_read — still working — and the
+# retry after it returned action=none with an empty final_response.text. Two of
+# four runs that day ended with the platform composing the reply from results
+# because the model never wrote one.
+#
+# Telling it more firmly was tried twice and failed twice. So the closing pass
+# no longer sees a schema it can put an action in: there is no action field to
+# fill, and nothing to choose. The only thing it can produce is the reply.
+WRAP_UP_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
+
+{soul_instructions}
+
+The work is finished. Your only job now is to write the reply that goes to the
+person who asked. You cannot run tools on this turn — there is nothing to decide
+and nothing left to do.
+
+## What they asked for
+
+{request}
+
+## What you did
+
+{actions_taken}
+
+## What the work produced
+
+{action_results}
+
+---
+
+Write the reply.
+
+- Answer the question they actually asked. If they asked which region performed
+  best, name it and say by how much. A table is not an answer to a question.
+- Lead with the figures. They can open the file; what they cannot see is the
+  conclusion you drew from it.
+- Use the numbers above and only those. Never state a figure the results do not
+  support, and never re-derive a figure that appears in their request — use
+  theirs.
+- Round money and percentages to two decimals.
+- If a file was produced, mention it in one line at the end. Do not make the
+  message about it, and do not list the tools you called.
+- If part of the request is genuinely unfinished, say which part and why.
+- Write as yourself, to a colleague. No preamble about being an AI.
+
+Produce a JSON object and nothing else (no markdown fences):
+{{
+  "subject": "subject line for the reply, or null to keep the existing one",
+  "text": "the reply itself, as plain text with line breaks"
+}}"""
+
+
 REASONING_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
 
 {soul_instructions}
@@ -733,6 +794,104 @@ async def reason_and_act(state: AgentState) -> AgentState:
     return state
 
 
+async def _write_reply(state: AgentState) -> str:
+    """Ask the model for the closing reply, and for nothing else.
+
+    A separate call rather than another turn of the ReAct loop, because the loop
+    is what was producing actions instead of prose. Returns "" if the model
+    still declines, leaving the deterministic composer to take over.
+    """
+    results_str = "None" if not state.action_results else "\n".join(
+        f"- Result {i + 1}: {_fmt_result(r)}"
+        for i, r in enumerate(state.action_results[-6:])
+    )
+    actions_str = "None" if not state.actions_taken else "\n".join(
+        f"- {a}" for a in state.actions_taken[-8:]
+    )
+
+    prompt = WRAP_UP_PROMPT.format(
+        agent_name=state.context.get("agent_name", "Data Analyst"),
+        company_name=state.context.get("company_name", ""),
+        soul_instructions=_soul_md,
+        request=(state.content or "(no request text available)")[:4000],
+        actions_taken=actions_str,
+        action_results=results_str,
+    )
+
+    try:
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=60)
+    except Exception as e:
+        # Timeout, rate limit, provider error — all the same from here, and all
+        # recoverable: the caller tries once more and then composes from the
+        # results it already has.
+        print(
+            f"[agent] Closing-reply call failed ({type(e).__name__}: {e}) — retrying or composing",
+            flush=True,
+        )
+        return ""
+
+    raw = response.content if hasattr(response, "content") else str(response)
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
+
+    parsed = None
+    try:
+        parsed = json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group())
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+
+    if isinstance(parsed, dict) and str(parsed.get("text") or "").strip():
+        subject = parsed.get("subject")
+        if isinstance(subject, str) and subject.strip():
+            state.context["_wrap_up_subject"] = subject.strip()
+        return str(parsed["text"]).strip()
+
+    # Prose without the wrapper still answers the question, and a reply is not
+    # worth discarding over its packaging. Only accept it when it is clearly not
+    # a half-parsed object.
+    if cleaned and not cleaned.lstrip().startswith("{"):
+        return cleaned
+
+    # Distinguish the two silences in the log. An empty completion is the model
+    # declining and is usually transient; unparseable output means the prompt or
+    # the schema has drifted, and that is a real regression worth seeing.
+    print(
+        "[agent] Closing reply unusable: "
+        + ("model returned nothing" if not cleaned else f"could not parse {cleaned[:160]!r}"),
+        flush=True,
+    )
+    return ""
+
+
+def _set_reply(state: AgentState, text: str) -> None:
+    """Install `text` as the run's final reply and close the analysis out.
+
+    Only the text and, if the model supplied one, the subject. to and thread_id
+    keep whatever the run already had — addressing is not this pass's business,
+    and the platform resolves it afterwards anyway.
+    """
+    analysis = state.analysis if isinstance(state.analysis, dict) else {}
+    final = analysis.get("final_response")
+    final = dict(final) if isinstance(final, dict) else {}
+    final["action"] = final.get("action") or "reply_email"
+    final["text"] = text
+    subject = state.context.pop("_wrap_up_subject", "")
+    if subject and not final.get("subject"):
+        final["subject"] = subject
+    analysis["final_response"] = final
+    # The run is over either way — say so, so nothing downstream reads this as a
+    # turn still holding an unexecuted action.
+    analysis["completed"] = True
+    analysis["action"] = {"type": "none"}
+    state.analysis = analysis
+
+
 async def wrap_up(state: AgentState) -> AgentState:
     """Final pass once the step budget is spent: write the reply, take no action.
 
@@ -759,35 +918,40 @@ async def wrap_up(state: AgentState) -> AgentState:
         f"[agent] {why} after {len(state.actions_taken)} action(s) — final pass for the reply",
         flush=True,
     )
-    state = await reason_and_act(state)
-
-    # One pass used to be the whole of wrap_up, and its output was accepted
-    # whatever it was. On 2026-08-10 the model answered this pass with
-    # action=none and an empty final_response.text on every run, so finalize's
-    # fallback fired and the buyer was emailed a list of internal steps instead
-    # of their answer — twice in one thread, the second time after they had
-    # replied "Send me the data and the summary."
+    # A dedicated call, not another turn of the ReAct loop.
     #
-    # So don't accept silence. Sample once more; models fail this
-    # non-deterministically and a second attempt is cheap next to a wasted run.
-    if _reply_text_of(state):
+    # This used to run reason_and_act, whose prompt spends most of its length
+    # insisting that an action is mandatory and that "none" is only for a
+    # finished task. The instruction to stop and write the reply was appended to
+    # the message, thousands of tokens away and far quieter. The model followed
+    # the louder half: on 2026-08-10 the closing pass answered with excel_read,
+    # still working, and a second attempt returned action=none with no text.
+    #
+    # Sampling again was the previous fix and it did not help, because the
+    # problem was never randomness — the prompt was asking for the wrong thing,
+    # consistently. WRAP_UP_PROMPT has no action field to fill, so there is
+    # nothing to choose and the only output available is the reply.
+    text = await _write_reply(state)
+
+    if text:
+        _set_reply(state, text)
+        print(f"[agent] wrap_up wrote the reply ({len(text)} chars)", flush=True)
         return state
 
     print("[agent] wrap_up produced no reply text — one more attempt", flush=True)
-    state = await reason_and_act(state)
-    if _reply_text_of(state):
+    text = await _write_reply(state)
+    if text:
+        _set_reply(state, text)
+        print(f"[agent] wrap_up wrote the reply on the second attempt ({len(text)} chars)", flush=True)
         return state
 
-    # Two passes, both silent. A third would be the same bet again: on
-    # 2026-08-10 this model answered every wrap-up pass of every run with
-    # action=none and an empty final_response.text, so resampling bought
-    # another empty field and another paid call, and the run fell through to
-    # finalize's fallback — which is how a buyer came to be sent the sandbox
-    # envelope instead of their figures.
+    # Two passes at a prompt that can only produce a reply, and still nothing.
+    # A third would be the same bet again, and the results are already in hand:
+    # composing from them needs no model at all, and the printed records are a
+    # better source for a table than a model retyping them would be.
     #
-    # The results are already in hand. Composing from them needs no model at
-    # all, and the printed records are a better source for a table than a model
-    # retyping them would be. So stop asking and write it.
+    # This path is the floor, not the plan. Reaching it means the buyer gets
+    # figures without an answer, so it is worth watching in the logs.
     composed = _compose_reply(state)
     if not composed:
         # Nothing renderable — a run that genuinely produced no findings. Leave
@@ -795,20 +959,7 @@ async def wrap_up(state: AgentState) -> AgentState:
         print("[agent] wrap_up silent and no results to compose from", flush=True)
         return state
 
-    analysis = state.analysis if isinstance(state.analysis, dict) else {}
-    final = analysis.get("final_response")
-    final = dict(final) if isinstance(final, dict) else {}
-    # Only the text is authored here. to/subject/thread_id keep whatever the
-    # model set, because addressing is the one part of the reply it got right.
-    final["action"] = final.get("action") or "reply_email"
-    final["text"] = composed
-    analysis["final_response"] = final
-    # The run is over either way — say so, so nothing downstream reads this as a
-    # turn still holding an unexecuted action.
-    analysis["completed"] = True
-    analysis["action"] = {"type": "none"}
-    state.analysis = analysis
-
+    _set_reply(state, composed)
     print(
         f"[agent] wrap_up composed the reply from results ({len(composed)} chars) "
         "— the model would not write one",
