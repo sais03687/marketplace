@@ -65,7 +65,14 @@ TOOLS = [
             "\n"
             "This is the only way to get a file out of the sandbox. Uploads accept a "
             "file_id and reject file content, so never paste base64 and never invent an "
-            "id — if you have not written a file, you do not have one to upload."
+            "id — if you have not written a file, you do not have one to upload.\n"
+            "\n"
+            "Files come IN the same way. When an email arrives with an attachment you "
+            "are given a handle for it; list those handles in input_files and the "
+            "platform writes each one to /tmp/input/<filename> before your code runs. "
+            "Read them with pandas, openpyxl, pdfplumber — whatever suits the format. "
+            "Never paste file content into code: you were given a handle precisely "
+            "because the file is too big to retype, and a handle is the only way in."
         ),
         "inputSchema": {
             "type": "object",
@@ -73,6 +80,15 @@ TOOLS = [
                 "code": {
                     "type": "string",
                     "description": "Python code to execute. Print results to stdout. Save files to /tmp/output/ to return them.",
+                },
+                "input_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Handles of files to place in /tmp/input/ before the code runs — "
+                        "the ones you were given for email attachments. Names are kept, "
+                        "so an attached orders.csv is at /tmp/input/orders.csv."
+                    ),
                 },
             },
             "required": ["code"],
@@ -156,11 +172,57 @@ async def call_tool(req: ToolCallRequest):
 
 # ─── Tool Implementations ───────────────────────────────────────────────────
 
+def _stage_input_files(entries: list) -> tuple[list[str], list[str]]:
+    """Write inbound files into /tmp/input/ and return (staged names, errors).
+
+    The adapter has already turned the handles the model passed into
+    {name, content_base64} pairs — the model never sees or types base64, in
+    either direction. Anything malformed is reported rather than skipped
+    silently: code written against a file that is not there fails with a
+    FileNotFoundError that says nothing about why.
+    """
+    in_dir = Path("/tmp/input")
+    staged: list[str] = []
+    errors: list[str] = []
+
+    # Clear between runs so one execution cannot read another's inputs.
+    if in_dir.exists():
+        for old in in_dir.iterdir():
+            if old.is_file():
+                old.unlink()
+    in_dir.mkdir(parents=True, exist_ok=True)
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append(f"unusable input_files entry: {type(entry).__name__}")
+            continue
+        raw_name = str(entry.get("name") or "input")
+        # basename only — an attachment called ../../etc/passwd must land in
+        # /tmp/input, not where it asked to.
+        name = os.path.basename(raw_name).replace("\\", "_") or "input"
+        try:
+            blob = base64.b64decode(entry.get("content_base64") or "")
+        except Exception as exc:
+            errors.append(f"{name}: could not be decoded ({exc})")
+            continue
+        try:
+            (in_dir / name).write_bytes(blob)
+            staged.append(name)
+        except Exception as exc:
+            errors.append(f"{name}: could not be written ({exc})")
+
+    return staged, errors
+
+
 def _execute_python(args: dict) -> dict:
     """Run Python code in a subprocess with resource limits."""
     code = args.get("code", "")
     if not code.strip():
         return {"stdout": "", "stderr": "No code provided", "files": []}
+
+    staged, stage_errors = _stage_input_files(args.get("input_files") or [])
+    if staged:
+        print(f"[sandbox] Staged {len(staged)} input file(s): {', '.join(staged)}", flush=True)
 
     # Create output directory for generated files
     output_dir = tempfile.mkdtemp(prefix="mcp_output_")
@@ -170,6 +232,7 @@ def _execute_python(args: dict) -> dict:
     wrapper = f"""
 import os, sys
 os.makedirs('/tmp/output', exist_ok=True)
+os.makedirs('/tmp/input', exist_ok=True)
 os.chdir('/tmp')
 {code}
 """
@@ -199,11 +262,21 @@ os.chdir('/tmp')
                     })
                     f.unlink()  # clean up
 
+        # A file that failed to stage is the likely cause of whatever the code
+        # then did wrong, so say so ahead of the traceback rather than leaving
+        # a bare FileNotFoundError to be puzzled over.
+        stderr = result.stderr[:10000]
+        if stage_errors:
+            stderr = "Input files that could not be staged:\n" + "\n".join(
+                f"  {e}" for e in stage_errors
+            ) + ("\n\n" + stderr if stderr else "")
+
         return {
             "stdout": result.stdout[:50000],  # cap output at 50KB
-            "stderr": result.stderr[:10000],
+            "stderr": stderr,
             "returncode": result.returncode,
             "files": files,
+            **({"input_files_staged": staged} if staged else {}),
         }
     except subprocess.TimeoutExpired:
         return {

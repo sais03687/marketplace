@@ -324,6 +324,33 @@ async def _discover_mcp_tools() -> None:
 _SANDBOX_FILES: dict[str, dict] = {}
 _SANDBOX_FILE_LIMIT = 32  # per process; oldest evicted, these are single-run artefacts
 
+# The same idea in reverse, for files that arrive rather than leave.
+#
+# An attachment small enough to read as text is inlined into the prompt; anything
+# else was written to /data/attachments and named, and there it stopped. The
+# sandbox container has no mounts, so a path in the agent container means nothing
+# to it — the agent could see that a workbook existed and had no way to open it.
+# Benchmark task T16 on 2026-08-12 is the whole story: an .xlsx arrived, the
+# agent correctly said it could not read it, and asked for the numbers to be
+# pasted into the body instead.
+#
+# So inbound files get handles too, and the capturing MCP wrappers swap a handle
+# for the real bytes on the way to the sandbox. The model passes handles in both
+# directions and never sees base64 in either.
+#
+# Kept separate from _SANDBOX_FILES on purpose. Those are what the run *produced*:
+# they are attached to the reply and they are the haystack the deliverable check
+# searches. An inbound file is neither — attaching it would post someone's own
+# spreadsheet back to them, and putting it in the haystack would let a figure be
+# "verified" against the input it was supposed to be derived from.
+_INBOUND_FILES: dict[str, dict] = {}
+_INBOUND_FILE_LIMIT = 16
+
+# A handle costs a few tokens whatever the file weighs, so this ceiling is about
+# memory and mail limits rather than prompt budget — two orders of magnitude
+# above _ATTACHMENT_INLINE_LIMIT, which has to sit inside the prompt.
+_ATTACHMENT_HANDLE_LIMIT = 25 * 1024 * 1024
+
 # Handles produced by a run, for the deliverable check, keyed by the run's
 # thread.
 #
@@ -606,6 +633,101 @@ def resolve_sandbox_file(ref: str) -> bytes | None:
     return entry["bytes"] if entry else None
 
 
+def _register_inbound_file(name: str, raw: bytes) -> str | None:
+    """Hold an inbound attachment's bytes and return the handle for it."""
+    if not raw or len(raw) > _ATTACHMENT_HANDLE_LIMIT:
+        return None
+    handle = f"inbound:{uuid.uuid4().hex[:12]}"
+    _INBOUND_FILES[handle] = {"name": name, "bytes": raw}
+    while len(_INBOUND_FILES) > _INBOUND_FILE_LIMIT:
+        _INBOUND_FILES.pop(next(iter(_INBOUND_FILES)))
+    return handle
+
+
+def resolve_file_handle(ref: Any) -> dict | None:
+    """{name, bytes} for an inbound or sandbox handle, or None if it is neither.
+
+    Both directions resolve here so the agent can hand a file it was sent, or one
+    it just built, to the same tool without knowing which kind it holds.
+    """
+    if not isinstance(ref, str):
+        return None
+    key = ref.strip()
+    entry = _INBOUND_FILES.get(key) or _SANDBOX_FILES.get(key)
+    return {"name": entry["name"], "bytes": entry["bytes"]} if entry else None
+
+
+def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, list[str]]:
+    """Swap file handles in MCP arguments for the bytes they stand for.
+
+    Returns the rewritten arguments and any handles that could not be resolved.
+    An unknown handle is reported rather than passed through: forwarded verbatim
+    it becomes the literal string "inbound:abc123" where a base64 document was
+    expected, and the sandbox's error is then about malformed base64 — which
+    sends the agent off fixing the wrong thing.
+    """
+    if not isinstance(arguments, dict):
+        return arguments, []
+
+    out = dict(arguments)
+    unresolved: list[str] = []
+
+    # parse_pdf / parse_docx / parse_xlsx take the document directly.
+    ref = out.get("file_content_base64")
+    if isinstance(ref, str) and ref.startswith(("inbound:", "sandbox:")):
+        entry = resolve_file_handle(ref)
+        if entry:
+            out["file_content_base64"] = base64.b64encode(entry["bytes"]).decode()
+            print(
+                f"[adapter] {tool}: resolved {ref} → {entry['name']} "
+                f"({len(entry['bytes'])} bytes)",
+                flush=True,
+            )
+        else:
+            unresolved.append(ref)
+
+    # execute_python takes a list of handles to stage into /tmp/input/.
+    if out.get("input_files"):
+        staged = []
+        for ref in out["input_files"] if isinstance(out["input_files"], list) else []:
+            entry = resolve_file_handle(ref)
+            if entry:
+                staged.append({
+                    "name": entry["name"],
+                    "content_base64": base64.b64encode(entry["bytes"]).decode(),
+                })
+            else:
+                unresolved.append(ref if isinstance(ref, str) else repr(ref))
+        out["input_files"] = staged
+        if staged:
+            print(
+                f"[adapter] {tool}: staging {len(staged)} input file(s): "
+                + ", ".join(f["name"] for f in staged),
+                flush=True,
+            )
+
+    return out, unresolved
+
+
+def _unresolved_handle_error(unresolved: list[str]) -> dict:
+    """What the agent gets back when it names a file that does not exist."""
+    known = [f"{h} ({e['name']})" for h, e in _INBOUND_FILES.items()]
+    return {
+        "error": (
+            "Unknown file handle(s): "
+            + ", ".join(unresolved)
+            + ". "
+            + (
+                "Files available on this message: " + "; ".join(known)
+                if known
+                else "No files arrived with this message."
+            )
+            + " Use a handle exactly as it was given to you — do not invent or "
+            "abbreviate one, and do not paste file contents."
+        )
+    }
+
+
 def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
     """Everything this run produced, ready to attach: its files, then the notebook.
 
@@ -843,7 +965,12 @@ _CONTENT_TYPES = {
 
 async def _resume_capturing_mcp_fn(server: str, tool: str, arguments: dict):
     """call_mcp_tool with the same instrumentation the initial run's wrapper adds."""
-    mcp_result = await call_mcp_tool(server, tool, arguments)
+    resolved, unresolved = _resolve_handles_in_arguments(tool, arguments)
+    if unresolved:
+        return _unresolved_handle_error(unresolved)
+    mcp_result = await call_mcp_tool(server, tool, resolved)
+    # Record the arguments the agent wrote, not the ones with the file bytes
+    # spliced in — the notebook is meant to be readable.
     record_sandbox_step(tool, arguments, mcp_result)
     return _register_sandbox_files(mcp_result)
 
@@ -3542,6 +3669,7 @@ def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
     dest = ATTACHMENTS_DIR / safe_msg
     lines: list[str] = []
     inlined_total = 0
+    handles = 0
 
     for att in attachments:
         name = str(att.get("filename") or att.get("name") or "attachment")
@@ -3582,15 +3710,47 @@ def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
                 f"--- BEGIN {name} ---\n{decoded}\n--- END {name} ---"
             )
         else:
-            where = f", saved at {path}" if path else ""
-            lines.append(f"- {name} ({ctype}, {len(raw)} bytes){where}")
+            # Too big to inline, or not text at all. It used to stop here, named
+            # but unreadable — the agent knew a workbook had arrived and had no
+            # way to open it. A handle gives it one.
+            handle = _register_inbound_file(safe_name, raw)
+            if handle:
+                handles += 1
+                lines.append(
+                    f"- {name} ({ctype}, {len(raw)} bytes) — handle: {handle}"
+                )
+            else:
+                why = (
+                    f"larger than the {_ATTACHMENT_HANDLE_LIMIT // (1024 * 1024)}MB limit"
+                    if len(raw) > _ATTACHMENT_HANDLE_LIMIT
+                    else "empty"
+                )
+                where = f", saved at {path}" if path else ""
+                lines.append(
+                    f"- {name} ({ctype}, {len(raw)} bytes) — cannot be opened, {why}{where}"
+                )
 
-    print(f"[adapter] Inbound attachments: {len(attachments)} ({inlined_total} bytes inlined)", flush=True)
+    print(
+        f"[adapter] Inbound attachments: {len(attachments)} "
+        f"({inlined_total} bytes inlined, {handles} handle(s))",
+        flush=True,
+    )
+    guidance = (
+        "\n\nA handle is how you open one of these. Pass it as file_content_base64 "
+        "to parse_xlsx, parse_pdf or parse_docx, or list it in input_files on "
+        "execute_python and the file appears at /tmp/input/<filename> before your "
+        "code runs. Never retype a file's contents and never invent a handle — if "
+        "a file has no handle above, say you could not open it rather than "
+        "guessing at what it held."
+        if handles
+        else ""
+    )
     return (
         "\n\n=== ATTACHMENTS ON THIS EMAIL ===\n"
         "These arrived with the message. Where contents are shown, use them directly — "
         "do not call inbox_read to fetch the attachment again.\n"
         + "\n".join(lines)
+        + guidance
     )
 
 
@@ -4043,7 +4203,13 @@ async def _handle_message(message: str, context: dict):
         begin_run(thread_id)
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
-            mcp_result = await call_mcp_tool(server, tool, arguments)
+            # Handles the agent was given for this message's attachments become
+            # real bytes here, on the way to a sandbox that cannot see the disk
+            # they were written to.
+            resolved, unresolved = _resolve_handles_in_arguments(tool, arguments)
+            if unresolved:
+                return _unresolved_handle_error(unresolved)
+            mcp_result = await call_mcp_tool(server, tool, resolved)
             # Registration below both stores the real bytes adapter-side and
             # records the handle against this run's thread, so it is the single
             # place attachments and the deliverable check are sourced from. This
