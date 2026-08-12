@@ -3764,7 +3764,14 @@ async def receive_teams_message(request: Request):
             graph_fn=graph_request,
             thread_id=thread_id,
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
-                file_resolver_fn=resolve_sandbox_file,
+            file_resolver_fn=resolve_sandbox_file,
+            verify_fn=verify_deliverables,
+            # Checked, never re-run. Teams is synchronous — the prompt tells the
+            # agent someone is waiting in real time — so a hand-back would buy
+            # correctness with two extra model turns of silence in a chat
+            # window. The gap is measured and said in the reply instead, which
+            # is the half that protects the reader.
+            verify_attempts=0,
         )
 
         if not isinstance(result, dict):
@@ -3814,6 +3821,8 @@ async def receive_teams_message(request: Request):
                 thread_id=retry_thread_id,
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
                 file_resolver_fn=resolve_sandbox_file,
+                verify_fn=verify_deliverables,
+                verify_attempts=0,
             )
             # Check if the retry hit an interrupt (blocked action)
             if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":

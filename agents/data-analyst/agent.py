@@ -371,6 +371,9 @@ class AgentState(BaseModel):
     # was sound in the first place, and a wrong number agrees with itself.
     rebuilt_figures: list = Field(default_factory=list)
     rebuild_attempts: int = 0
+    # Set once the drift is measured and there is no budget to send the agent
+    # back for it. The reply goes out with a note rather than looping.
+    rebuild_unfixable: bool = False
     # Set once the last attempt has been spent and the gap survived it.
     deliverable_unfixable: bool = False
 
@@ -1240,9 +1243,49 @@ async def execute_action(state: AgentState) -> AgentState:
             arguments = params.get("arguments") or action.get("arguments", {})
             print(f"[agent] MCP call: server={server}, tool={tool}, args_keys={list(arguments.keys())}", flush=True)
             result = await mcp_fn(server, tool, arguments)
-            result_text = json.dumps(result, default=str)[:2000]
+
+            # A script that crashed is not a source of findings.
+            #
+            # The exit status was in the envelope all along and nothing read it,
+            # here or anywhere else — returncode appears in this file only on the
+            # list of things to keep out of the reply. So on 2026-08-11 a step
+            # exited 1 with
+            #
+            #   NameError: name 'sl_growth_region' is not defined
+            #
+            # having printed one line before it died, and that line was carried
+            # forward and reported as "Fastest Growing Region: West (14.05%)".
+            # The figure was real; the run that produced it had fallen over
+            # halfway through, and nothing said so.
+            #
+            # Buried in a JSON envelope, "returncode": 1 is easy to read past.
+            # Said first, in words, it is not — and the partial output is handed
+            # over labelled as partial rather than as a result.
+            _rc = result.get("returncode") if isinstance(result, dict) else None
+            if _rc not in (0, None):
+                _stderr = str((result or {}).get("stderr") or "").strip()
+                _stdout = str((result or {}).get("stdout") or "").strip()
+                result_text = (
+                    f"STEP FAILED — the code exited with status {_rc} and did not "
+                    "finish.\n\n"
+                    + (f"Error:\n{_stderr[:1200]}\n\n" if _stderr else "")
+                    + (
+                        "It printed this before it stopped. This is partial, and "
+                        "not a result — do not report any of these figures:\n"
+                        f"{_stdout[:800]}\n\n" if _stdout else ""
+                    )
+                    + "Fix the code and run it again. Nothing was produced."
+                )
+                state.actions_taken.append(f"MCP {server}/{tool} FAILED (exit {_rc})")
+                print(
+                    f"[agent] MCP {server}/{tool} exited {_rc} — treating as a failed "
+                    f"step, not a result",
+                    flush=True,
+                )
+            else:
+                result_text = json.dumps(result, default=str)[:2000]
+                state.actions_taken.append(f"MCP {server}/{tool}")
             print(f"[agent] MCP result (first 300): {result_text[:300]}", flush=True)
-            state.actions_taken.append(f"MCP {server}/{tool}")
 
         elif action_type == "mcp_call" and not mcp_fn:
             result_text = "ERROR: MCP/python-sandbox is not available. Do the calculations in your reasoning instead and proceed to reply_email."
@@ -1544,19 +1587,32 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     # something it has already fixed.
     state.deliverable_gaps = []
     state.rebuilt_figures = []
+    state.rebuild_unfixable = False
 
     # Checked before the file check, and against the results rather than the
     # reply, because this is an error in the work itself and not in the write-up.
     # The rounded figure it was rebuilt from is usually only in the sandbox
     # output and the workbook, so by the time it reaches a summary it has often
     # been rounded again and looks perfectly ordinary.
-    if state.content and state.rebuild_attempts < state.max_verify_attempts:
+    # Detection is not gated on the hand-back budget. Whether the arithmetic
+    # drifted and whether there is room to send the agent back are different
+    # questions, and a channel that cannot afford a rebuild — a chat, where
+    # someone is watching — still needs to be told the figure is wrong.
+    if state.content:
         produced = "\n".join(
             r for r in state.action_results[-4:]
             if isinstance(r, str) and not r.startswith(_INTERNAL_PREFIXES)
         )
         rebuilt = _rebuilt_figures(produced, state.content)
-        if rebuilt:
+        if rebuilt and state.rebuild_attempts >= state.max_verify_attempts:
+            state.rebuilt_figures = list(rebuilt)
+            state.rebuild_unfixable = True
+            print(
+                f"[agent] Rebuilt-figure check: {len(rebuilt)} figure(s) derived "
+                "from rounded values, and no attempts left — delivering with a note",
+                flush=True,
+            )
+        elif rebuilt:
             state.rebuilt_figures = list(rebuilt)
             state.rebuild_attempts += 1
             pairs = "; ".join(f"{got} should be {want}" for got, want in rebuilt[:6])
@@ -1653,7 +1709,11 @@ def route_after_verify(state: AgentState) -> str:
     # Arithmetic drift takes priority over a missing figure: a number that is
     # wrong is worse than a number that is absent, and correcting it changes the
     # file the other check is about to read.
-    if state.rebuilt_figures and state.iteration < state.max_iterations:
+    if (
+        state.rebuilt_figures
+        and not state.rebuild_unfixable
+        and state.iteration < state.max_iterations
+    ):
         return "reason_and_act"
 
     if not state.deliverable_gaps or state.deliverable_unfixable:
@@ -1795,6 +1855,23 @@ async def finalize(state: AgentState) -> AgentState:
         )
         print(
             f"[agent] Delivering with a deliverable-gap note ({len(state.deliverable_gaps)} figures)",
+            flush=True,
+        )
+
+    # Measured arithmetic drift with no budget left to correct it. Said plainly
+    # and first among the caveats, because a wrong figure is worse than a
+    # missing one: the reader has no reason to doubt it.
+    if state.rebuild_unfixable and state.rebuilt_figures and result_text.strip():
+        pairs = "; ".join(f"{got} should be {want}" for got, want in state.rebuilt_figures[:6])
+        result_text = (
+            f"{result_text.rstrip()}\n\n---\n"
+            f"Please check these before using them: {pairs}. They were worked out "
+            f"from a rounded figure rather than the number you gave me, so they "
+            f"are slightly off. Ask me and I'll redo it from your originals."
+        )
+        print(
+            f"[agent] Delivering with a rounded-input note "
+            f"({len(state.rebuilt_figures)} figures)",
             flush=True,
         )
 
@@ -2050,6 +2127,7 @@ _INTERNAL_MARKERS = ("file_id", "sandbox:", '"note"', '"stderr"', '"returncode"'
 # genuinely the answer: the text of a file the agent was asked to read, or the
 # confirmation of an event it created.
 _INTERNAL_PREFIXES = (
+    "STEP FAILED",
     "Error:",
     "ERROR",
     "Manager decision:",
@@ -2244,6 +2322,10 @@ def _render_result(raw: str) -> str:
         if isinstance(parsed, dict) and (
             "stdout" in parsed or "returncode" in parsed or "files" in parsed
         ):
+            # A step that exited non-zero printed whatever it printed before it
+            # fell over. Those are not findings and must not become a table.
+            if parsed.get("returncode") not in (0, None):
+                return ""
             stdout = str(parsed.get("stdout") or "")
         elif parsed is None:
             m = _STDOUT_FIELD.search(text)
@@ -2554,6 +2636,7 @@ async def run_agent(
     file_resolver_fn=None,
     verify_fn=None,
     thread_id: str = "",
+    verify_attempts: int | None = None,
 ) -> dict:
     """Entry point called by the platform adapter for every incoming message.
 
@@ -2600,6 +2683,14 @@ async def run_agent(
         content=content,
         context={**context, "_thread_id": tid},
     )
+    # How many times a gap may be handed back before the reply goes out with a
+    # note instead. Email leaves it at the default: the requester is waiting on
+    # a message either way, so a rebuild costs them nothing they can feel. A
+    # chat sets it to zero — the check still runs and still says what is
+    # missing, but a person watching a chat window should not wait two extra
+    # model turns for a file they can ask about in five seconds.
+    if verify_attempts is not None:
+        initial_state.max_verify_attempts = max(0, int(verify_attempts))
 
     config = {"configurable": {"thread_id": tid}}
 
