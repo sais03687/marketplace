@@ -605,6 +605,48 @@ def resolve_sandbox_file(ref: str) -> bytes | None:
     return entry["bytes"] if entry else None
 
 
+def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
+    """Everything this run produced, ready to attach: its files, then the notebook.
+
+    Built from the run-scoped registry rather than a per-call closure. The first
+    pass held its captured files in a closure and the resume path had no closure
+    to inherit, so it delivered with no attachments at all — a run that produced
+    a workbook, was gated for approval, and was approved sent the buyer prose and
+    nothing else. Observed on 2026-08-11: the chart was rendered in the sandbox
+    and discarded, because the reply was its only route out.
+
+    The registry survives the interrupt (which is how the deliverable check could
+    still read the file post-resume, while delivery beside it read nothing), and
+    it holds the whole run rather than one leg of it, so files made before the
+    gate travel with files made after it.
+
+    Latest wins on a repeated name: a rebuild rewrites the same workbook, and the
+    buyer should get the corrected copy rather than both attempts.
+    """
+    files: list[dict] = []
+    seen: set[str] = set()
+    for file_id in reversed(current_run_files()):
+        entry = _SANDBOX_FILES.get(file_id)
+        if not entry:
+            continue
+        name = entry.get("name") or "output"
+        if name in seen:
+            continue
+        seen.add(name)
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        files.append({
+            "name": name,
+            "content_base64": base64.b64encode(entry["bytes"]).decode(),
+            "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
+        })
+    files.reverse()
+
+    notebook = notebook_attachment(current_run_steps(), request=request, subject=subject)
+    if notebook:
+        files.append(notebook)
+    return files
+
+
 # ─── Deliverable verification ────────────────────────────────────────────────
 #
 # An agent writes two things: a summary and a file. Nothing made them agree.
@@ -798,26 +840,9 @@ _CONTENT_TYPES = {
 }
 
 
-# Files produced during a resumed run. The initial run keeps its own list in a
-# closure for attachment delivery; a resume has no closure to inherit, so this
-# holds them at module level for the resume delivery path to pick up.
-_RESUME_CAPTURED_FILES: list[dict] = []
-
-
 async def _resume_capturing_mcp_fn(server: str, tool: str, arguments: dict):
     """call_mcp_tool with the same instrumentation the initial run's wrapper adds."""
     mcp_result = await call_mcp_tool(server, tool, arguments)
-    if isinstance(mcp_result, dict) and mcp_result.get("files"):
-        for f in mcp_result["files"]:
-            name = f.get("name", "output")
-            b64 = f.get("base64_content", "")
-            if b64:
-                ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-                _RESUME_CAPTURED_FILES.append({
-                    "name": name,
-                    "content_base64": b64,
-                    "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
-                })
     record_sandbox_step(tool, arguments, mcp_result)
     return _register_sandbox_files(mcp_result)
 
@@ -3251,6 +3276,10 @@ async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> Non
                 subject=result.get("subject", ""),
                 text=result.get("text", reply_text),
                 thread_id=result.get("thread_id"),
+                # Reached from Teams, but delivered as mail: the chat path hands
+                # files back on the response and this one has no such channel, so
+                # without this the file goes nowhere.
+                attachments=run_attachments(subject=result.get("subject", "")) or None,
             )
             print(f"[adapter] Post-resume email sent to {teams_recipient}", flush=True)
         except Exception as e:
@@ -3284,6 +3313,20 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
             )
             return
 
+        # What the run built, including anything made before the approval gate.
+        # Without this a gated run delivered prose and left its workbook, chart
+        # and notebook behind — see run_attachments.
+        _att = run_attachments(
+            request=ctx.get("original_message", "") or reply_text,
+            subject=ctx.get("subject", ""),
+        ) or None
+        if _att:
+            print(
+                f"[adapter] Post-resume attaching {len(_att)} file(s): "
+                + ", ".join(f["name"] for f in _att),
+                flush=True,
+            )
+
         try:
             if action == "reply_email" and ctx.get("message_id"):
                 await reply_email(
@@ -3292,6 +3335,7 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
                     fallback_to=recipient,
                     fallback_subject=ctx.get("subject", ""),
                     fallback_thread_id=result.get("thread_id") or ctx.get("thread_id"),
+                    attachments=_att,
                 )
             else:
                 await send_email(
@@ -3299,6 +3343,7 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
                     subject=result.get("subject", ctx.get("subject", "")),
                     text=result.get("text", reply_text),
                     thread_id=result.get("thread_id") or ctx.get("thread_id"),
+                    attachments=_att,
                 )
             print(f"[adapter] Post-resume email delivered to {recipient}", flush=True)
         except Exception as e:
@@ -3318,6 +3363,8 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
         }.get(decided, f"[{AGENT_NAME}] Approved action completed")
         if manager_to:
             try:
+                # notice: a copy for the manager of what was decided, not the
+                # deliverable itself — that went to the requester with its files.
                 await send_email(
                     to=manager_to,
                     subject=headline,
@@ -3967,34 +4014,20 @@ async def _handle_message(message: str, context: dict):
         session_key = context.get("session_key", "default")
         thread_id = f"email:{session_key}"
 
-        # Capture files generated by MCP tools (for email attachments)
-        _email_captured_files: list[dict] = []
         # A new inbound message is a new run, so the previous run's handles must
         # not be checked against this run's summary. Scoped to this thread, so a
         # message arriving on another one cannot clear them: runs overlap, and a
         # shared list meant the newest arrival wiped everyone else's. Resumes
         # attach instead of beginning, and keep what they have built up.
         begin_run(thread_id)
-        _RESUME_CAPTURED_FILES.clear()
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
             mcp_result = await call_mcp_tool(server, tool, arguments)
-            if isinstance(mcp_result, dict) and mcp_result.get("files"):
-                for f in mcp_result["files"]:
-                    name = f.get("name", "output")
-                    b64 = f.get("base64_content", "")
-                    if b64:
-                        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-                        _email_captured_files.append({
-                            "name": name,
-                            "content_base64": b64,
-                            "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
-                        })
-            # Attachment capture above keeps the real bytes — that path is
-            # adapter-side and never enters the model's context. This swaps the
-            # base64 for a handle in what the *agent* sees.
-            # Registration records the handle against this run's thread for the
-            # deliverable check; see the note there on why it is keyed that way.
+            # Registration below both stores the real bytes adapter-side and
+            # records the handle against this run's thread, so it is the single
+            # place attachments and the deliverable check are sourced from. This
+            # used to keep a second full copy of every file in a closure as well,
+            # which is the copy the resume path had no way to reach.
             record_sandbox_step(tool, arguments, mcp_result)
             return _register_sandbox_files(mcp_result)
 
@@ -4035,6 +4068,8 @@ async def _handle_message(message: str, context: dict):
             incoming_sender = context.get("sender", "")
             # Empty means the platform refused and the resumed graph is replying instead.
             if approval_msg and incoming_sender and _check_and_increment("emails"):
+                # notice: "this is waiting on approval". The work is not done yet
+                # and there is nothing to attach; the resume delivers it.
                 await reply_email(
                     message_id=context.get("message_id", ""),
                     text=approval_msg,
@@ -4076,6 +4111,8 @@ async def _handle_message(message: str, context: dict):
             reply_text = result.get("text")
             if reply_text:
                 if _check_and_increment("emails"):
+                    # notice: acknowledges that the approval was recorded. The
+                    # resumed graph above delivers the actual result and its files.
                     await reply_email(
                         message_id=context.get("message_id", ""),
                         text=reply_text,
@@ -4117,6 +4154,7 @@ async def _handle_message(message: str, context: dict):
                 except ActionRefused as refusal:
                     print(f"[adapter] {refusal}", flush=True)
                     if _check_and_increment("emails"):
+                        # notice: the send was refused, so there is no result.
                         await reply_email(
                             message_id=context.get("message_id", ""),
                             text=str(refusal),
@@ -4198,7 +4236,13 @@ async def _handle_message(message: str, context: dict):
                         "thread_id": email_thread_id,
                         "message_id": result.get("message_id") or context.get("message_id", ""),
                         "fallback_subject": context.get("subject", ""),
-                        "attachments": _email_captured_files or None,
+                        # Resolved now rather than at delivery: this record exists
+                        # precisely for the case where a restart destroys the run,
+                        # and the registry it would be read from goes with it.
+                        "attachments": run_attachments(
+                            request=context.get("original_message", "") or draft_text,
+                            subject=context.get("subject", ""),
+                        ) or None,
                     })
                     # Wait for resolution (polling file — existing pattern for email hook)
                     resolution = await wait_for_resolution(queued_id)
@@ -4224,28 +4268,24 @@ async def _handle_message(message: str, context: dict):
                 print(f"[adapter] Rate limited: email budget exceeded for tier {MODEL}")
                 return
 
-            # Prepare attachments from captured MCP files (if any)
-            _att = list(_email_captured_files)
-
-            # The working, as a notebook: the code, what it printed, and any
-            # chart it drew, in order. Attached rather than written into the
-            # reply — the reply answers the question, and the method is for
-            # whoever wants to check it. Nothing here is summarised or
-            # described, so there is no second account of the work that can
+            # What the run built, and the working as a notebook: the code, what
+            # it printed, and any chart it drew, in order. Attached rather than
+            # written into the reply — the reply answers the question, and the
+            # method is for whoever wants to check it. Nothing here is summarised
+            # or described, so there is no second account of the work that can
             # disagree with the first.
-            _nb = notebook_attachment(
-                current_run_steps(),
+            #
+            # Shared with the resume path deliberately. This one read a closure
+            # and that one read nothing, which is how an approved run came to
+            # deliver no files at all; one source means they cannot drift again.
+            _att = run_attachments(
                 request=context.get("original_message", "") or message,
                 subject=context.get("subject", ""),
-            )
-            if _nb:
-                _att.append(_nb)
-
-            _att = _att or None
+            ) or None
             if _att:
                 print(
-                    f"[adapter] Attaching {len(_att)} file(s) to email"
-                    + (" (including the working notebook)" if _nb else ""),
+                    f"[adapter] Attaching {len(_att)} file(s) to email: "
+                    + ", ".join(f["name"] for f in _att),
                     flush=True,
                 )
 
@@ -4329,6 +4369,7 @@ async def _handle_message(message: str, context: dict):
                     # Notify sender that approval is pending. Empty means refused —
                     # the resumed graph replies instead of us duplicating it.
                     if approval_msg and _check_and_increment("emails"):
+                        # notice: same as above, on the fallback retry path.
                         await reply_email(
                             message_id=context.get("message_id", ""),
                             text=approval_msg,
@@ -4359,6 +4400,12 @@ async def _handle_message(message: str, context: dict):
                             fallback_to=_extract_email(recipient),
                             fallback_subject=context.get("subject", ""),
                             fallback_thread_id=retry_thread,
+                            # A retry is still the buyer's answer, and the run it
+                            # retried may already have built the file.
+                            attachments=run_attachments(
+                                request=context.get("original_message", "") or send_text,
+                                subject=context.get("subject", ""),
+                            ) or None,
                         )
                         print(f"[adapter] Sent retry reply to {_extract_email(recipient)}", flush=True)
                     # Return either way. The agent wrote a real reply, so the
@@ -4385,6 +4432,7 @@ async def _handle_message(message: str, context: dict):
                 incoming_sender = context.get("sender", "")
                 if _extract_email(incoming_sender) and _check_and_increment("emails"):
                     print(f"[adapter] Sending default acknowledgement to {_extract_email(incoming_sender)}", flush=True)
+                    # notice: a constant "I didn't understand" — no work was done.
                     await reply_email(
                         message_id=context.get("message_id", ""),
                         text=(

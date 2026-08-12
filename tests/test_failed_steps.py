@@ -88,3 +88,87 @@ def test_a_missing_exit_status_is_not_assumed_to_be_a_failure():
     # parse_pdf and friends return no returncode at all.
     envelope = {"stdout": '[{"Region":"North","Revenue per unit":154.88}]\n'}
     assert "154.88" in agent._render_result(json.dumps(envelope))
+
+
+# ── two failures in a row means the assumption is wrong, not the code ───────
+#
+# On 2026-08-11 a header of "Month, North" parsed as the column " North", and
+# KeyError names the key you asked for and never the ones that exist. The same
+# assumption was retried three times until the loop guard stopped the run, and
+# the buyer got nothing. A second consecutive failure is the moment to look at
+# the data rather than reason about it.
+
+CRASHED_NAME_ERROR = {
+    "stdout": "",
+    "stderr": "KeyError: 'North'",
+    "returncode": 1,
+    "files": [],
+}
+
+
+def _step(state, envelope):
+    """Run one mcp_call through execute_action with a stubbed sandbox."""
+    import asyncio
+
+    async def _mcp(server, tool, arguments):
+        return envelope
+
+    agent._thread_fns["test-thread"] = {"mcp_fn": _mcp}
+    state.context["_thread_id"] = "test-thread"
+    state.analysis = {
+        "action": {
+            "type": "mcp_call",
+            "params": {
+                "server": "python-sandbox",
+                "tool": "execute_python",
+                "arguments": {"code": "df['North']"},
+            },
+        }
+    }
+    asyncio.run(agent.execute_action(state))
+    return state.action_results[-1]
+
+
+def _fresh_state():
+    return agent.AgentState(content="analyse this", context={"_thread_id": "test-thread"})
+
+
+def test_the_first_failure_just_asks_for_a_fix():
+    first = _step(_fresh_state(), CRASHED_NAME_ERROR)
+    assert "Fix the code and run it again" in first
+    assert "Stop guessing" not in first
+
+
+def test_the_second_consecutive_failure_asks_for_the_actual_shape():
+    state = _fresh_state()
+    _step(state, CRASHED_NAME_ERROR)
+    second = _step(state, CRASHED_NAME_ERROR)
+    assert "second failure in a row" in second
+    assert "print it" in second
+    assert "names what you asked for, not what exists" in second
+
+
+def test_the_nudge_is_for_the_model_and_never_reaches_the_buyer():
+    state = _fresh_state()
+    _step(state, CRASHED_NAME_ERROR)
+    second = _step(state, CRASHED_NAME_ERROR)
+    assert agent._render_result(second) == ""
+
+
+def test_a_failure_after_a_success_is_not_treated_as_a_repeat():
+    # The streak is what matters. A crash following a good step is a new
+    # problem, not a failed second attempt at the same one.
+    state = _fresh_state()
+    _step(state, SUCCEEDED)
+    after = _step(state, CRASHED_NAME_ERROR)
+    assert "second failure in a row" not in after
+    assert "Fix the code and run it again" in after
+
+
+def test_a_successful_step_after_failures_still_returns_its_result():
+    state = _fresh_state()
+    _step(state, CRASHED_NAME_ERROR)
+    _step(state, CRASHED_NAME_ERROR)
+    good = _step(state, SUCCEEDED)
+    assert "154.88" in good
+    assert "STEP FAILED" not in good

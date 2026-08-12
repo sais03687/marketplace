@@ -1265,6 +1265,17 @@ async def execute_action(state: AgentState) -> AgentState:
             if _rc not in (0, None):
                 _stderr = str((result or {}).get("stderr") or "").strip()
                 _stdout = str((result or {}).get("stdout") or "").strip()
+                # Twice in a row means the last fix was aimed at the wrong thing,
+                # and repeating the guess a third time is what burns the run. On
+                # 2026-08-11 a header of "Month, North" parsed as the column
+                # " North", and KeyError names the key you asked for and never
+                # the ones that exist — so the same assumption was retried three
+                # times until the loop guard stopped it. The way out of that is
+                # to look at the actual state rather than reason about it.
+                _repeat = any(
+                    isinstance(r, str) and r.startswith("STEP FAILED")
+                    for r in state.action_results[-1:]
+                )
                 result_text = (
                     f"STEP FAILED — the code exited with status {_rc} and did not "
                     "finish.\n\n"
@@ -1274,7 +1285,17 @@ async def execute_action(state: AgentState) -> AgentState:
                         "not a result — do not report any of these figures:\n"
                         f"{_stdout[:800]}\n\n" if _stdout else ""
                     )
-                    + "Fix the code and run it again. Nothing was produced."
+                    + (
+                        "This is the second failure in a row, so the assumption "
+                        "behind the last fix is probably the wrong one. Stop "
+                        "guessing at the shape of the data and print it: the "
+                        "columns, the dtypes, the first few rows, whatever this "
+                        "error is about. Look at what is actually there, then "
+                        "write the real code. An error names what you asked for, "
+                        "not what exists."
+                        if _repeat else
+                        "Fix the code and run it again. Nothing was produced."
+                    )
                 )
                 state.actions_taken.append(f"MCP {server}/{tool} FAILED (exit {_rc})")
                 print(
@@ -1681,14 +1702,28 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     # "- Deliverable check: 2 figure(s) missing from the file" — an internal
     # diagnostic, in the reply, describing a gap they had no way to act on.
     # action_results is the model-facing channel; actions_taken is buyer-facing.
+    # This used to say the file had to carry everything the reply claimed, and to
+    # rebuild it. That presumes the reply is right, which is the assumption worth
+    # doubting: the file is what the code computed, the reply is those numbers
+    # typed out a second time. On 2026-08-11 a run reported three slopes that
+    # were all wrong over a workbook whose three slopes were all right, and spent
+    # both attempts rebuilding the correct file while never re-reading its own
+    # sentence. So the disagreement is now put neutrally, with the diagnosis
+    # asked for first and the file named as the more trustworthy side.
     state.action_results.append(
         "DELIVERABLE CHECK — the platform read the file you produced and compared "
         f"it against the reply you wrote. These figures appear in your reply but "
         f"not in the file: {figures}.\n"
-        "The file is the deliverable, so it has to carry everything the reply "
-        "claims. Rebuild it with those figures included — write it to /tmp/output/ "
-        "again and upload the new file_id — then write the reply. This is a real "
-        "gap the platform measured, not a suggestion."
+        "Work out which of these is true before you do anything else:\n"
+        "1. The reply is wrong. You wrote the numbers out from memory instead of "
+        "from what the code printed, and they drifted. The file is what the code "
+        "actually computed, so it is the one to trust — re-read the run's output "
+        "and correct the reply to match it. Do not rebuild a file that is "
+        "already right.\n"
+        "2. The file really is missing something it should contain. Then rebuild "
+        "it — write it to /tmp/output/ again and upload the new file_id.\n"
+        "Check the numbers before choosing. This is a real gap the platform "
+        "measured, not a suggestion."
     )
     print(
         f"[agent] Deliverable check: handing back {len(missing)} missing figure(s) "
@@ -1842,16 +1877,30 @@ async def finalize(state: AgentState) -> AgentState:
     # A gap the agent could not close. Say so, at the end and after the work —
     # the requester wanted an answer, not a status report, and a caveat that
     # leads is the shape of the reply that got complained about on 2026-08-10.
+    # The check establishes one fact: these figures are in the summary and not in
+    # the file. It cannot tell which side is wrong, and it used to claim it could
+    # — "the figures above are right, but the attached file is missing…". On
+    # 2026-08-11 that sentence was published over a summary whose three slopes
+    # were all wrong and a workbook whose three slopes were all right, so it
+    # vouched for the bad numbers and cast doubt on the good ones.
+    #
+    # So: state the disagreement, name the file as the tiebreaker, and claim
+    # nothing else. The file is what the code computed; the summary is the model
+    # writing figures out a second time, which is the step that can drift.
     if state.deliverable_gaps and result_text.strip():
         figures = ", ".join(str(g) for g in state.deliverable_gaps[:8])
         if state.iteration >= state.max_iterations:
-            why = "I ran out of steps before I could get them in"
+            why = "I ran out of steps before I could reconcile them"
+
         else:
-            why = "I could not get them into the file"
+            why = "I could not reconcile them"
         result_text = (
             f"{result_text.rstrip()}\n\n---\n"
-            f"One thing to flag: the figures above are right, but the attached file "
-            f"is missing {figures} — {why}. Ask me and I'll send a corrected file."
+            f"Worth checking before you rely on this: {figures} "
+            f"{'appear' if len(state.deliverable_gaps) > 1 else 'appears'} in my "
+            f"summary above but not in the file — {why}. The file is what the code "
+            f"actually computed, so where the two disagree, go with the file. Ask "
+            f"me and I'll redo it."
         )
         print(
             f"[agent] Delivering with a deliverable-gap note ({len(state.deliverable_gaps)} figures)",
