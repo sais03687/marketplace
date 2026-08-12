@@ -15,6 +15,7 @@ import re
 import time
 import asyncio
 import contextvars
+import traceback
 from datetime import datetime, timezone
 from typing import Any
 from pathlib import Path
@@ -3211,13 +3212,24 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
 
     print(f"[adapter] Post-resume result: action={action}, text_len={len(reply_text)}", flush=True)
 
-    # Deliver to the appropriate channel
-    if channel == "teams":
-        await _deliver_teams_result(reply_text, result, channel_ctx)
-    elif channel == "email":
-        await _deliver_email_result(reply_text, result, channel_ctx)
-    else:
-        print(f"[adapter] Unknown channel '{channel}' — cannot deliver post-resume result", flush=True)
+    # Deliver to the appropriate channel.
+    #
+    # This runs in a fire-and-forget task, so an exception escaping here is
+    # invisible apart from "Task exception was never retrieved" — the manager
+    # approved an action, the work completed, and the requester heard nothing.
+    # Catch it and at least say the delivery failed.
+    try:
+        if channel == "teams":
+            await _deliver_teams_result(reply_text, result, channel_ctx)
+        elif channel == "email":
+            await _deliver_email_result(reply_text, result, channel_ctx, resolution)
+        else:
+            print(f"[adapter] Unknown channel '{channel}' — cannot deliver post-resume result", flush=True)
+    except Exception as e:
+        print(f"[adapter] Post-resume delivery raised: {e}", flush=True)
+        traceback.print_exc()
+        if channel == "email":
+            await _notify_send_failed(channel_ctx, e)
 
 
 async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> None:
@@ -3286,7 +3298,9 @@ async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> Non
             print(f"[adapter] Post-resume email send failed: {e}", flush=True)
 
 
-async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> None:
+async def _deliver_email_result(
+    reply_text: str, result: dict, ctx: dict, resolution: dict | None = None
+) -> None:
     """Send the post-resume result back via email."""
     action = result.get("action", "none")
 
@@ -3355,6 +3369,13 @@ async def _deliver_email_result(reply_text: str, result: dict, ctx: dict) -> Non
         # manager had chosen. On 2026-08-11 a rejected upload was reported to
         # the buyer under that heading, which is simply false: they had declined
         # it seconds earlier. Say which decision this is.
+        #
+        # `resolution` has to be passed in. It was read here as a free variable,
+        # which resolved to nothing at all: every post-resume action=none raised
+        # NameError, and because the caller is a fire-and-forget task the only
+        # trace was "Task exception was never retrieved". Benchmark task T03 on
+        # 2026-08-12 wrote a 489-character reply that died exactly here — the
+        # buyer approved the upload and never heard back.
         manager_to = _manager_email()
         decided = str((resolution or {}).get("status", "")).upper()
         headline = {
@@ -4452,6 +4473,54 @@ async def _handle_message(message: str, context: dict):
 
     except Exception as e:
         print(f"[adapter] Error handling message: {e}", flush=True)
+        traceback.print_exc()
+        # Never let a crash mean silence. Whatever went wrong above, someone
+        # wrote in and is waiting; a request that vanishes is worse than a wrong
+        # answer, because nobody knows to chase it. Benchmark tasks T03 and T08
+        # on 2026-08-12 both ended here — one on an IndexError past the regex
+        # salvage, one on a NameError in the post-resume delivery — and both
+        # senders got nothing at all.
+        #
+        # The text is a constant: no model output, no workspace data, and it
+        # goes only to whoever wrote in.
+        await _notify_send_failed(context, e)
+
+
+async def _notify_send_failed(context: dict, exc: Exception) -> None:
+    """Tell the sender their request failed, when nothing else could be sent."""
+    try:
+        sender = _extract_email(context.get("sender", ""))
+        if not sender:
+            print("[adapter] Cannot send failure notice: no usable sender", flush=True)
+            return
+        if not _check_and_increment("emails"):
+            print("[adapter] Failure notice suppressed by the email budget", flush=True)
+            return
+        # notice: a constant "it failed" — the run produced nothing to attach,
+        # and anything it did build is not trustworthy enough to send.
+        await reply_email(
+            message_id=context.get("message_id", ""),
+            text=(
+                "Hi,\n\nSomething went wrong while I was working on your "
+                "request, and I could not finish it. Nothing was sent to "
+                "anyone else and no files were shared.\n\nPlease send it "
+                "again. If it fails a second time, the problem is on my "
+                "side rather than in what you asked for.\n\nBest,\n"
+                + AGENT_NAME
+            ),
+            fallback_to=sender,
+            fallback_subject=context.get("subject", ""),
+            fallback_thread_id=context.get("thread_id"),
+        )
+        print(f"[adapter] Sent failure notice to {sender}", flush=True)
+    except Exception as notify_exc:
+        # Last resort failed too. Log loudly — this is the case where a request
+        # really does disappear, and it must be visible in the container logs.
+        print(
+            f"[adapter] FAILURE NOTICE ALSO FAILED ({notify_exc}) — the sender "
+            f"was never told about: {exc}",
+            flush=True,
+        )
 
 
 # ─── Entry Point ─────────────────────────────────────────────────────────────
