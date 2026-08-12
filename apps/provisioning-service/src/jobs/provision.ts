@@ -11,6 +11,7 @@ import { createDeploymentServiceAccount } from "../clients/google-iam.js";
 import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError, getVerifiedDomains } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor, hooksTokenFor } from "../utils/agent-token.js";
+import { findModel, PROVIDER_CREDENTIALS } from "@marketplace/agent-package-schema";
 
 async function log(
   deploymentId: string,
@@ -368,6 +369,32 @@ export async function provisionJob(
   let healthPort: number;
   let healthHost = "localhost";
 
+  // Which model this agent runs on, and whose credential pays for it.
+  //
+  // The creator picks the model at upload time; the platform holds everything
+  // else. An agent published before the catalogue has no pick and keeps the
+  // platform default, which is what every agent used to get regardless of the
+  // tier it advertised. An id that is no longer in the catalogue — retired
+  // between publish and hire — also falls back rather than failing the hire in
+  // front of a buyer, but says so loudly, because the agent is now running
+  // something other than what its listing claims.
+  const pickedModel = findModel(deployment.agent.model);
+  if (deployment.agent.model && !pickedModel) {
+    console.warn(
+      `[provision] Agent ${deployment.agent.slug} declares model ` +
+        `"${deployment.agent.model}", which is not in the catalogue — falling ` +
+        `back to the platform default (${config.llmModel}).`,
+    );
+  }
+  const providerCreds = pickedModel
+    ? PROVIDER_CREDENTIALS[pickedModel.provider]
+    : null;
+  const llmApiKey = providerCreds
+    ? process.env[providerCreds.keyEnv] || config.llmApiKey
+    : config.llmApiKey;
+  const llmBaseUrl = providerCreds ? providerCreds.baseUrl : config.llmBaseUrl;
+  const llmModel = pickedModel ? pickedModel.id : config.llmModel;
+
   const containerEnv: ContainerEnv = {
     DEPLOYMENT_ID: deploymentId,
     AGENT_ID: deployment.agentId,
@@ -383,9 +410,9 @@ export async function provisionJob(
     APPROVAL_WEBHOOK_TOKEN: config.approvalWebhookToken,
     MODEL: deployment.agent.modelTier,
     MANAGER_EMAIL: deployment.managerEmail || "",
-    LLM_API_KEY: config.llmApiKey,
-    LLM_BASE_URL: config.llmBaseUrl,
-    LLM_MODEL: config.llmModel,
+    LLM_API_KEY: llmApiKey,
+    LLM_BASE_URL: llmBaseUrl,
+    LLM_MODEL: llmModel,
     APPROVAL_POLICY: approvalPolicy,
     APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,
     AUTO_APPROVE_LIST: autoApproveList,

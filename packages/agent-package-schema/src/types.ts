@@ -47,6 +47,15 @@ export interface MarketplaceManifest {
   category: AgentCategory;
   version: string;        // semver "1.0.0"
   pricePerMonth: number;  // USD cents, e.g. 49900 = $499/mo
+  /**
+   * Which model this agent runs on, by id from MODEL_CATALOGUE.
+   *
+   * When present the tier is derived from it and `modelTier` is ignored, so the
+   * declared tier can never disagree with the model that actually answers. Kept
+   * optional for manifests published before the catalogue existed; those still
+   * run the platform default and keep the tier they declared.
+   */
+  model?: string;
   modelTier: "haiku" | "sonnet" | "opus";
   capabilities: Array<{ name: string; description: string }>;
   requiredTools: string[];

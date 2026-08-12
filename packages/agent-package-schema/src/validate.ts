@@ -1,5 +1,6 @@
 import type { AgentCategory, MarketplaceManifest } from "./types.js";
 import { VALID_INTEGRATIONS } from "./types.js";
+import { MODEL_CATALOGUE, VALID_MODEL_IDS } from "./models.js";
 
 export interface ValidationError {
   field: string;
@@ -63,6 +64,19 @@ export function validateManifest(m: unknown): ValidationError[] {
   // Model tier enum
   if (!VALID_TIERS.has(manifest.modelTier as string)) {
     errors.push({ field: "modelTier", message: `modelTier must be one of: haiku, sonnet, opus` });
+  }
+
+  // Model pick. Optional — manifests predating the catalogue run the platform
+  // default — but an unknown id is rejected rather than defaulted, because
+  // defaulting would hand the buyer a different model from the one advertised.
+  if (manifest.model !== undefined) {
+    if (typeof manifest.model !== "string" || !VALID_MODEL_IDS.has(manifest.model)) {
+      const offered = MODEL_CATALOGUE.map((m) => `${m.id} (${m.tier})`).join(", ");
+      errors.push({
+        field: "model",
+        message: `model must be one of: ${offered}`,
+      });
+    }
   }
 
   // Price in cents (integer)

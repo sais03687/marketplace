@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { validateApiKey } from "@/lib/api-key-auth";
-import { validateManifest } from "@marketplace/agent-package-schema";
+import { validateManifest, tierForModel } from "@marketplace/agent-package-schema";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
 import { priceRejection } from "@/lib/agent-pricing";
@@ -195,8 +195,18 @@ export async function POST(request: Request) {
     }
   }
 
-  // 3c. Enforce minimum pricing per model tier
-  const modelTierRaw = (manifest.modelTier as string).toUpperCase();
+  // 3c. Enforce minimum pricing per model tier.
+  //
+  // The tier is derived from the model pick when there is one. It used to be
+  // declared independently, which meant a creator could name the haiku tier,
+  // pay the $29 floor, and run whatever model their code constructed — the tier
+  // chose nothing but the price. Deriving it makes the floor follow the model.
+  const declaredModel =
+    typeof manifest.model === "string" ? manifest.model : null;
+  const derivedTier = tierForModel(declaredModel);
+  const modelTierRaw = (
+    derivedTier ?? (manifest.modelTier as string)
+  ).toUpperCase();
   const pricePerMonthRaw = formData.get("pricePerMonth") as string | null;
   const priceCheck = pricePerMonthRaw
     ? parseInt(pricePerMonthRaw, 10) * 100
@@ -281,6 +291,7 @@ export async function POST(request: Request) {
   const description = descriptionOverride || (manifest.description as string);
   const category = manifest.category as string;
   const modelTier = modelTierRaw;
+  const agentModel = declaredModel;
   const pricePerMonth = priceCheck;
   const capabilities = manifest.capabilities as Array<{
     name: string;
@@ -301,6 +312,7 @@ export async function POST(request: Request) {
             description,
             category: category as any,
             pricePerMonth,
+            model: agentModel,
             modelTier: modelTier as any,
             runtime,
             onboardingQuestions: onboardingQuestions ?? undefined,
@@ -319,6 +331,7 @@ export async function POST(request: Request) {
             description,
             category: category as any,
             pricePerMonth,
+            model: agentModel,
             modelTier: modelTier as any,
             creatorId: creator.id,
             status: "IN_REVIEW",

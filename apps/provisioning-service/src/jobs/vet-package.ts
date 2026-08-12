@@ -75,6 +75,28 @@ const DANGEROUS_PATTERNS: { re: RegExp; label: string }[] = [
   { re: /\bfrom\s+docker\b/,                 label: "from docker (container access not allowed)" },
 ];
 
+// ── Model policy ─────────────────────────────────────────────────────────────
+//
+// The creator picks a model in the manifest; the platform injects it as
+// LLM_MODEL along with the key that pays for it. Creator code builds the LLM
+// client itself, so a literal model id in that constructor silently overrides
+// the pick — and bills the platform's key for whatever it names. That is the
+// hole that let an agent declare the haiku tier, charge the $29 floor, and run
+// a top-tier model.
+//
+// Deliberately narrow: only a vendor/model literal assigned to a model kwarg.
+// `model=_llm_model` is the correct form and passes. A bare "gpt-4o" with no
+// vendor prefix is not matched, because the aggregator requires the prefixed
+// form anyway and a looser pattern would start failing honest packages.
+const MODEL_PATTERNS: { re: RegExp; label: string }[] = [
+  {
+    re: /\bmodel(?:_name)?\s*=\s*["'][A-Za-z0-9_.-]+\/[A-Za-z0-9_.:-]+["']/,
+    label:
+      "hardcoded model id — declare the model in marketplace.json and read " +
+      "LLM_MODEL from the environment instead",
+  },
+];
+
 const SECRET_PATTERNS: { re: RegExp; label: string }[] = [
   { re: /sk-[A-Za-z0-9]{48,}/,                        label: "OpenAI/OpenRouter key" },
   { re: /sk-ant-api\d{2}-[A-Za-z0-9_\-]{90,}/,       label: "Anthropic key" },
@@ -282,6 +304,15 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
               if (lines[i].trimStart().startsWith("#")) continue;
               if (re.test(lines[i])) {
                 findings.push(`dangerous: ${pyPath.replace(packageDir!, "")}:${i+1} — ${label}`);
+                break;
+              }
+            }
+          }
+          for (const { re, label } of MODEL_PATTERNS) {
+            for (let i = 0; i < lines.length; i++) {
+              if (lines[i].trimStart().startsWith("#")) continue;
+              if (re.test(lines[i])) {
+                findings.push(`model: ${pyPath.replace(packageDir!, "")}:${i+1} — ${label}`);
                 break;
               }
             }

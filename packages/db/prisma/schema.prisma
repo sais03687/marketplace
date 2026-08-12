@@ -40,6 +40,11 @@ model Agent {
   description         String
   category            AgentCategory
   pricePerMonth       Int
+  // The model this agent runs on, by id from MODEL_CATALOGUE. Null means the
+  // agent predates the catalogue and runs the platform default; modelTier is
+  // then whatever it declared. When set, modelTier is derived from it at upload,
+  // so the price floor always matches the model the buyer actually gets.
+  model               String?
   modelTier           ModelTier
   creatorId           String
   status              AgentStatus             @default(DRAFT)

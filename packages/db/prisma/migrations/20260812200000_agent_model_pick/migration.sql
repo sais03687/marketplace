@@ -1,0 +1,15 @@
+-- modelTier was decorative. A creator declared haiku/sonnet/opus, which set the
+-- price floor ($29/$59/$149) and the runtime rate limits, and selected no model
+-- at all: every agent ran a single platform-wide LLM_MODEL, in production
+-- google/gemini-2.5-flash. So an agent could advertise the opus tier, charge the
+-- $149 floor, and answer on a flash-tier model — and, the other way round,
+-- declare haiku at $29 while its own code pinned the priciest model available on
+-- the platform's key.
+--
+-- The creator now picks a model by id from MODEL_CATALOGUE and modelTier is
+-- derived from that pick, so the floor always matches the model the buyer gets.
+--
+-- Nullable on purpose: agents published before the catalogue have no pick, and
+-- they keep the platform default and the tier they declared. Backfilling them to
+-- a concrete model would silently change what a live agent runs on.
+ALTER TABLE "Agent" ADD COLUMN IF NOT EXISTS "model" TEXT;
