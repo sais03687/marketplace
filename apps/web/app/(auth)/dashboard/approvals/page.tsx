@@ -27,6 +27,8 @@ export default function ApprovalsPage() {
   const [focusIndex, setFocusIndex] = useState(0);
   const [filter, setFilter] = useState("");
   const [showResolved, setShowResolved] = useState(false);
+  const [resolveError, setResolveError] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const fetchApprovals = useCallback(async () => {
     try {
@@ -42,7 +44,16 @@ export default function ApprovalsPage() {
         for (const dep of data) {
           if (dep.approvals) {
             for (const a of dep.approvals) {
-              all.push({ ...a, deployment: { agentName: dep.agentName } });
+              all.push({
+                ...a,
+                // Carried explicitly: every resolve path builds its URL from
+                // this, and when it was absent the request went to
+                // /api/deployments/undefined/... — a 404 that fetch does not
+                // throw on and the catch below discarded, so approvals looked
+                // like they resolved and silently did nothing.
+                deploymentId: a.deploymentId ?? dep.id,
+                deployment: { agentName: dep.agentName },
+              });
             }
           }
         }
@@ -68,7 +79,9 @@ export default function ApprovalsPage() {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)
         return;
 
-      const pending = filteredApprovals.filter((a) => a.status === "PENDING");
+      // Same source as the bulk action and the cards, so the shortcuts cannot
+      // act on a different list from the one on screen.
+      const pending = approvals.filter((a) => a.status === "PENDING");
       if (pending.length === 0) return;
 
       switch (e.key) {
@@ -109,8 +122,14 @@ export default function ApprovalsPage() {
     deploymentId: string,
     data?: { editedText?: string; rejectionReason?: string },
   ) => {
+    if (!deploymentId) {
+      setResolveError(
+        "This approval is missing its deployment, so it cannot be resolved. Reload the page.",
+      );
+      return false;
+    }
     try {
-      await fetch(
+      const res = await fetch(
         `/api/deployments/${deploymentId}/approvals/${approvalId}/resolve`,
         {
           method: "POST",
@@ -118,16 +137,41 @@ export default function ApprovalsPage() {
           body: JSON.stringify({ action, ...data }),
         },
       );
-      fetchApprovals();
+      // fetch only rejects on a network failure, so a 404 or a 500 arrives here
+      // looking exactly like success. Swallowing that is what made a dead
+      // Approve All indistinguishable from a working one.
+      if (!res.ok) {
+        setResolveError(
+          `Could not resolve that approval (${res.status}). Nothing was changed.`,
+        );
+        return false;
+      }
+      setResolveError(null);
+      await fetchApprovals();
+      return true;
     } catch {
-      // Handle error
+      setResolveError("Could not reach the server. Nothing was changed.");
+      return false;
     }
   };
 
   const handleBulkAction = async (action: "APPROVED" | "REJECTED") => {
-    const pending = filteredApprovals.filter((a) => a.status === "PENDING");
+    // Snapshot before the first resolve: each one refetches, so reading the
+    // live list mid-loop would work against a list that is changing underneath.
+    const pending = approvals.filter((a) => a.status === "PENDING");
+    if (pending.length === 0) return;
+    setBulkBusy(true);
+    let done = 0;
     for (const approval of pending) {
-      await handleResolve(approval.id, action, approval.deploymentId);
+      const ok = await handleResolve(approval.id, action, approval.deploymentId);
+      if (!ok) break; // stop rather than press on silently against a broken endpoint
+      done++;
+    }
+    setBulkBusy(false);
+    if (done < pending.length) {
+      setResolveError(
+        `Resolved ${done} of ${pending.length}. The rest were left pending.`,
+      );
     }
   };
 
@@ -160,13 +204,15 @@ export default function ApprovalsPage() {
             <Button
               variant="outline"
               size="sm"
+              disabled={bulkBusy}
               onClick={() => handleBulkAction("APPROVED")}
             >
-              Approve All ({pendingCount})
+              {bulkBusy ? "Approving…" : `Approve All (${pendingCount})`}
             </Button>
             <Button
               variant="destructive"
               size="sm"
+              disabled={bulkBusy}
               onClick={() => handleBulkAction("REJECTED")}
             >
               Reject All
@@ -174,6 +220,15 @@ export default function ApprovalsPage() {
           </div>
         )}
       </div>
+
+      {resolveError && (
+        <div
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+        >
+          {resolveError}
+        </div>
+      )}
 
       <div className="mt-4 flex items-center gap-4">
         <div className="relative w-72">
