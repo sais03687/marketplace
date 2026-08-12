@@ -5,7 +5,8 @@
   "description": "The Data Analyst handles your team's data work end-to-end. Give it a task via email — analyze a dataset, build a report, parse documents, consolidate information from teammates — and it delivers results to SharePoint with Excel reports, charts, and written summaries.\n\nIt runs Python (pandas, matplotlib, numpy) for real analysis, reads and writes Excel on SharePoint, parses PDFs and Word docs, and collaborates with your team over email to gather missing information. Every outbound email to people outside your company goes through your approval queue first.\n\nSet it up once with your team structure and data sources during onboarding. It handles the rest — you review the work.",
   "category": "RESEARCH",
   "version": "1.0.0",
-  "pricePerMonth": 4900,
+  "pricePerMonth": 5900,
+  "model": "anthropic/claude-sonnet-5",
   "modelTier": "sonnet",
   "runtime": "custom",
   "runtimeConfig": {
