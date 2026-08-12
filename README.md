@@ -92,10 +92,6 @@ pnpm dev
 
 Useful scripts: `pnpm db:studio` (inspect the database), `pnpm seed` / `pnpm seed:demo` (seed data), `pnpm validate-agent` and `pnpm vet-agent` (check an agent package).
 
-### Deployment
-
-See [`DEPLOY.md`](./DEPLOY.md) for a step-by-step guide (Vercel, Neon, Upstash, Clerk, Stripe, and the Hetzner provisioning host). A walkthrough of the end-to-end demo lives in [`DEMO_SCRIPT.md`](./DEMO_SCRIPT.md).
-
 ## Testing
 
 The repo includes unit tests plus a set of end-to-end suites (`test-*.mjs`, `test_e2e_flows.sh`) covering provisioning, the approval flow, email scenarios, and full-system runs.
