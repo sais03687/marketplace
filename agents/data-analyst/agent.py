@@ -783,10 +783,19 @@ async def reason_and_act(state: AgentState) -> AgentState:
     try:
         cleaned = text.strip()
         if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+            # [-1] rather than [1]: a response of a bare "```" with nothing after
+            # it has no second element, and the IndexError that raised was not in
+            # the except below — so it escaped past the regex salvage on the next
+            # line, which would have recovered the reply, and killed the whole
+            # message with "Error handling message: list index out of range". The
+            # requester got no answer at all. Seen on 2026-08-12 on the
+            # action=none retry, where a short degenerate response is likeliest.
+            cleaned = cleaned.split("\n", 1)[-1].rsplit("```", 1)[0]
         parsed = json.loads(cleaned)
         state.analysis = parsed if isinstance(parsed, dict) else None
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, IndexError, TypeError, AttributeError):
+        # Anything at all here means "could not parse", and the salvage below is
+        # the point. Never let a parse failure become an unhandled exception.
         state.analysis = None
 
     if not isinstance(state.analysis, dict):
