@@ -275,6 +275,101 @@ def test_the_error_is_not_appended_twice_if_the_reply_already_names_it():
     assert "---" not in result["text"]
 
 
+# What T03 sent in the 18:53Z benchmark run, with the error it never quoted
+# sitting in a step that exited 0 because the model caught it in a try/except.
+# The first version of the guard asked "did the run produce readable output",
+# which this satisfies, so the caveat was withheld from the one reply needing it.
+T03_CAUGHT_IN_CODE = (
+    '{"stdout": "Error reading CSV: Error tokenizing data. C error: Expected 5 '
+    'fields in line 6, saw 6\\n", "stderr": "", "returncode": 0, "files": []}'
+)
+T03_VAGUE_REPLY = (
+    "Hi Sai, I encountered an issue with the data format when trying to generate "
+    "the retention triangle. I was unable to produce the requested triangle or "
+    "identify the best-performing cohort at this time."
+)
+
+
+def test_a_printed_error_does_not_count_as_having_produced_findings():
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": T03_VAGUE_REPLY},
+        actions=["MCP python-sandbox/execute_python"] * 3,
+        results=[STEP_FAILED, STEP_FAILED, T03_CAUGHT_IN_CODE],
+    ))
+    assert "Expected 5 fields in line 5, saw 6" in result["text"], (
+        "the caveat is withheld again from a reply that reports failure"
+    )
+
+
+def test_a_killed_step_is_named_rather_than_read_aloud():
+    # T15 asked for 40 million rows and was killed eight times. The reply said
+    # "returning an exit status of -9, which indicates a technical problem with
+    # the execution environment" — the exit code, read aloud.
+    killed = ("STEP FAILED — the code exited with status -9 and did not finish.\n\n"
+              "Fix the code and run it again. Nothing was produced.")
+    detail = agent._failure_detail([killed])
+    assert "memory" in detail
+    assert "-9" not in detail
+
+
+@pytest.mark.parametrize("status", [-9, 137])
+def test_the_kill_is_not_blamed_on_the_sender_s_data(status):
+    # The sandbox is capped at 256 MB and shared. In the 2026-08-13 run T16's
+    # 4,925-byte spreadsheet was killed by the memory the Monte Carlo beside it
+    # was holding, so "your file is too large" would have been a false
+    # accusation about a file that fits in a mail attachment.
+    detail = agent._failure_detail([
+        f"STEP FAILED — the code exited with status {status} and did not finish."
+    ])
+    assert detail
+    for blame in ("your data", "your file", "too large", "too big"):
+        assert blame not in detail.lower()
+
+
+def test_the_appended_caveat_carries_the_matching_advice_too():
+    # Both renderings have to pick the same advice, or the caveat tells a
+    # memory-killed run to check its commas.
+    killed = "STEP FAILED — the code exited with status -9 and did not finish."
+    result = _finalize(_State(
+        final={"action": "reply_email",
+               "text": "Hi Sai, the simulation repeatedly failed to complete."},
+        actions=["MCP python-sandbox/execute_python"] * 3,
+        results=[killed] * 3,
+    ))
+    assert "smaller slice" in result["text"]
+    assert "ragged row" not in result["text"]
+
+
+def test_a_killed_step_still_reads_as_a_sentence_in_the_standalone_note():
+    note = agent._failure_note([
+        "STEP FAILED — the code exited with status -9 and did not finish."
+    ])
+    assert "The error was" not in note, "a killed step has no error to quote"
+    assert "memory" in note
+
+
+def test_the_advice_matches_the_failure():
+    # Asking about ragged rows after a memory kill is advice about the wrong
+    # problem: the code was fine and the size was not.
+    killed = "STEP FAILED — the code exited with status -9 and did not finish."
+    assert "smaller slice" in agent._failure_advice([killed])
+    assert "ragged row" not in agent._failure_advice([killed])
+    assert "ragged row" in agent._failure_advice([STEP_FAILED])
+    assert "smaller slice" not in agent._failure_advice([STEP_FAILED])
+
+
+def test_a_delivered_file_means_the_work_landed():
+    # Something was produced and sent. Whatever failed on the way is history.
+    result = _finalize(_State(
+        final={"action": "reply_email",
+               "text": "I could not chart the second series, but the totals are attached."},
+        actions=["MCP python-sandbox/execute_python", "drive_upload"],
+        results=[STEP_FAILED,
+                 "Uploaded q3.xlsx to SharePoint: https://example.sharepoint.com/q3.xlsx"],
+    ))
+    assert "---" not in result["text"]
+
+
 def test_a_step_that_failed_and_was_then_got_right_is_not_a_caveat():
     # Recovery is how the work went, not a warning about it. The findings are
     # the answer, and a post-mortem under them would undermine a correct reply.

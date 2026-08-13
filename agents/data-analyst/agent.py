@@ -2074,12 +2074,17 @@ async def finalize(state: AgentState) -> AgentState:
     # The sender can fix that in ten seconds and can do nothing at all with
     # "some technical issues".
     #
-    # Only when the run delivered nothing: a step that failed and was then got
-    # right is part of how the work went, not a caveat on it.
+    # Keyed on the reply reporting a failure, not on the run having produced no
+    # readable output. The first version asked the second question and the
+    # benchmark caught it hours later: a model that catches its own parse error
+    # and prints it leaves a step that exits 0 with output, so the run counted as
+    # having findings and the caveat was withheld from the one reply that needed
+    # it. A step that failed and was then got right stays uncaveated either way —
+    # that reply reports results, not failure.
     if (
         result_text.strip()
         and _failed_steps(state.action_results)
-        and not _buyer_readable(state.action_results)
+        and _REPORTS_FAILURE_RE.search(result_text)
         and not _delivered_file_line(state.action_results)
     ):
         detail = _failure_detail(state.action_results)
@@ -2087,7 +2092,7 @@ async def finalize(state: AgentState) -> AgentState:
             result_text = (
                 f"{result_text.rstrip()}\n\n---\n"
                 f"What stopped it, in case it is something you can see from your "
-                f"side: {detail}\n\n{_WHAT_WOULD_HELP}"
+                f"side: {detail}\n\n{_failure_advice(state.action_results)}"
             )
             print(f"[agent] Delivering with the failure detail: {detail[:80]}", flush=True)
 
@@ -2813,8 +2818,32 @@ def _failed_steps(results: list) -> list[str]:
     ]
 
 
+# A step that was killed rather than raising. Nothing writes a traceback on the
+# way out, so there is no Error: block to read and the run looks unexplained.
+#
+# Benchmark task T15 on 2026-08-13 asked for 40 million rows in one dataframe and
+# was killed eight times; the reply it produced said "returning an exit status of
+# -9, which indicates a technical problem with the execution environment", which
+# is the exit code read aloud.
+#
+# Deliberately not "your data is too large". The sandbox is capped at 256 MB and
+# is shared, so the memory can be gone for reasons that have nothing to do with
+# the sender's file — in that same run, T16's 4,925-byte spreadsheet was killed
+# by the memory the Monte Carlo next to it was holding. What is always true is
+# that the step needed more memory than it could have.
+_KILL_STATUSES = {
+    -9: "it needed more memory than the sandbox allows, so the system stopped it",
+    137: "it needed more memory than the sandbox allows, so the system stopped it",
+    -15: "the system stopped it before it finished",
+    143: "the system stopped it before it finished",
+    -11: "it crashed rather than raising an error I can read",
+    139: "it crashed rather than raising an error I can read",
+}
+_EXIT_STATUS_RE = re.compile(r"exited with status (-?\d+)")
+
+
 def _failure_detail(results: list) -> str:
-    """The one line of a failed run worth quoting: the exception, or "".
+    """The one line of a failed run worth quoting, or "".
 
     A STEP FAILED entry carries up to 1200 characters of stderr written for the
     model — frames through site-packages, the code that raised, an instruction
@@ -2822,9 +2851,18 @@ def _failure_detail(results: list) -> str:
     it is the only part that means anything to the person who sent the data:
     "Expected 5 fields in line 5, saw 6" tells them their table has a ragged
     row. The frames tell them nothing.
+
+    A killed step has no traceback at all, so it is named by its status instead.
     """
     failures = _failed_steps(results)
-    if not failures or "Error:" not in failures[-1]:
+    if not failures:
+        return ""
+
+    status = _EXIT_STATUS_RE.search(failures[-1])
+    if status and int(status.group(1)) in _KILL_STATUSES:
+        return _KILL_STATUSES[int(status.group(1))]
+
+    if "Error:" not in failures[-1]:
         return ""
 
     block = failures[-1].split("Error:", 1)[1]
@@ -2856,12 +2894,51 @@ def _failure_detail(results: list) -> str:
 # naming the exact problem — a row carrying six fields against a five-field
 # header. The sender can fix that in ten seconds and cannot act on "some
 # technical issues" at all.
+#
+# The reply saying, in its own words, that it did not manage the task. Used to
+# decide whether the run's own error is worth appending: under a sentence that
+# reports failure it is the missing half, and under a sentence that reports
+# results it is a post-mortem nobody asked for.
+#
+# This replaces "the run produced nothing a buyer could read", which was the
+# first guard and was wrong in a way the benchmark found the same day. A model
+# that catches its own parse error in a try/except and prints it has a step that
+# exits 0 with output — so the run counted as having findings, and the caveat
+# was held back from the one reply that needed it. T03 on 2026-08-13 said "an
+# error in reading the input data" and stopped, with "Expected 5 fields in line
+# 6, saw 6" sitting in the run and never sent.
+_REPORTS_FAILURE_RE = re.compile(
+    r"\b(could ?not|couldn't|cannot|can't|unable|not able|wasn't able|was not able|"
+    r"failed|failure|did not (?:complete|finish|manage)|didn't (?:complete|finish|manage)|"
+    r"interrupted|went wrong|encountered an (?:error|issue|problem))\b",
+    re.IGNORECASE,
+)
+
 _WHAT_WOULD_HELP = (
     "If the data has a shape I did not expect — a ragged row, a merged header, "
     "a column that is text where I read it as numbers — telling me which, or "
     "sending the file itself, will usually be enough to get it right on the "
     "next go."
 )
+
+# The same sentence for a step that was killed. Asking about ragged rows there
+# would be advice about the wrong problem: the code was fine and the size was
+# not, so what helps is a smaller bite of it.
+_SMALLER_SLICE = (
+    "If it has to run at that size I cannot do it in one pass, but a smaller "
+    "slice usually gets you the same answer — a sample, one region or one month "
+    "at a time, or the aggregate rather than every row. Tell me which and I'll "
+    "work it up from there."
+)
+
+
+def _failure_advice(results: list) -> str:
+    """What would actually get this sender a result next time."""
+    failures = _failed_steps(results)
+    status = _EXIT_STATUS_RE.search(failures[-1]) if failures else None
+    if status and int(status.group(1)) in _KILL_STATUSES:
+        return _SMALLER_SLICE
+    return _WHAT_WOULD_HELP
 
 
 def _failure_note(results: list) -> str:
@@ -2889,10 +2966,12 @@ def _failure_note(results: list) -> str:
         f"I tried to run the analysis {len(failures)} times and it failed every time."
     )
     detail = _failure_detail(results)
-    note = f"{tried}\n\n" + (f"The error was:\n{detail}\n\n" if detail else "")
+    # "What went wrong" rather than "the error was", because a killed step has
+    # no error to quote and the sentence has to carry both.
+    note = f"{tried}\n\n" + (f"What went wrong:\n{detail}\n\n" if detail else "")
     return note + (
         "Nothing was produced, so there are no figures in this message and no "
-        f"file attached to it. {_WHAT_WOULD_HELP}"
+        f"file attached to it. {_failure_advice(results)}"
     )
 
 
