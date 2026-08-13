@@ -2066,6 +2066,31 @@ async def finalize(state: AgentState) -> AgentState:
             flush=True,
         )
 
+    # A run that produced nothing, reported by the model in its own words. Those
+    # words are reliably vaguer than the evidence: on 2026-08-13 benchmark task
+    # T03 wrote "the data processing script failed to execute correctly,
+    # preventing me from completing the analysis" over twelve steps whose error
+    # named the exact problem — six fields in a row against a five-field header.
+    # The sender can fix that in ten seconds and can do nothing at all with
+    # "some technical issues".
+    #
+    # Only when the run delivered nothing: a step that failed and was then got
+    # right is part of how the work went, not a caveat on it.
+    if (
+        result_text.strip()
+        and _failed_steps(state.action_results)
+        and not _buyer_readable(state.action_results)
+        and not _delivered_file_line(state.action_results)
+    ):
+        detail = _failure_detail(state.action_results)
+        if detail and detail not in result_text:
+            result_text = (
+                f"{result_text.rstrip()}\n\n---\n"
+                f"What stopped it, in case it is something you can see from your "
+                f"side: {detail}\n\n{_WHAT_WOULD_HELP}"
+            )
+            print(f"[agent] Delivering with the failure detail: {detail[:80]}", flush=True)
+
     # Measured arithmetic drift with no budget left to correct it. Said plainly
     # and first among the caveats, because a wrong figure is worse than a
     # missing one: the reader has no reason to doubt it.
@@ -2780,6 +2805,65 @@ def _buyer_readable(results: list, limit: int = 3) -> str:
     return "\n\n".join(kept[-limit:])
 
 
+def _failed_steps(results: list) -> list[str]:
+    """The sandbox steps that did not finish."""
+    return [
+        r for r in (results or [])
+        if isinstance(r, str) and r.startswith("STEP FAILED")
+    ]
+
+
+def _failure_detail(results: list) -> str:
+    """The one line of a failed run worth quoting: the exception, or "".
+
+    A STEP FAILED entry carries up to 1200 characters of stderr written for the
+    model — frames through site-packages, the code that raised, an instruction
+    to try again. The last unindented line of a traceback is the exception, and
+    it is the only part that means anything to the person who sent the data:
+    "Expected 5 fields in line 5, saw 6" tells them their table has a ragged
+    row. The frames tell them nothing.
+    """
+    failures = _failed_steps(results)
+    if not failures or "Error:" not in failures[-1]:
+        return ""
+
+    block = failures[-1].split("Error:", 1)[1]
+    # Stop at the next section: the partial stdout, or the instruction that
+    # follows it. Both are addressed to the model.
+    for marker in ("It printed this before it stopped", "Fix the code",
+                   "This is the second failure"):
+        block = block.split(marker, 1)[0]
+    lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
+    # Unindented lines are the exception; indented ones are frames. stderr is
+    # stored cut at 1200 characters, so a long traceback can end mid-frame and
+    # leave no exception line at all — say nothing, rather than quoting
+    # `return _read(filepath_or_buffer, kwds)` at someone who asked about
+    # cohort retention.
+    named = [
+        ln for ln in lines
+        if not ln.startswith((" ", "\t", 'File "'))
+        and not ln.startswith("Traceback (most recent call last)")
+    ]
+    if not named:
+        return ""
+    return _SANDBOX_PATH.sub("a working file", named[-1].strip())[:200].strip()
+
+
+# Appended to a reply the model wrote itself, when the run produced nothing else.
+# Its own account of a failure is reliably vaguer than the evidence: on
+# 2026-08-13 benchmark task T03 said "the data processing script failed to
+# execute correctly, preventing me from completing the analysis" over an error
+# naming the exact problem — a row carrying six fields against a five-field
+# header. The sender can fix that in ten seconds and cannot act on "some
+# technical issues" at all.
+_WHAT_WOULD_HELP = (
+    "If the data has a shape I did not expect — a ragged row, a merged header, "
+    "a column that is text where I read it as numbers — telling me which, or "
+    "sending the file itself, will usually be enough to get it right on the "
+    "next go."
+)
+
+
 def _failure_note(results: list) -> str:
     """What stopped the run, in the requester's terms, or "" if nothing did.
 
@@ -2788,59 +2872,27 @@ def _failure_note(results: list) -> str:
     run that produced nothing: the buyer is left with either silence or a
     cheerful "I completed the work below" over three steps that all failed.
 
-    So the failures get their own rendering, and it is deliberately one line of
-    error rather than the stored text. A STEP FAILED entry carries up to 1200
-    characters of stderr written for the model — frames through site-packages,
-    the code that raised, an instruction to try again. The last unindented line
-    of a traceback is the exception, and it is the only part that means anything
-    to the person who sent the data: "Expected 5 fields in line 5, saw 6" tells
-    them their table has a ragged row. The frames tell them nothing.
+    So the failures get their own rendering, built on the one line of
+    `_failure_detail` rather than the stored text.
 
     Covers failures of the sandbox steps. A tool error records itself under
     other prefixes and is not read here — the buyer is told what broke, not
     everything that went wrong.
     """
-    failures = [
-        r for r in (results or [])
-        if isinstance(r, str) and r.startswith("STEP FAILED")
-    ]
+    failures = _failed_steps(results)
     if not failures:
         return ""
-
-    detail = ""
-    if "Error:" in failures[-1]:
-        block = failures[-1].split("Error:", 1)[1]
-        # Stop at the next section: the partial stdout, or the instruction that
-        # follows it. Both are addressed to the model.
-        for marker in ("It printed this before it stopped", "Fix the code",
-                       "This is the second failure"):
-            block = block.split(marker, 1)[0]
-        lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
-        # Unindented lines are the exception; indented ones are frames. stderr is
-        # stored cut at 1200 characters, so a long traceback can end mid-frame
-        # and leave no exception line at all — say only that it failed, rather
-        # than quoting `return _read(filepath_or_buffer, kwds)` at someone who
-        # asked about cohort retention.
-        named = [
-            ln for ln in lines
-            if not ln.startswith((" ", "\t", 'File "'))
-            and not ln.startswith("Traceback (most recent call last)")
-        ]
-        detail = named[-1].strip() if named else ""
-        detail = _SANDBOX_PATH.sub("a working file", detail)[:200].strip()
 
     tried = (
         "I tried to run the analysis and it failed."
         if len(failures) == 1 else
         f"I tried to run the analysis {len(failures)} times and it failed every time."
     )
+    detail = _failure_detail(results)
     note = f"{tried}\n\n" + (f"The error was:\n{detail}\n\n" if detail else "")
     return note + (
         "Nothing was produced, so there are no figures in this message and no "
-        "file attached to it. If the data has a shape I did not expect — a ragged "
-        "row, a merged header, a column that is text where I read it as numbers — "
-        "telling me which, or sending the file itself, will usually be enough to "
-        "get it right on the next go."
+        f"file attached to it. {_WHAT_WOULD_HELP}"
     )
 
 

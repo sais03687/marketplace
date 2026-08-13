@@ -240,6 +240,62 @@ def test_findings_still_lead_when_there_are_any():
     assert "Expected 5 fields" not in result["text"]
 
 
+# ── the model's own account is vaguer than the evidence ────────────────────
+
+# What T03 actually sent on 2026-08-13, once the reply stopped being discarded.
+# True, useless, and the run had the exact answer in hand.
+T03_REPLY = (
+    "Hi Sai, I encountered some technical issues while trying to generate the "
+    "retention triangle and identify the best-performing cohort. The data "
+    "processing script failed to execute correctly, preventing me from "
+    "completing the analysis. I'll need to investigate the root cause of these "
+    "errors before I can provide the requested report and chart."
+)
+
+
+def test_a_vague_failure_reply_is_given_the_error_that_caused_it():
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": T03_REPLY},
+        actions=["MCP python-sandbox/execute_python"] * 3,
+        results=[STEP_FAILED] * 3,
+    ))
+    assert T03_REPLY in result["text"], "the model's own words still lead"
+    assert "Expected 5 fields in line 5, saw 6" in result["text"]
+    assert result["text"].index("technical issues") < result["text"].index("---")
+
+
+def test_the_error_is_not_appended_twice_if_the_reply_already_names_it():
+    said_it = f"I could not parse the table: pandas.errors.ParserError: Expected 5 fields in line 5, saw 6"
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": said_it},
+        actions=["MCP python-sandbox/execute_python"],
+        results=[STEP_FAILED],
+    ))
+    assert result["text"].count("Expected 5 fields in line 5, saw 6") == 1
+    assert "---" not in result["text"]
+
+
+def test_a_step_that_failed_and_was_then_got_right_is_not_a_caveat():
+    # Recovery is how the work went, not a warning about it. The findings are
+    # the answer, and a post-mortem under them would undermine a correct reply.
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": "Revenue was 45000 in Q3."},
+        actions=["MCP python-sandbox/execute_python"] * 2,
+        results=[STEP_FAILED, '{"returncode": 0, "stdout": "Total revenue: 45000"}'],
+    ))
+    assert "---" not in result["text"]
+    assert "Expected 5 fields" not in result["text"]
+
+
+def test_a_healthy_run_is_never_given_a_failure_caveat():
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": "Revenue was 45000 in Q3."},
+        actions=["MCP python-sandbox/execute_python"],
+        results=['{"returncode": 0, "stdout": "Total revenue: 45000"}'],
+    ))
+    assert result["text"].strip() == "Revenue was 45000 in Q3."
+
+
 # ── no hand-back may reach the buyer ───────────────────────────────────────
 
 def test_every_platform_hand_back_is_filtered_from_buyer_facing_text():
