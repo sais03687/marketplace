@@ -151,6 +151,89 @@ def test_a_percentage_under_the_substantive_floor_still_counts():
     assert [f[0] for f in adapter._claimed_figures("margin was 8.5% at best")] == ["8.5"]
 
 
+# ── a superlative that names a row instead of a figure ─────────────────────
+
+# The workbook T03 actually delivered on 2026-08-13 once it could parse the
+# input, with the Size column it was given.
+DELIVERED = [[
+    ["Cohort", "Size", "M1_retention%", "M2_retention%", "M3_retention%"],
+    ["2026-01", "500", "64", "48", "40"],
+    ["2026-02", "620", "65", "46.94", ""],
+    ["2026-03", "450", "62", "", ""],
+    ["2026-04", "700", "", "", ""],
+]]
+
+
+def test_the_claim_as_t03_actually_phrased_it_is_caught():
+    # "The best performing cohort is 2026-03" — the exact sentence, carrying no
+    # figure at all, which is why the check was silent on it the first time.
+    got = _conflicts("The best performing cohort is 2026-03.", DELIVERED)
+    assert got
+    assert any(c["column"] == "M1_retention%" and c["beaten_by"] == "65"
+               and c["row"] == "2026-02" for c in got)
+
+
+def test_every_column_it_loses_in_is_reported_not_just_the_first():
+    # The first is Size, where 2026-04's 700 beats it and means nothing about
+    # performance. Reporting only that would be a hand-back about the wrong
+    # column; reporting both makes "which metric?" answerable in one sentence.
+    cols = {c["column"] for c in _conflicts("The best cohort is 2026-03.", DELIVERED)}
+    assert {"Size", "M1_retention%"} <= cols
+
+
+def test_it_cannot_tell_a_right_claim_from_a_wrong_one_and_does_not_pretend_to():
+    # 2026-02 is the defensible answer and is still beaten somewhere — on the
+    # average of differing numbers of months. The check does not say the ranking
+    # is wrong; it says the file supports more than one and asks which. Naming
+    # the metric is what makes the defensible answer defensible.
+    assert _conflicts("The best performing cohort is 2026-02.", TRIANGLE)
+
+
+def test_naming_the_metric_settles_it():
+    assert not _conflicts("2026-02 leads on M1_retention% retention.", DELIVERED)
+
+
+def test_a_row_the_file_does_not_have_is_not_a_claim_about_the_file():
+    assert not _conflicts("The best performing cohort is 2026-09.", DELIVERED)
+
+
+def test_a_row_that_leads_everywhere_is_left_alone():
+    clean = [[["Region", "Revenue"], ["North", "143200"], ["South", "88900"]]]
+    assert not _conflicts("North is the best region.", clean)
+    assert _conflicts("South is the best region.", clean)
+
+
+def test_the_nearest_named_row_is_the_subject():
+    got = _conflicts("The best cohort is 2026-03, ahead of 2026-01.", DELIVERED)
+    assert got and all(c["subject"] == "2026-03" for c in got)
+
+
+def test_the_subject_is_said_once_however_many_columns_it_loses_in():
+    conflicts = _conflicts("The best performing cohort is 2026-03.", DELIVERED)
+    rendered = agent._render_superlative_conflicts(conflicts)
+    assert rendered.count("you call 2026-03") == 1
+    assert "Size" in rendered and "M1_retention%" in rendered
+
+
+def test_the_buyers_note_names_every_row_ahead_of_the_claim():
+    # Naming only the first would caveat a ranking with "2026-04 is ahead in
+    # Size", which reads as confusion rather than as a real doubt.
+    state = _State(budget=0, text="The best performing cohort is 2026-03.")
+    state.superlative_claims = _conflicts(
+        "The best performing cohort is 2026-03.", DELIVERED)
+    state.superlative_unfixable = True
+    asyncio.run(agent.finalize(state))
+    assert "2026-04 in Size" in state.result["text"]
+    assert "2026-02 in M1_retention%" in state.result["text"]
+
+
+def test_a_figure_claim_still_takes_the_figure_path():
+    # When a number is quoted it pins the column, which is strictly better
+    # evidence than a row name. The label path must not pre-empt it.
+    got = _conflicts("2026-03 is holding up best at 62.00%.", TRIANGLE)
+    assert got and "subject" not in got[0]
+
+
 # ── reading the file's shape ───────────────────────────────────────────────
 
 def test_a_workbook_becomes_columns():

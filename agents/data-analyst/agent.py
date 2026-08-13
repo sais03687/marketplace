@@ -1683,6 +1683,35 @@ def route_after_execution(state: AgentState) -> str:
     return "reason_and_act"
 
 
+def _render_superlative_conflicts(conflicts: list, limit: int = 4) -> str:
+    """The disagreement in one sentence, however many columns it spans.
+
+    A claim that names a row rather than a figure is checked against every
+    column the row loses in, because nothing in the file says which column the
+    claim was about. Rendering those one per clause repeats "you call 2026-03
+    the best" three times; the subject is said once and the columns listed after
+    it, which is also the shape of the answer being asked for.
+    """
+    subject = conflicts[0].get("subject") if conflicts else None
+    if subject and all(c.get("subject") == subject for c in conflicts):
+        beats = ", ".join(
+            f"{c.get('beaten_by')} in {c.get('column') or 'another column'}"
+            + (f" ({c.get('row')})" if c.get("row") else "")
+            for c in conflicts[:limit]
+        )
+        mine = ", ".join(str(c.get("value")) for c in conflicts[:limit])
+        return (
+            f"you call {subject} the {conflicts[0].get('word')}, and the file has "
+            f"{beats} — against its own {mine}"
+        )
+    return "; ".join(
+        f"you call {c.get('value')} the {c.get('word')}, but "
+        f"{c.get('column') or 'the same column'} also holds {c.get('beaten_by')}"
+        + (f" ({c.get('row')})" if c.get("row") else "")
+        for c in conflicts[:limit]
+    )
+
+
 async def verify_deliverables(state: AgentState) -> AgentState:
     """Compare the reply about to be sent against the files it describes.
 
@@ -1776,13 +1805,7 @@ async def verify_deliverables(state: AgentState) -> AgentState:
                 )
             else:
                 state.superlative_attempts += 1
-                pairs = "; ".join(
-                    f"you call {c.get('value')} the {c.get('word')}, but "
-                    f"{c.get('column') or 'the same column'} also holds "
-                    f"{c.get('beaten_by')}"
-                    + (f" ({c.get('row')})" if c.get("row") else "")
-                    for c in conflicts[:4]
-                )
+                pairs = _render_superlative_conflicts(conflicts)
                 print(
                     f"[agent] Superlative check: handing back {len(conflicts)} claim(s) "
                     f"(attempt {state.superlative_attempts}/{state.max_verify_attempts})",
@@ -2145,15 +2168,31 @@ async def finalize(state: AgentState) -> AgentState:
     # so it says that and lets the reader judge.
     if state.superlative_unfixable and state.superlative_claims and result_text.strip():
         c = state.superlative_claims[0]
-        where = f" in {c['column']}" if c.get("column") else ""
-        who = f" ({c['row']})" if c.get("row") else ""
+        if c.get("subject"):
+            # Every column it loses in, not the first — the first is often one
+            # nobody ranks on, and "2026-04 is ahead in Size" alone reads as a
+            # confused caveat rather than a real doubt about the ranking.
+            ahead = ", ".join(
+                f"{x.get('row')} in {x.get('column')}"
+                for x in state.superlative_claims[:3] if x.get("row")
+            )
+            middle = (
+                f"I call {c['subject']} the {c.get('word')}, and other rows in "
+                f"the file are ahead of it — {ahead}"
+            )
+        else:
+            where = f" in {c['column']}" if c.get("column") else ""
+            who = f" ({c['row']})" if c.get("row") else ""
+            middle = (
+                f"I call {c.get('value')} the {c.get('word')}, and the file also "
+                f"holds {c.get('beaten_by')}{who}{where}"
+            )
         result_text = (
             f"{result_text.rstrip()}\n\n---\n"
-            f"One thing to check before you rely on the ranking above: I call "
-            f"{c.get('value')} the {c.get('word')}, and the file also holds "
-            f"{c.get('beaten_by')}{who}{where}. Either I am ranking on something "
-            f"narrower than that column or the ranking is wrong — I could not "
-            f"settle it, so please look at the file before quoting the comparison."
+            f"One thing to check before you rely on the ranking above: {middle}. "
+            "Either I am ranking on something narrower than those figures or the "
+            "ranking is wrong — I could not settle it, so please look at the file "
+            "before quoting the comparison."
         )
         print(
             f"[agent] Delivering with a superlative note "

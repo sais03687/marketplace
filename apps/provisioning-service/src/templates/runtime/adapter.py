@@ -1145,6 +1145,79 @@ def _header_named_in(header: str, sentence: str) -> bool:
     return any(re.search(rf"\b{re.escape(t)}\b", sentence, re.IGNORECASE) for t in tokens)
 
 
+def _label_conflicts(
+    sentence: str,
+    sup: re.Match,
+    columns: list[tuple[str, list[tuple[Decimal, str]]]],
+    want_high: bool,
+    limit: int = 3,
+) -> list[dict]:
+    """A superlative that names a row rather than quoting a figure.
+
+    "The best performing cohort is 2026-03" is the most natural way to say it
+    and carries no number at all, so the figure path above never sees it. T03 on
+    2026-08-13 said exactly that, over a workbook whose M1 column has 2026-02 at
+    65 above 2026-03's 62 — the claim this whole check was built for, phrased in
+    the one shape it could not read.
+
+    Unlike the figure form, this cannot tell a right claim from a wrong one. The
+    claimed value pins down which column is meant; a bare row name does not, and
+    in that same workbook *every* cohort is beaten somewhere — 2026-03 loses on
+    M1, and 2026-02, which is the defensible answer, loses on the average of
+    differing numbers of months. So this does not say the ranking is wrong. It
+    says the file supports more than one ranking and the sentence does not say
+    which, and it asks for the metric to be named. That is the right response to
+    both claims: the defensible answer here is "2026-02 at M1, the only month
+    every cohort has reached", and naming the metric is what makes it defensible.
+
+    Every column the row is beaten in, not the first. The first is often one
+    nobody would rank on — in that same workbook it is `Size`, where 2026-04's
+    700 beats 2026-03's 450 and means nothing about performance. There is no
+    honest way to tell a metric from a given input here, so the answer is to
+    show them all: "Size has 700 above its 450; M1_retention% has 65 above its
+    62" is answerable in one sentence, and the reply that comes back names the
+    metric, which is the whole object.
+    """
+    mentioned: list[str] = []
+    for _, cells in columns:
+        for _, label in cells:
+            if len(label) > 1 and re.search(
+                rf"(?<!\w){re.escape(label)}(?!\w)", sentence, re.IGNORECASE
+            ):
+                mentioned.append(label)
+    if not mentioned:
+        return []
+
+    # When several rows are named — "2026-03, ahead of 2026-01" — the superlative
+    # is about the nearest one.
+    lowered = sentence.lower()
+    subject = min(set(mentioned), key=lambda l: abs(lowered.find(l.lower()) - sup.start()))
+
+    out: list[dict] = []
+    named = [c for c in columns if _header_named_in(c[0], sentence)]
+    for header, cells in (named or columns):
+        mine = next((v for v, label in cells if label == subject), None)
+        if mine is None:
+            continue
+        beaters = [(v, l) for v, l in cells
+                   if l != subject and (v > mine if want_high else v < mine)]
+        if not beaters:
+            continue
+        best = max(beaters) if want_high else min(beaters)
+        out.append({
+            "claim": sentence.strip()[:200],
+            "word": sup.group(1).lower(),
+            "subject": subject[:60],
+            "value": f"{mine.normalize():f}",
+            "beaten_by": f"{best[0].normalize():f}",
+            "row": best[1][:60],
+            "column": header[:60],
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _superlative_conflicts(summary_text: str, grids: list[list[list[str]]]) -> list[dict]:
     """Superlative claims the delivered file contradicts on its own figures."""
     columns: list[tuple[str, list[tuple[Decimal, str]]]] = []
@@ -1169,15 +1242,24 @@ def _superlative_conflicts(summary_text: str, grids: list[list[list[str]]]) -> l
         )
         if not sup:
             continue
+        want_high = sup.group(1).lower() in _SUPERLATIVE_HIGH
         figures = _claimed_figures(sentence)
-        if not figures or len(figures) > _MAX_FIGURES_IN_CLAIM:
+        if len(figures) > _MAX_FIGURES_IN_CLAIM:
             continue  # an enumeration is not a claim about any one of them
+
+        if not figures:
+            # No figure to read it against, but it may name a row instead.
+            for conflict in _label_conflicts(sentence, sup, columns, want_high):
+                key = (conflict["subject"], conflict["column"], conflict["beaten_by"])
+                if key not in seen:
+                    seen.add(key)
+                    conflicts.append(conflict)
+            continue
 
         # The figure the superlative attaches to: the first one after the word,
         # or failing that the last one before it.
         after = [f for f in figures if f[2] > sup.start()]
         raw, val, _ = after[0] if after else figures[-1]
-        want_high = sup.group(1).lower() in _SUPERLATIVE_HIGH
 
         places = len(raw.split(".")[1]) if "." in raw else 0
         quantum = Decimal(1).scaleb(-places)
