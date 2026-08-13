@@ -102,6 +102,19 @@ def set_deliverable_verifier(fn) -> None:
     _deliverable_verifier = fn
 
 
+# Reads the superlative claims in the summary — "best", "highest", "worst" —
+# against the columns of the file delivered with them. Same reason as above for
+# living platform-side: it needs the file's real structure, not the model's
+# account of it.
+_superlative_verifier = None
+
+
+def set_superlative_verifier(fn) -> None:
+    """Called by the adapter with an async fn(summary_text) -> list[dict]."""
+    global _superlative_verifier
+    _superlative_verifier = fn
+
+
 # Leading bytes that identify the formats this agent uploads. Used to refuse
 # content that decoded successfully but is plainly not the file it claims to be.
 _FILE_SIGNATURES = {
@@ -371,11 +384,19 @@ class AgentState(BaseModel):
     # was sound in the first place, and a wrong number agrees with itself.
     rebuilt_figures: list = Field(default_factory=list)
     rebuild_attempts: int = 0
+    # Superlative claims — "best", "highest", "worst" — that the delivered file
+    # argues against on its own figures, and how many times they have been handed
+    # back. A third question again: not whether the file backs the reply, nor
+    # whether the arithmetic drifted, but whether a claim about a number survives
+    # the column that number came from.
+    superlative_claims: list = Field(default_factory=list)
+    superlative_attempts: int = 0
     # Set once the drift is measured and there is no budget to send the agent
     # back for it. The reply goes out with a note rather than looping.
     rebuild_unfixable: bool = False
     # Set once the last attempt has been spent and the gap survived it.
     deliverable_unfixable: bool = False
+    superlative_unfixable: bool = False
 
     # Output
     result: dict = Field(default_factory=dict)
@@ -1644,6 +1665,8 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     state.deliverable_gaps = []
     state.rebuilt_figures = []
     state.rebuild_unfixable = False
+    state.superlative_claims = []
+    state.superlative_unfixable = False
 
     # Checked before the file check, and against the results rather than the
     # reply, because this is an error in the work itself and not in the write-up.
@@ -1690,14 +1713,67 @@ async def verify_deliverables(state: AgentState) -> AgentState:
             )
             return state
 
-    if _deliverable_verifier is None:
-        return state
-
     analysis = state.analysis if isinstance(state.analysis, dict) else {}
     final = analysis.get("final_response") or {}
     text = (final.get("text") or "").strip() if isinstance(final, dict) else ""
     if not text:
         return state  # nothing asserted yet; finalize's own fallback covers this
+
+    # Between the two: a wrong claim is worse than a missing figure and better
+    # than wrong arithmetic. Checked before the gap check because it can send the
+    # agent back to rewrite the sentence, and the gap check is about that same
+    # sentence.
+    if _superlative_verifier is not None:
+        try:
+            conflicts = await _superlative_verifier(text)
+        except Exception as e:
+            print(f"[agent] Superlative check failed to run ({e}) — sending as-is", flush=True)
+            conflicts = []
+        if conflicts:
+            state.superlative_claims = list(conflicts)
+            if state.superlative_attempts >= state.max_verify_attempts:
+                state.superlative_unfixable = True
+                print(
+                    f"[agent] Superlative check: {len(conflicts)} claim(s) the file "
+                    "disagrees with, and no attempts left — delivering with a note",
+                    flush=True,
+                )
+            else:
+                state.superlative_attempts += 1
+                pairs = "; ".join(
+                    f"you call {c.get('value')} the {c.get('word')}, but "
+                    f"{c.get('column') or 'the same column'} also holds "
+                    f"{c.get('beaten_by')}"
+                    + (f" ({c.get('row')})" if c.get("row") else "")
+                    for c in conflicts[:4]
+                )
+                print(
+                    f"[agent] Superlative check: handing back {len(conflicts)} claim(s) "
+                    f"(attempt {state.superlative_attempts}/{state.max_verify_attempts})",
+                    flush=True,
+                )
+                state.context.pop("_wrapping_up", None)
+                state.action_results.append(
+                    "SUPERLATIVE CHECK — the platform read the file you are about to "
+                    f"send and compared it against the claim in your reply: {pairs}.\n"
+                    "One of these is true, and you need to know which before this "
+                    "goes out:\n"
+                    "1. The claim is wrong. Say what the figures say instead.\n"
+                    "2. You meant a narrower comparison than the column you are "
+                    "quoting — a different metric, or a subset of the rows. Then say "
+                    "which, in the sentence itself, so the reader can see what is "
+                    "being ranked.\n"
+                    "3. The comparison itself is not like-for-like — an average over "
+                    "different numbers of periods ranks the youngest highest whatever "
+                    "the data says. If that is what happened, rank on something every "
+                    "row has.\n"
+                    "This is the file's own figures disagreeing with your sentence, "
+                    "not a style note."
+                )
+                return state
+
+    if _deliverable_verifier is None:
+        return state
 
     try:
         missing = await _deliverable_verifier(text)
@@ -1782,6 +1858,16 @@ def route_after_verify(state: AgentState) -> str:
     if (
         state.rebuilt_figures
         and not state.rebuild_unfixable
+        and state.iteration < state.max_iterations
+    ):
+        return "reason_and_act"
+
+    # Then a claim the file contradicts, for the same reason in a different
+    # register: a reader acts on "2026-03 is holding up best" without ever
+    # opening the workbook, so a wrong ranking travels further than a wrong cell.
+    if (
+        state.superlative_claims
+        and not state.superlative_unfixable
         and state.iteration < state.max_iterations
     ):
         return "reason_and_act"
@@ -1956,6 +2042,29 @@ async def finalize(state: AgentState) -> AgentState:
         print(
             f"[agent] Delivering with a rounded-input note "
             f"({len(state.rebuilt_figures)} figures)",
+            flush=True,
+        )
+
+    # A ranking the file disagrees with, still standing after the hand-backs.
+    # Named as a disagreement rather than an error: the check reads columns, not
+    # meaning, and the sentence may be about a narrower comparison than the one
+    # it can see. What it can say for certain is which figures are in the file,
+    # so it says that and lets the reader judge.
+    if state.superlative_unfixable and state.superlative_claims and result_text.strip():
+        c = state.superlative_claims[0]
+        where = f" in {c['column']}" if c.get("column") else ""
+        who = f" ({c['row']})" if c.get("row") else ""
+        result_text = (
+            f"{result_text.rstrip()}\n\n---\n"
+            f"One thing to check before you rely on the ranking above: I call "
+            f"{c.get('value')} the {c.get('word')}, and the file also holds "
+            f"{c.get('beaten_by')}{who}{where}. Either I am ranking on something "
+            f"narrower than that column or the ranking is wrong — I could not "
+            f"settle it, so please look at the file before quoting the comparison."
+        )
+        print(
+            f"[agent] Delivering with a superlative note "
+            f"({len(state.superlative_claims)} claim(s))",
             flush=True,
         )
 
@@ -2719,6 +2828,7 @@ async def run_agent(
     graph_fn=None,
     file_resolver_fn=None,
     verify_fn=None,
+    superlative_fn=None,
     thread_id: str = "",
     verify_attempts: int | None = None,
 ) -> dict:
@@ -2754,6 +2864,8 @@ async def run_agent(
         set_file_resolver(file_resolver_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
+    if superlative_fn is not None:
+        set_superlative_verifier(superlative_fn)
 
     # Store functions in module-level registry (not in state — can't be serialized)
     _thread_fns[tid] = {
@@ -2825,6 +2937,7 @@ async def resume_agent(
     graph_fn=None,
     file_resolver_fn=None,
     verify_fn=None,
+    superlative_fn=None,
 ) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
 
@@ -2854,6 +2967,8 @@ async def resume_agent(
         set_file_resolver(file_resolver_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
+    if superlative_fn is not None:
+        set_superlative_verifier(superlative_fn)
     if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):
         _thread_fns[thread_id] = {
             "contribute_fn": contribute_fn,

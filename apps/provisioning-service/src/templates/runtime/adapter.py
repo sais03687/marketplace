@@ -15,6 +15,7 @@ import re
 import time
 import asyncio
 import contextvars
+import hashlib
 import traceback
 from datetime import datetime, timezone
 from typing import Any
@@ -879,19 +880,35 @@ _PARSE_TOOLS = {
 _TEXT_EXTS = {"csv", "tsv", "txt", "json", "md"}
 
 
-async def _file_text(name: str, raw: bytes) -> str | None:
-    """Readable content of a delivered file, or None if it cannot be parsed."""
+# Reading a delivered file costs a sandbox round trip, and two checks now read
+# the same files — one asking whether a figure is in there anywhere, one asking
+# what the columns are. Keyed by content, so the second reader pays nothing.
+_PARSED_FILES: dict[str, dict] = {}
+_PARSED_FILE_LIMIT = 16
+
+
+async def _parsed_file(name: str, raw: bytes) -> dict | None:
+    """A delivered file as the sandbox parsers see it, or None if unreadable.
+
+    Formats read directly come back under `__text__` rather than as a parser
+    result, so `_file_text` can hand them on exactly as it always has — the
+    figure haystack is a working check and not worth re-flavouring.
+    """
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
 
     if ext in _TEXT_EXTS:
         try:
-            return raw.decode("utf-8", errors="replace")
+            return {"__text__": raw.decode("utf-8", errors="replace")}
         except Exception:
             return None
 
     tool = _PARSE_TOOLS.get(ext)
     if not tool:
         return None  # images and unknown formats — nothing to check against
+
+    key = f"{tool}:{hashlib.sha256(raw).hexdigest()}"
+    if key in _PARSED_FILES:
+        return _PARSED_FILES[key]
 
     try:
         parsed = await call_mcp_tool(
@@ -907,6 +924,20 @@ async def _file_text(name: str, raw: bytes) -> str | None:
         parsed = parsed["result"]
     if not isinstance(parsed, dict) or parsed.get("error"):
         return None
+
+    _PARSED_FILES[key] = parsed
+    while len(_PARSED_FILES) > _PARSED_FILE_LIMIT:
+        _PARSED_FILES.pop(next(iter(_PARSED_FILES)))
+    return parsed
+
+
+async def _file_text(name: str, raw: bytes) -> str | None:
+    """Readable content of a delivered file, or None if it cannot be parsed."""
+    parsed = await _parsed_file(name, raw)
+    if parsed is None:
+        return None
+    if "__text__" in parsed:
+        return parsed["__text__"]
 
     # parse_xlsx returns sheets, the others return text (+ tables for PDF).
     # Flattening to one blob is enough: the question is only whether a figure
@@ -950,6 +981,279 @@ async def verify_deliverables(summary_text: str, file_ids: list[str] | None = No
             flush=True,
         )
     return missing
+
+
+# ─── Superlative claims ──────────────────────────────────────────────────────
+#
+# The check above asks whether a figure is in the file. This one asks whether a
+# claim made *about* a figure survives the column it came from.
+#
+# Benchmark task T03 on 2026-08-12 built a correct retention triangle — 64/48/40,
+# 65/46.94, 62 — and then reported "2026-03 is holding up best at 62.00%", with
+# 65.00 and 64.00 sitting in the same column of the workbook it attached. It had
+# averaged each cohort over only the months that cohort had reached, so the
+# youngest cohort won by not having decayed yet, and it took the max of that.
+#
+# Every other check in this file verifies internal consistency, and that is why
+# T04 passed while being wrong: prose and file agreed, and both were wrong. This
+# one needs no domain knowledge either — but it does not need consistency to be
+# the answer. "Best is 62.00%" beside a column containing 65.00 is a contradiction
+# on the face of the deliverable, and reading it takes no understanding of what a
+# cohort is.
+#
+# Narrow on purpose. It fires only where the claimed value is itself in a column
+# of the delivered file and that column beats it, and it hands back a question
+# rather than a verdict: the model may have meant a subset, and the check cannot
+# know that.
+
+_SUPERLATIVE_HIGH = (
+    "best", "highest", "largest", "greatest", "strongest", "top", "peak",
+    "maximum", "max", "most", "best-performing", "leading",
+)
+_SUPERLATIVE_LOW = (
+    "worst", "lowest", "smallest", "weakest", "minimum", "min", "least",
+    "poorest", "worst-performing",
+)
+_SUPERLATIVE_RE = re.compile(
+    r"\b(" + "|".join(sorted(_SUPERLATIVE_HIGH + _SUPERLATIVE_LOW, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+# "2026-03" is a cohort, not two numbers, and _NUMBER_RE reads it as 2026 and
+# -03. Left in, the label alone pushes a sentence over the enumeration limit
+# below and the real claim is never tested — which is precisely the sentence
+# this check exists for.
+_DATELIKE_RE = re.compile(r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b")
+
+# A row whose label says it summarises the others. Its value beats every
+# individual one by construction, so comparing a claim against it would flag
+# "North is highest at 45,000" for losing to a 120,000 total.
+_SUMMARY_ROW_RE = re.compile(
+    r"\b(total|totals|sum|subtotal|grand|overall|all|average|avg|mean|median|"
+    r"combined|cumulative|aggregate)\b",
+    re.IGNORECASE,
+)
+
+# Beyond this many figures a sentence is a list, not a claim about one of them.
+_MAX_FIGURES_IN_CLAIM = 2
+
+# Header words too generic to tell one column from another.
+_HEADER_STOPWORDS = {
+    "the", "of", "and", "in", "for", "per", "by", "to", "a", "an", "is",
+    "value", "values", "amount", "number", "col", "column", "data",
+}
+
+
+def _claimed_figures(sentence: str) -> list[tuple[str, Decimal, int]]:
+    """Figures a sentence states, as (as-written, value, position).
+
+    Looser than `_summary_figures`: a retention percentage is 62.00 and a
+    margin is 8.5%, both far under the substantive floor that check applies.
+    A decimal point, a percent sign or real magnitude is what separates a
+    claimed figure from "top 5" or "month 1".
+    """
+    cleaned = _DATELIKE_RE.sub(" ", _URL_RE.sub(" ", sentence or ""))
+    out: list[tuple[str, Decimal, int]] = []
+    for m in _NUMBER_RE.finditer(cleaned):
+        raw = m.group(0).rstrip(".,")
+        val = _normalise_number(raw)
+        if val is None:
+            continue
+        pct = cleaned[m.end():m.end() + 1] == "%"
+        has_decimal = "." in raw
+        if not has_decimal and "," not in raw and 1900 <= val <= 2100:
+            continue  # a year
+        if not (has_decimal or pct or abs(val) >= _SUBSTANTIVE_MIN):
+            continue
+        out.append((raw, val, m.start()))
+    return out
+
+
+def _file_grids(parsed: dict) -> list[list[list[str]]]:
+    """Every table in a parsed file, as rows of cell strings."""
+    grids: list[list[list[str]]] = []
+
+    # Only formats that are delimited data to begin with. A PDF's or a Word
+    # document's `text` is prose, and prose split on its commas is a table with
+    # columns nobody wrote — "Revenue was up, 45,000 in Q3" becomes three
+    # fields, two of them fragments of one number. A PDF's real tables come
+    # through `tables` below, which pdfplumber has already found.
+    text = parsed.get("__text__")
+    if isinstance(text, str) and text.strip():
+        rows = [
+            [c.strip() for c in re.split(r"\t|,", line)]
+            for line in text.splitlines() if line.strip()
+        ]
+        # Delimited data is rectangular; prose that happens to contain commas is
+        # not. Keep the rows that agree on a width, and only if most of them do.
+        widths = [len(r) for r in rows]
+        modal = max(set(widths), key=widths.count) if widths else 0
+        if modal > 1 and widths.count(modal) >= max(2, 0.8 * len(rows)):
+            grids.append([r for r in rows if len(r) == modal])
+
+    sheets = parsed.get("sheets")
+    if isinstance(sheets, dict):
+        for rows in sheets.values():
+            if isinstance(rows, list) and rows:
+                grids.append([[str(c) for c in r] for r in rows if isinstance(r, list)])
+
+    for table in parsed.get("tables") or []:  # parse_pdf
+        data = table.get("data") if isinstance(table, dict) else table
+        if isinstance(data, list) and data:
+            grids.append([
+                [("" if c is None else str(c)) for c in r]
+                for r in data if isinstance(r, list)
+            ])
+
+    return [g for g in grids if len(g) > 1]
+
+
+def _grid_columns(grid: list[list[str]]) -> list[tuple[str, list[tuple[Decimal, str]]]]:
+    """Numeric columns of one table, as (header, [(value, row label)])."""
+    width = max(len(r) for r in grid)
+    header_row = grid[0] if not _claimed_figures(" ".join(grid[0])) else []
+    body = grid[1:] if header_row else grid
+
+    columns: list[tuple[str, list[tuple[Decimal, str]]]] = []
+    for i in range(width):
+        header = header_row[i].strip() if i < len(header_row) else ""
+        cells: list[tuple[Decimal, str]] = []
+        for row in body:
+            if i >= len(row):
+                continue
+            val = _normalise_number(str(row[i]).strip().rstrip("%"))
+            if val is None:
+                continue
+            # The row's own label — the first cell in it that is not a number.
+            label = next(
+                (str(c).strip() for c in row
+                 if str(c).strip() and _normalise_number(str(c).strip().rstrip("%")) is None),
+                "",
+            )
+            if _SUMMARY_ROW_RE.search(label):
+                continue  # a total or an average, which outranks by construction
+            cells.append((val, label))
+        if len(cells) > 1:
+            columns.append((header, cells))
+    return columns
+
+
+def _header_named_in(header: str, sentence: str) -> bool:
+    """Does the sentence mention this column by name?"""
+    tokens = [t for t in re.split(r"[^0-9A-Za-z]+", header.lower())
+              if len(t) > 1 and t not in _HEADER_STOPWORDS]
+    return any(re.search(rf"\b{re.escape(t)}\b", sentence, re.IGNORECASE) for t in tokens)
+
+
+def _superlative_conflicts(summary_text: str, grids: list[list[list[str]]]) -> list[dict]:
+    """Superlative claims the delivered file contradicts on its own figures."""
+    columns: list[tuple[str, list[tuple[Decimal, str]]]] = []
+    for grid in grids:
+        columns.extend(_grid_columns(grid))
+    if not columns:
+        return []
+
+    conflicts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for sentence in re.split(r"(?<=[.!?;:])\s+|\n+", summary_text or ""):
+        # "at least 62.00%" and "at most 40 units" are bounds, not rankings, and
+        # they are ordinary enough in a summary that reading them as claims would
+        # make this check noise. Skipped word by word rather than sentence by
+        # sentence: "retention held at least 60%, and 2026-03 is best at 62.00%"
+        # still has a claim in it.
+        sup = next(
+            (m for m in _SUPERLATIVE_RE.finditer(sentence)
+             if not (m.group(1).lower() in ("least", "most")
+                     and re.search(r"\bat\s+$", sentence[:m.start()], re.IGNORECASE))),
+            None,
+        )
+        if not sup:
+            continue
+        figures = _claimed_figures(sentence)
+        if not figures or len(figures) > _MAX_FIGURES_IN_CLAIM:
+            continue  # an enumeration is not a claim about any one of them
+
+        # The figure the superlative attaches to: the first one after the word,
+        # or failing that the last one before it.
+        after = [f for f in figures if f[2] > sup.start()]
+        raw, val, _ = after[0] if after else figures[-1]
+        want_high = sup.group(1).lower() in _SUPERLATIVE_HIGH
+
+        places = len(raw.split(".")[1]) if "." in raw else 0
+        quantum = Decimal(1).scaleb(-places)
+        try:
+            claimed = val.quantize(quantum)
+        except InvalidOperation:
+            continue
+
+        # A figure sits in more than one column of a triangle — 62.00 is both
+        # 2026-03's M1 and its average — and the two disagree about what "best"
+        # means. Where the sentence names a column, that is the one it is a
+        # claim about: "the weakest at M1 is 62.00%" is true of M1 and false of
+        # the averages beside it, and reading it against the averages would hand
+        # back a correct sentence as an error. Costs the case where the model
+        # names the column that flatters it; that claim is consistent with its
+        # own file, and consistency is not what this check can see through.
+        named = [c for c in columns if _header_named_in(c[0], sentence)]
+        for header, cells in (named or columns):
+            rounded = []
+            for cell_val, label in cells:
+                try:
+                    rounded.append((cell_val.quantize(quantum), label))
+                except InvalidOperation:
+                    continue
+            if not any(v == claimed for v, _ in rounded):
+                continue  # the claim is not about this column
+            beaters = [(v, l) for v, l in rounded if (v > claimed if want_high else v < claimed)]
+            if not beaters:
+                continue
+            best = max(beaters) if want_high else min(beaters)
+            key = (raw, str(best[0]))
+            if key in seen:
+                continue
+            seen.add(key)
+            conflicts.append({
+                "claim": sentence.strip()[:200],
+                "word": sup.group(1).lower(),
+                "value": raw,
+                "beaten_by": f"{best[0].normalize():f}",
+                "row": best[1][:60],
+                "column": header[:60],
+            })
+            break  # one column is enough to raise the question
+
+    return conflicts
+
+
+async def check_superlatives(summary_text: str, file_ids: list[str] | None = None) -> list[dict]:
+    """Superlative claims in the summary that the delivered file argues against.
+
+    Empty means nothing to raise — including when there is no table to read,
+    since an unparseable file is not evidence of a wrong claim.
+    """
+    if file_ids is None:
+        file_ids = list(current_run_files())
+    if not summary_text or not file_ids or not _SUPERLATIVE_RE.search(summary_text):
+        return []
+
+    grids: list[list[list[str]]] = []
+    for fid in file_ids:
+        entry = _SANDBOX_FILES.get((fid or "").strip())
+        if not entry:
+            continue
+        parsed = await _parsed_file(entry["name"], entry["bytes"])
+        if parsed:
+            grids.extend(_file_grids(parsed))
+
+    conflicts = _superlative_conflicts(summary_text, grids)
+    if conflicts:
+        print(
+            f"[adapter] Superlative check: {len(conflicts)} claim(s) the file "
+            "disagrees with: "
+            + "; ".join(f"{c['word']} {c['value']} vs {c['beaten_by']}" for c in conflicts[:4]),
+            flush=True,
+        )
+    return conflicts
 
 
 _CONTENT_TYPES = {
@@ -3268,6 +3572,7 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
             verify_fn=verify_deliverables,
+            superlative_fn=check_superlatives,
         )
     except Exception as e:
         print(f"[adapter] resume_agent failed: {e}", flush=True)
@@ -3994,6 +4299,7 @@ async def receive_teams_message(request: Request):
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
             verify_fn=verify_deliverables,
+            superlative_fn=check_superlatives,
             # Checked, never re-run. Teams is synchronous — the prompt tells the
             # agent someone is waiting in real time — so a hand-back would buy
             # correctness with two extra model turns of silence in a chat
@@ -4050,6 +4356,7 @@ async def receive_teams_message(request: Request):
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
                 file_resolver_fn=resolve_sandbox_file,
                 verify_fn=verify_deliverables,
+                superlative_fn=check_superlatives,
                 verify_attempts=0,
             )
             # Check if the retry hit an interrupt (blocked action)
@@ -4230,6 +4537,7 @@ async def _handle_message(message: str, context: dict):
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
             verify_fn=verify_deliverables,
+            superlative_fn=check_superlatives,
         )
 
         if not isinstance(result, dict):
@@ -4541,6 +4849,7 @@ async def _handle_message(message: str, context: dict):
                     **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
                     file_resolver_fn=resolve_sandbox_file,
                     verify_fn=verify_deliverables,
+                    superlative_fn=check_superlatives,
                 )
                 # Check if the retry hit an interrupt (blocked action)
                 if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
