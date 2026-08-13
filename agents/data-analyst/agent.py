@@ -662,6 +662,26 @@ Produce a JSON response (no markdown fences):
 """
 
 
+def _as_plan_text(value: Any, fallback: str) -> str:
+    """Whatever shape the model sent the plan in, as a string.
+
+    A list of steps is the common variant and reads perfectly well numbered.
+    Anything else falls back rather than being coerced into something
+    meaningless — the plan is for the model's own next turn, so a wrong-shaped
+    plan is worth losing, and the run is not.
+    """
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        steps = [str(s).strip() for s in value if str(s).strip()]
+        return "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) or fallback
+    if isinstance(value, dict):
+        return json.dumps(value, default=str)
+    return fallback
+
+
 async def reason_and_act(state: AgentState) -> AgentState:
     """Core ReAct reasoning node — analyzes the situation and decides the next action."""
     ctx = state.context
@@ -812,7 +832,13 @@ async def reason_and_act(state: AgentState) -> AgentState:
             state.analysis = {"completed": True, "action": {"type": "none"},
                               "final_response": {"action": "none"}, "reasoning": text}
 
-    state.plan = state.analysis.get("plan", state.plan)
+    # The prompt asks for a string and the model sometimes sends the steps as a
+    # list instead. Assigning that straight to a `str` field raises a Pydantic
+    # ValidationError out of graph.ainvoke, which lands in the adapter's
+    # catch-all — so a formatting choice in one field killed the entire run.
+    # Benchmark task T03 died exactly this way on 2026-08-13, on a run whose
+    # analysis was otherwise fine.
+    state.plan = _as_plan_text(state.analysis.get("plan"), state.plan)
 
     # Debug: log the parsed action
     action = state.analysis.get("action") if isinstance(state.analysis, dict) else None
