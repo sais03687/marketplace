@@ -683,6 +683,31 @@ Produce a JSON response (no markdown fences):
 """
 
 
+def _trim_traceback(stderr: str, limit: int = 1200) -> str:
+    """A traceback cut to `limit`, keeping the end — where the exception is.
+
+    This used to be `stderr[:1200]`, which for a pandas traceback is 1200
+    characters of frames through site-packages and no exception at all. The
+    line that says what actually went wrong is the last one, and it was the
+    one being dropped.
+
+    Benchmark task T03 failed the same way on three consecutive runs on
+    2026-08-13, each time with `ParserError: Expected 5 fields in line 6, saw
+    6` cut off the end of what the model was shown — so the model was left
+    guessing at an error it was never told, and the platform's own failure
+    caveat had nothing to quote either. Both halves of that were reading the
+    wrong end of the same string.
+
+    The head is kept too, in a smaller share: it holds `File "<string>", line
+    16`, which is the line of the model's own code that raised.
+    """
+    stderr = (stderr or "").strip()
+    if len(stderr) <= limit:
+        return stderr
+    head, tail = limit // 4, limit - limit // 4
+    return f"{stderr[:head].rstrip()}\n... [frames omitted] ...\n{stderr[-tail:].lstrip()}"
+
+
 def _as_plan_text(value: Any, fallback: str) -> str:
     """Whatever shape the model sent the plan in, as a string.
 
@@ -1346,7 +1371,7 @@ async def execute_action(state: AgentState) -> AgentState:
                 result_text = (
                     f"STEP FAILED — the code exited with status {_rc} and did not "
                     "finish.\n\n"
-                    + (f"Error:\n{_stderr[:1200]}\n\n" if _stderr else "")
+                    + (f"Error:\n{_trim_traceback(_stderr)}\n\n" if _stderr else "")
                     + (
                         "It printed this before it stopped. This is partial, and "
                         "not a result — do not report any of these figures:\n"

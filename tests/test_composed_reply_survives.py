@@ -391,6 +391,69 @@ def test_a_healthy_run_is_never_given_a_failure_caveat():
     assert result["text"].strip() == "Revenue was 45000 in Q3."
 
 
+# ── the exception has to survive the cut ───────────────────────────────────
+
+# A pandas traceback of the shape T03 produced: fifteen frames through
+# site-packages, 1,405 characters, exception on the last line. `stderr[:1200]`
+# keeps the frames and drops the only line that says what went wrong.
+DEEP_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "<string>", line 16, in <module>\n'
+    + "".join(
+        f'  File "/usr/local/lib/python3.12/site-packages/pandas/io/parsers/readers.py", '
+        f"line {800 + i}, in _read\n    return parser.read(nrows)\n"
+        "           ^^^^^^^^^^^^^^^^^^\n"
+        for i in range(12)
+    )
+    + "pandas.errors.ParserError: Error tokenizing data. C error: "
+      "Expected 5 fields in line 6, saw 6"
+)
+
+
+def test_the_exception_survives_a_traceback_too_long_to_keep():
+    assert len(DEEP_TRACEBACK) > 1200, "fixture is not long enough to be cut"
+    trimmed = agent._trim_traceback(DEEP_TRACEBACK)
+    assert len(trimmed) <= 1300
+    assert "Expected 5 fields in line 6, saw 6" in trimmed
+
+
+def test_the_line_of_the_model_s_own_code_survives_too():
+    # `File "<string>", line 16` is where the model's own code raised, and it is
+    # at the head. Keeping only the tail would cost it that.
+    assert '"<string>", line 16' in agent._trim_traceback(DEEP_TRACEBACK)
+
+
+def test_a_short_traceback_is_left_exactly_as_it_is():
+    short = 'Traceback (most recent call last):\n  File "<string>", line 2\nKeyError: "Month"'
+    assert agent._trim_traceback(short) == short
+
+
+def test_the_cut_is_marked_so_nobody_reads_it_as_the_whole_stack():
+    assert "frames omitted" in agent._trim_traceback(DEEP_TRACEBACK)
+
+
+def test_the_failure_detail_reads_a_trimmed_traceback_end_to_end():
+    # The whole path: a real-shaped traceback, trimmed the way execute_action
+    # trims it, then read back by the caveat. This is what failed silently on
+    # three consecutive T03 runs.
+    entry = ("STEP FAILED — the code exited with status 1 and did not finish.\n\n"
+             f"Error:\n{agent._trim_traceback(DEEP_TRACEBACK)}\n\n"
+             "Fix the code and run it again. Nothing was produced.")
+    assert agent._failure_detail([entry]) == (
+        "pandas.errors.ParserError: Error tokenizing data. C error: "
+        "Expected 5 fields in line 6, saw 6"
+    )
+
+
+def test_execute_action_trims_rather_than_truncates():
+    src = io.open(AGENT_SRC, encoding="utf-8").read()
+    assert "_trim_traceback(_stderr)" in src, (
+        "stderr is being head-truncated again; the exception is at the end and "
+        "neither the model nor the failure caveat will ever see it"
+    )
+    assert "_stderr[:1200]" not in src
+
+
 # ── no hand-back may reach the buyer ───────────────────────────────────────
 
 def test_every_platform_hand_back_is_filtered_from_buyer_facing_text():
