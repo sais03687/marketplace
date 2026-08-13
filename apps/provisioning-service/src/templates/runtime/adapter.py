@@ -4579,6 +4579,32 @@ async def _handle_message(message: str, context: dict):
         action = result.get("action", "none")
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)
 
+        # A reply with nowhere to go. The creator's agent composed text and
+        # labelled it action=none — this one did it through a truthy "none"
+        # surviving an `or`, but any creator's code can do it, and the platform
+        # is what decides whether a written reply reaches the person waiting.
+        #
+        # Only on the AgentMail hook: a human emailed in and is waiting, which is
+        # where silence costs most. Benchmark task T03 on 2026-08-13 had 496
+        # characters dropped here, was retried at the cost of a whole second run,
+        # had 349 more dropped, and the requester was told "I wasn't sure how to
+        # respond".
+        #
+        # Coerced before the dispatch below rather than sent from here, so the
+        # reply goes out through the same recipient resolution, approval policy
+        # and attachment path as any other — nothing skips _clear_email_for_sending.
+        if (
+            action == "none"
+            and context.get("hook_name") == "AgentMail"
+            and (result.get("text") or "").strip()
+        ):
+            print(
+                f"[adapter] action=none but the agent wrote {len(result['text'])} "
+                "characters — sending it rather than retrying",
+                flush=True,
+            )
+            action = result["action"] = "reply_email"
+
         # ── Email-reply approval resolution ─────────────────────────────────
         if action == "resolve_approval":
             approval_id = result.get("approval_id", "")

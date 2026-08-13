@@ -1024,7 +1024,18 @@ def _set_reply(state: AgentState, text: str) -> None:
     analysis = state.analysis if isinstance(state.analysis, dict) else {}
     final = analysis.get("final_response")
     final = dict(final) if isinstance(final, dict) else {}
-    final["action"] = final.get("action") or "reply_email"
+    # Anything that is not a way of sending counts as no action at all. This
+    # used to read `final.get("action") or "reply_email"`, and "none" is a
+    # truthy string, so `or` never replaced it — while the fallback for an
+    # unparseable response sets exactly {"action": "none"} by construction.
+    #
+    # wrap_up runs precisely because a reply is needed. It composed one, this
+    # left the action reading "none", and the adapter sends on send_email and
+    # reply_email only: benchmark task T03 on 2026-08-13 wrote 496 characters,
+    # had them thrown away, was retried, wrote 349 more, had those thrown away
+    # too, and the requester was sent "I wasn't sure how to respond".
+    existing = final.get("action")
+    final["action"] = existing if existing in ("send_email", "reply_email") else "reply_email"
     final["text"] = text
     subject = state.context.pop("_wrap_up_subject", "")
     if subject and not final.get("subject"):
@@ -1915,6 +1926,25 @@ async def finalize(state: AgentState) -> AgentState:
     result_action = final.get("action", "none")
     result_text = final.get("text", "")
 
+    # Text with nowhere to go. _set_reply is the usual way this happens and is
+    # fixed at the source, but a model can put {"action": "none", "text": "…"}
+    # in final_response without wrap_up ever running, and the platform sends on
+    # send_email and reply_email only — so the reply would be silently dropped.
+    # Written words are never worth less than the field that describes them.
+    #
+    # Only "none" and an absent action, rather than everything that is not a
+    # send. resolve_approval is a real action in the platform's vocabulary and
+    # carries text of its own; rescuing it would turn a decision into an email.
+    # _set_reply can be broader because it runs inside the closing pass, where
+    # by construction there is no action left to take.
+    if result_action in ("none", "", None) and result_text.strip():
+        print(
+            f"[agent] final_response held {len(result_text)} characters of reply "
+            f"under action={result_action!r} — sending it as a reply",
+            flush=True,
+        )
+        result_action = "reply_email"
+
     # Last line of defence against silence. If the agent did real work and still
     # produced no reply — the wrap-up pass above should prevent it, but a model can
     # always ignore an instruction — say so rather than returning nothing. Someone
@@ -1931,6 +1961,7 @@ async def finalize(state: AgentState) -> AgentState:
         # stderr, returncode and a files array of handles — and sending one to a
         # buyer tells them nothing and exposes internals besides.
         findings = _buyer_readable(state.action_results)
+        failure = _failure_note(state.action_results)
         steps = "\n".join(f"- {a}" for a in state.actions_taken[-6:])
         # Say what is actually known, which is only that no summary was written.
         #
@@ -1966,6 +1997,13 @@ async def finalize(state: AgentState) -> AgentState:
                     "\n\nTell me if you'd like this summarised differently or in "
                     "another format."
                 )
+        elif failure:
+            # Nothing to show and something to explain. Both branches below are
+            # false here in a way that matters: "I ran out of steps" names the
+            # budget when the budget was never the problem, and "I completed the
+            # work below" is simply untrue over steps that all failed. The one
+            # thing the requester can act on is what broke, and it is knowable.
+            result_text = failure
         elif out_of_steps:
             result_text = (
                 "I ran out of steps before I could finish, so this is partial.\n\n"
@@ -2328,7 +2366,16 @@ _INTERNAL_PREFIXES = (
     "Email action recorded",
     "Unknown action type",
     "Deleted item",
+    # Every platform hand-back. These are addressed to the model in the second
+    # person — "the platform read the file you produced" — so one reaching a
+    # buyer reads as the agent talking to itself in front of them. Only
+    # DELIVERABLE CHECK was listed; the other two rendered straight through on
+    # the partial-progress path, which is the same mistake as the 2026-08-10
+    # reply that carried "- Deliverable check: 2 figure(s) missing from the
+    # file". A new check must be added here on the day it is written.
     "DELIVERABLE CHECK",
+    "ROUNDED-INPUT CHECK",
+    "SUPERLATIVE CHECK",
 )
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -2731,6 +2778,66 @@ def _buyer_readable(results: list, limit: int = 3) -> str:
         kept.append(block)
 
     return "\n\n".join(kept[-limit:])
+
+
+def _failure_note(results: list) -> str:
+    """What stopped the run, in the requester's terms, or "" if nothing did.
+
+    `_buyer_readable` renders findings and drops everything prefixed as
+    internal, which is right for a run that produced something and wrong for a
+    run that produced nothing: the buyer is left with either silence or a
+    cheerful "I completed the work below" over three steps that all failed.
+
+    So the failures get their own rendering, and it is deliberately one line of
+    error rather than the stored text. A STEP FAILED entry carries up to 1200
+    characters of stderr written for the model — frames through site-packages,
+    the code that raised, an instruction to try again. The last unindented line
+    of a traceback is the exception, and it is the only part that means anything
+    to the person who sent the data: "Expected 5 fields in line 5, saw 6" tells
+    them their table has a ragged row. The frames tell them nothing.
+
+    Covers failures of the sandbox steps. A tool error records itself under
+    other prefixes and is not read here — the buyer is told what broke, not
+    everything that went wrong.
+    """
+    failures = [
+        r for r in (results or [])
+        if isinstance(r, str) and r.startswith("STEP FAILED")
+    ]
+    if not failures:
+        return ""
+
+    detail = ""
+    if "Error:" in failures[-1]:
+        block = failures[-1].split("Error:", 1)[1]
+        # Stop at the next section: the partial stdout, or the instruction that
+        # follows it. Both are addressed to the model.
+        for marker in ("It printed this before it stopped", "Fix the code",
+                       "This is the second failure"):
+            block = block.split(marker, 1)[0]
+        lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
+        # Unindented lines are the exception; indented ones are frames.
+        named = [
+            ln for ln in lines
+            if not ln.startswith((" ", "\t"))
+            and not ln.startswith("Traceback (most recent call last)")
+        ]
+        detail = (named or lines)[-1].strip() if (named or lines) else ""
+        detail = _SANDBOX_PATH.sub("a working file", detail)[:200].strip()
+
+    tried = (
+        "I tried to run the analysis and it failed."
+        if len(failures) == 1 else
+        f"I tried to run the analysis {len(failures)} times and it failed every time."
+    )
+    note = f"{tried}\n\n" + (f"The error was:\n{detail}\n\n" if detail else "")
+    return note + (
+        "Nothing was produced, so there are no figures in this message and no "
+        "file attached to it. If the data has a shape I did not expect — a ragged "
+        "row, a merged header, a column that is text where I read it as numbers — "
+        "telling me which, or sending the file itself, will usually be enough to "
+        "get it right on the next go."
+    )
 
 
 def _delivered_file_line(results: list) -> str:
