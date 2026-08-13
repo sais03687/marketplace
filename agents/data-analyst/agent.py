@@ -2816,13 +2816,17 @@ def _failure_note(results: list) -> str:
                        "This is the second failure"):
             block = block.split(marker, 1)[0]
         lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
-        # Unindented lines are the exception; indented ones are frames.
+        # Unindented lines are the exception; indented ones are frames. stderr is
+        # stored cut at 1200 characters, so a long traceback can end mid-frame
+        # and leave no exception line at all — say only that it failed, rather
+        # than quoting `return _read(filepath_or_buffer, kwds)` at someone who
+        # asked about cohort retention.
         named = [
             ln for ln in lines
-            if not ln.startswith((" ", "\t"))
+            if not ln.startswith((" ", "\t", 'File "'))
             and not ln.startswith("Traceback (most recent call last)")
         ]
-        detail = (named or lines)[-1].strip() if (named or lines) else ""
+        detail = named[-1].strip() if named else ""
         detail = _SANDBOX_PATH.sub("a working file", detail)[:200].strip()
 
     tried = (

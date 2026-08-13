@@ -176,6 +176,21 @@ def test_the_failure_note_names_the_error_and_not_the_frames():
     assert "<string>" not in note
 
 
+def test_a_traceback_cut_short_quotes_nothing_rather_than_a_frame():
+    # stderr is stored cut at 1200 characters, so a long traceback can end
+    # mid-frame with no exception line in it. "I tried and it failed" is honest;
+    # `return _read(filepath_or_buffer, kwds)` is noise to whoever asked about
+    # cohort retention, and the File line above it is a container path.
+    truncated = ("STEP FAILED — the code exited with status 1 and did not finish.\n\n"
+                 "Error:\nTraceback (most recent call last):\n"
+                 '  File "/usr/local/lib/python3.12/site-packages/pandas/io/parsers.py", line 873, in read_csv\n'
+                 "    return _read(filepath_or_buffer, kwds)")
+    note = agent._failure_note([truncated])
+    assert note, "a failed run must still be reported"
+    assert "The error was" not in note
+    assert "_read" not in note and "site-packages" not in note
+
+
 def test_the_failure_note_counts_the_attempts():
     assert "3 times" in agent._failure_note([STEP_FAILED] * 3)
     assert "3 times" not in agent._failure_note([STEP_FAILED])
