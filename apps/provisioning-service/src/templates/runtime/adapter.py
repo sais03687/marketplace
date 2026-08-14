@@ -746,6 +746,57 @@ def _reference_list(value: Any) -> list:
     return [value]
 
 
+# Where staged files land, as the code refers to them.
+_STAGED_PATH_RE = re.compile(r"/tmp/input/([A-Za-z0-9._-]+)")
+
+
+def _strings_within(value: Any, depth: int = 0) -> list:
+    """Every string anywhere in a nested argument, outermost first."""
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        out = []
+        for k, v in value.items():
+            out.extend(_strings_within(v, depth + 1))
+            if isinstance(k, str):
+                out.append(k)
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for v in value:
+            out.extend(_strings_within(v, depth + 1))
+        return out
+    return []
+
+
+def _files_the_code_opens(code: Any) -> list[str]:
+    """Files this run holds that the code reads from /tmp/input/.
+
+    The model declares a file twice: once in `input_files`, and once by opening
+    `/tmp/input/payments.csv` in the code. Only the second is load-bearing — it
+    is the line that has to be right for the analysis to work — and it is the
+    one the model never gets wrong, because it is the code it is writing.
+
+    The declaration is where it goes wrong, four different ways in two days: a
+    wrapped handle, a bare SharePoint id, a name-to-handle mapping, and finally
+    an empty list beside code that opens the file anyway. That last one costs
+    the whole run and produces no error at all, because an empty list is not a
+    mistake, it is just nothing.
+
+    So the code is read as the declaration. Nothing is invented: a path is
+    staged only when this run already holds a file of that name.
+    """
+    if not isinstance(code, str):
+        return []
+    wanted = []
+    for name in _STAGED_PATH_RE.findall(code):
+        if name not in wanted and _handle_for_name(name):
+            wanted.append(name)
+    return wanted
+
+
 def _resolve_one(ref: Any) -> dict | None:
     """{name, bytes} for anything the model might mean by "this file"."""
     candidate = _as_handle(ref)
@@ -808,17 +859,42 @@ def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, lis
     # execute_python takes a list of handles to stage into /tmp/input/. A single
     # reference is accepted where a list was asked for: the model that sends one
     # file means one file, and refusing it costs a step to learn nothing.
-    if out.get("input_files"):
-        staged = []
-        for ref in _reference_list(out["input_files"]):
+    # Two sources, because the declaration and the use are written separately
+    # and only the use is reliably right: whatever `input_files` names, plus
+    # every /tmp/input/ path the code actually opens for a file this run holds.
+    if out.get("input_files") or _files_the_code_opens(out.get("code")):
+        staged: list[dict] = []
+        seen_names: set[str] = set()
+
+        def _add(entry: dict) -> None:
+            if entry["name"] in seen_names:
+                return
+            seen_names.add(entry["name"])
+            staged.append({
+                "name": entry["name"],
+                "content_base64": base64.b64encode(entry["bytes"]).decode(),
+            })
+
+        missing = []
+        for ref in _reference_list(out.get("input_files") or []):
             entry = _resolve_one(ref)
             if entry:
-                staged.append({
-                    "name": entry["name"],
-                    "content_base64": base64.b64encode(entry["bytes"]).decode(),
-                })
+                _add(entry)
             else:
-                unresolved.append(ref if isinstance(ref, str) else repr(ref))
+                missing.append(ref if isinstance(ref, str) else repr(ref))
+
+        for name in _files_the_code_opens(out.get("code")):
+            handle = _handle_for_name(name)
+            entry = resolve_file_handle(handle) if handle else None
+            if entry:
+                _add(entry)
+
+        # A reference we could not place is only worth reporting if the code did
+        # not get what it needed anyway. When the code opens the file it wanted
+        # and we staged it, a stale id in the declaration is bookkeeping noise,
+        # and failing the call over it would throw away a working step.
+        if missing and not staged:
+            unresolved.extend(missing)
         out["input_files"] = staged
         if staged:
             print(

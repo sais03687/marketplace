@@ -120,6 +120,50 @@ def test_the_document_parsers_accept_the_same_shapes(held):
         assert b64.b64decode(out["file_content_base64"]) == CSV
 
 
+# ── the code is the declaration that never goes wrong ──────────────────────
+
+def test_the_file_the_code_opens_is_staged_even_when_the_declaration_is_empty(held):
+    # DB1753's last six calls: input_files empty, code reading
+    # /tmp/input/payments.csv anyway. No error — an empty list is not a mistake,
+    # it is nothing — so the run spent every step failing silently.
+    out, unresolved = _stage({
+        "code": "import pandas as pd\ndf = pd.read_csv('/tmp/input/payments.csv')\n",
+        "input_files": [],
+    })
+    assert unresolved == []
+    assert [f["name"] for f in out["input_files"]] == ["payments.csv"]
+
+
+def test_the_code_and_the_declaration_together_stage_each_file_once(held):
+    out, _ = _stage({
+        "code": "open('/tmp/input/payments.csv')",
+        "input_files": [held],
+    })
+    assert [f["name"] for f in out["input_files"]] == ["payments.csv"]
+
+
+def test_a_stale_id_is_forgiven_when_the_code_got_what_it_needed(held):
+    # The declaration carries a SharePoint id we cannot place, and the code
+    # opens a file we hold. Failing the call over the id would throw away a
+    # step that was going to work.
+    out, unresolved = _stage({
+        "code": "pd.read_csv('/tmp/input/payments.csv')",
+        "input_files": [{"file_id": "01HBCSTALE", "filename": "something_else.csv"}],
+    })
+    assert unresolved == []
+    assert [f["name"] for f in out["input_files"]] == ["payments.csv"]
+
+
+def test_the_code_cannot_conjure_a_file_this_run_does_not_hold(held):
+    # Only ever stages what is already registered — a path in code is a
+    # request, not an authorisation.
+    out, unresolved = _stage({
+        "code": "pd.read_csv('/tmp/input/salaries.csv')",
+        "input_files": [],
+    })
+    assert out.get("input_files") in ([], None)
+
+
 # ── and it still refuses what it genuinely does not have ───────────────────
 
 def test_a_file_nobody_has_is_still_an_error(held):
