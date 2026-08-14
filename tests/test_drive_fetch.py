@@ -109,6 +109,27 @@ def test_every_call_site_passes_the_registrar():
     )
 
 
+def test_a_truncated_read_says_it_was_truncated():
+    # The cut was silent: the model asked for a 531 KB fee table on 2026-08-14,
+    # got its first 2000 characters with nothing marking the end, and answered
+    # from the fragment. Same shape as reading the front of a traceback — the
+    # information is missing and nothing says so.
+    src = io.open(AGENT_SRC, encoding="utf-8").read()
+    i = src.index('action_type == "drive_read_text"')
+    block = src[i:src.index('elif action_type ==', i + 10)]
+    assert "content[:2000]" in block
+    assert "TRUNCATED" in block, "a silent cut lets the model answer from a fragment"
+    assert "len(content)" in block, "say how much was withheld, not just that some was"
+    assert "drive_fetch" in block, "name the tool that would have worked"
+
+
+def test_the_truncation_notice_only_fires_when_something_was_cut():
+    src = io.open(AGENT_SRC, encoding="utf-8").read()
+    i = src.index('action_type == "drive_read_text"')
+    block = src[i:src.index('elif action_type ==', i + 10)]
+    assert "elif len(content) > 2000:" in block
+
+
 def test_the_model_is_told_which_tool_to_use_for_data():
     src = io.open(AGENT_SRC, encoding="utf-8").read()
     assert "| drive_fetch | Hand a workspace file" in src, (

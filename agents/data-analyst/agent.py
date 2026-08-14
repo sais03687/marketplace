@@ -642,7 +642,7 @@ Produce a JSON response (no markdown fences):
 |--------|----------|--------|
 | drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
-| drive_read_text | Read content of plain text files (.txt, .csv, .md, .json). Do NOT use for .xlsx files. | item_id |
+| drive_read_text | Read a SMALL text file you need to quote — a note, a README. It is cut at 2000 characters, so it is the wrong tool for data: a fee table or a dataset read this way arrives truncated and every figure taken from it is unsafe. For anything you mean to compute with, use drive_fetch. Never for .xlsx. | item_id |
 | drive_fetch | Hand a workspace file to the sandbox without reading it here. Use for ANY file you mean to analyse rather than quote — a dataset, a spreadsheet, anything over a few hundred rows. Returns a handle; pass it in `input_files` to execute_python, or as the file to parse_xlsx/parse_pdf/parse_docx. drive_read_text puts the content in this conversation and is cut at 2000 characters, so it is for reading a note, not for analysing data. | item_id |
 | drive_upload | Upload a file to your SharePoint folder. `content_base64` takes the `file_id` the sandbox returned — never file content. To upload anything, write it to `/tmp/output/` in the python-sandbox first and pass the id you get back. | filename, content_base64, content_type |
 | drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
@@ -1455,7 +1455,26 @@ async def execute_action(state: AgentState) -> AgentState:
         elif action_type == "drive_read_text" and _mt:
             item_id = params.get("item_id", params.get("id", ""))
             content = await _mt.drive_read_text(item_id)
-            result_text = content[:2000] if content else "(empty file)"
+            # Truncated, and said so. The cut used to be silent: the model asked
+            # for a 531 KB fee table on 2026-08-14, was handed its first 2000
+            # characters with nothing to mark the end, and answered from the
+            # fragment as though it were the file. The same failure as reading
+            # the front of a traceback — the information is missing and nothing
+            # says it is missing.
+            if not content:
+                result_text = "(empty file)"
+            elif len(content) > 2000:
+                result_text = (
+                    content[:2000]
+                    + f"\n\n[TRUNCATED — this is the first 2000 of {len(content):,} "
+                    "characters. You have NOT seen this file. Do not answer from "
+                    "it, and do not assume the part you cannot see resembles the "
+                    "part you can. Use drive_fetch on this item_id instead: it "
+                    "hands the whole file to the sandbox, where you can open it "
+                    "properly.]"
+                )
+            else:
+                result_text = content
             state.actions_taken.append(f"Read file: {item_id[:20]}")
 
         elif action_type == "drive_fetch" and _mt:
