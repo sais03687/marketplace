@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, Among customers who churned in Q2, the Hardware category experienced the largest margin decline, falling by $4,600 from Q1 to Q2. The detailed analysis, including raw data and calculations, is available in the attached workbook. Best regards, Data Analyst Two 

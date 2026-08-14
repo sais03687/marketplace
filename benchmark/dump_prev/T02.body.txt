@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, I've completed the Q1 to Q2 revenue bridge analysis. The total revenue increased by $30,050.00. Here's the breakdown of the change: Total Revenue Change: $30,050.00 Volume Effect: $25,650.00 Price Effect: $4,400.00 The detailed per-product breakdown, including the calculations, is available in the attached Excel workbook. I've uploaded the workbook to SharePoint here: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B0020A85D-E199-4A81-970A-DAE9F071FA49%7D&file=Q1_Q2_Revenue_Bridge_Analysis.xlsx&action=default&mobileredirect=true Please let me know if you have any questions. Data Analyst Two 

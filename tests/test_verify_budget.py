@@ -79,6 +79,7 @@ class _State:
         self.deliverable_gaps = []
         self.deliverable_unfixable = False
         self.verify_attempts = 0
+        self.actions_taken = []
         self.iteration = 1
         self.max_iterations = 12
         self.context = {}
@@ -120,3 +121,6 @@ def test_unfixable_drift_is_flagged_to_the_reader():
     text = state.result["text"]
     assert "942.9881198347 should be 943" in text or "should be 943" in text
     assert "check these before using them" in text
+    # No notebook pointer here: this run ran no sandbox step, so there is no
+    # notebook to point at.
+    assert "working.ipynb" not in text

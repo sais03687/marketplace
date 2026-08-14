@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, The product category with the largest total margin decline from Q1 to Q2 among Q2 churners (excluding refunded orders) is Hardware, with a decline of 4600. I've attached the Excel workbook with the working to SharePoint for your review: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B7DF441C9-A2E9-4713-9F60-24F185D4CBC5%7D&file=q2-margin-decline-analysis.xlsx&action=default&mobileredirect=true Data Analyst Two 

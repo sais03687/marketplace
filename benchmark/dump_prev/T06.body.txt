@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, Yes, the new checkout variant appears to be statistically significant at the 5% level. Here are the results: Control Conversion Rate: 4.99% Variant Conversion Rate: 5.98% Relative Lift: 19.82% Statistical Significance (alpha=0.05): True I used a two-proportion Z-test to determine statistical significance. The detailed analysis, including the calculations, is available in the attached Excel workbook. Best regards, Data Analyst Two Worth checking before you rely on this: 4.99, 5.98 appear in my summary above but not in the file — I could not reconcile them. The file is what the code actually computed, so where the two disagree, go with the file. Ask me and I'll redo it. 

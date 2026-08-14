@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, Here are the fee calculations for August: Contoso: $17.20 Northwind: $8.13 The detailed per-transaction breakdown and total fees for each merchant are available in the attached workbook. YouAugust_Fee_Calculation.xlsx has been uploaded to SharePoint: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B3B7FB71B-F189-4A36-AC05-D9002F31F87B%7D&file=August_Fee_Calculation.xlsx&action=default&mobileredirect=true Best regards, Data Analyst Two 

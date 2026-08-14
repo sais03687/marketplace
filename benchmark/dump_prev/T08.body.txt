@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, I've calculated the August fees based on the schedule you provided. The total fees owed are: Contoso: $17.20 Northwind: $8.13 The detailed per-transaction breakdown is available in the attached workbook. August_Fee_Calculation.xlsx has been uploaded to SharePoint: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B3B7FB71B-F189-4A36-AC05-D9002F31F87B%7D&file=August_Fee_Calculation.xlsx&action=default&mobileredirect=true Data Analyst Two 

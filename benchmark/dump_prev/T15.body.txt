@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, I encountered an issue running the Monte Carlo simulation for the capacity model. The process failed to complete, meaning I wasn't able to generate the 40 million order rows or calculate the mean, 95th percentile, and total by region as requested. I'm currently investigating the root cause of the failure and will let you know once I have a clearer understanding and a timeline for rerun. Data Analyst Two 

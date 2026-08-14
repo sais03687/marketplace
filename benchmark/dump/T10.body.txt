@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, I've reviewed the monthly order volumes and found that only July's orders appear to be genuinely low when accounting for business days. February's daily order count is in line with other months. Here's a summary of the daily order rates: July 2026: 134.55 orders per business day February 2026: 200.53 orders per business day Average (excluding July): Approximately 200 orders per business day The full analysis, including daily order rates for all months, is available in the attached workbook. Best regards, Data Analyst Two 

@@ -385,7 +385,11 @@ def test_a_healthy_run_is_never_given_a_failure_caveat():
         actions=["MCP python-sandbox/execute_python"],
         results=['{"returncode": 0, "stdout": "Total revenue: 45000"}'],
     ))
-    assert result["text"].strip() == "Revenue was 45000 in Q3."
+    # No failure caveat. The notebook pointer is a separate, deliberate
+    # addition and is expected on any reply that quotes a figure.
+    assert "---" not in result["text"]
+    assert "Expected 5 fields" not in result["text"]
+    assert result["text"].startswith("Revenue was 45000 in Q3.")
 
 
 # ── the exception has to survive the cut ───────────────────────────────────
@@ -466,3 +470,51 @@ def test_every_platform_hand_back_is_filtered_from_buyer_facing_text():
         assert agent._render_result(f"{header} — the platform measured something") == "", (
             f"{header} reaches the buyer; add it to _INTERNAL_PREFIXES"
         )
+
+
+# ── the only defence against a number nobody can check ─────────────────────
+
+def test_a_reply_with_figures_points_at_the_working():
+    # The platform already attaches the code that produced them, and nobody
+    # opens an attachment they were not told about. This does not catch a wrong
+    # number — it makes one findable, which is the most the platform can do.
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": "Total revenue was 457250.00."},
+        actions=["MCP python-sandbox/execute_python"],
+        results=['{"returncode": 0, "stdout": "457250"}'],
+    ))
+    assert "working.ipynb" in result["text"]
+
+
+def test_a_reply_with_no_figures_is_left_alone():
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": "I have shared the folder with Ben."},
+        actions=["MCP python-sandbox/execute_python"],
+    ))
+    assert "working.ipynb" not in result["text"]
+
+
+def test_a_run_that_never_touched_the_sandbox_has_no_working_to_show():
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": "The invoice total is 4210.55."},
+        actions=["drive_list"],
+    ))
+    assert "working.ipynb" not in result["text"]
+
+
+def test_the_pointer_is_not_repeated_when_the_reply_already_names_it():
+    result = _finalize(_State(
+        final={"action": "reply_email",
+               "text": "Total revenue was 457250.00. See working.ipynb for the steps."},
+        actions=["MCP python-sandbox/execute_python"],
+    ))
+    assert result["text"].count("working.ipynb") == 1
+
+
+def test_step_counts_are_not_mistaken_for_findings():
+    # "3 files" and "12 iterations" are not claims about the data.
+    result = _finalize(_State(
+        final={"action": "reply_email", "text": "I checked 3 files and found nothing unusual."},
+        actions=["MCP python-sandbox/execute_python"],
+    ))
+    assert "working.ipynb" not in result["text"]

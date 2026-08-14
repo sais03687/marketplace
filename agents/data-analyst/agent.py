@@ -487,6 +487,22 @@ Write the reply.
   support, and never re-derive a figure that appears in their request — use
   theirs.
 - Round money and percentages to two decimals.
+- Say in one line how you got the headline figure, and name any assumption you
+  had to make. "Summed eur_amount by merchant over the whole file" or "counted
+  each cohort's M1 only, since that is the month every cohort has reached". They
+  cannot check a number they cannot see the derivation of, and a wrong number
+  that says how it was made can be corrected in seconds — one that arrives bare
+  has to be taken on trust or thrown away.
+- If the data cannot answer what they asked, say so and stop. A table of churn
+  dates cannot tell you *why* anyone churned; a list of transactions cannot tell
+  you what a customer intended. Name the field you would need. Do not offer a
+  plausible-sounding cause you inferred rather than measured — that is the one
+  answer they cannot check and the one most likely to be acted on.
+- If the question has more than one defensible answer, give one and say it is a
+  choice. "Top performer" over revenue, growth and margin is three different
+  people; pick the one you think they mean, name the metric in the sentence, and
+  say the answer changes under the others. Do not silently choose and present it
+  as the answer.
 - If a file was produced, mention it in one line at the end. Do not make the
   message about it, and do not list the tools you called.
 - If part of the request is genuinely unfinished, say which part and why.
@@ -675,6 +691,9 @@ Produce a JSON response (no markdown fences):
 - ALWAYS use drive_list FIRST to browse available files before using drive_search. SharePoint search indexing can be delayed, so drive_search may return empty even when files exist. Use drive_list to discover files, then excel_read or drive_read_text to read their contents.
 - When asked about data in a spreadsheet, use drive_list to find .xlsx files, then excel_list_sheets to discover worksheet names, then excel_read to read the data. Do NOT assume the sheet is named "Sheet1" — always use excel_list_sheets first. You can do math and analysis on the returned values.
 - NEVER return action=none when responding to an email. Always reply_email with a helpful response, even if you cannot find the data. Explain what you searched, what you found (or didn't find), and what you recommend as next steps.
+- When you give a figure, say in one line how you got it and what you assumed. A number nobody can check has to be taken on trust; a number with its derivation beside it can be corrected in seconds.
+- If the data cannot answer the question, say so and name the field you would need. Churn dates cannot explain *why* anyone churned. Do not supply a plausible cause you inferred rather than measured — that is the answer they cannot check and the one most likely to be acted on.
+- If the question has more than one defensible answer — "top performer" over revenue, growth and margin is three different people — give one, name the metric you used in the sentence, and say the answer changes under the others. Never choose silently and present it as the answer.
 - If you cannot find data on SharePoint after trying BOTH drive_list AND drive_search, say so in your reply and ask the manager where to find it.
 - request_decision BLOCKS until the manager responds — only use it when you genuinely need their input
 - When the user explicitly asks you to perform an action (write, upload, append, delete), DO IT DIRECTLY. Do not email the user back to ask for the file, do not use request_decision to clarify, and do not take detours. Execute the requested action using the tools available to you. If the action is blocked, the approval system will handle it automatically.
@@ -2224,6 +2243,33 @@ async def finalize(state: AgentState) -> AgentState:
             )
             print(f"[agent] Delivering with the failure detail: {detail[:80]}", flush=True)
 
+    # Point at the notebook, when there is one and the reply quotes figures.
+    #
+    # The platform already attaches the code that produced them — every run that
+    # touches the sandbox travels with working.ipynb — and nobody opens an
+    # attachment they were not told about. This is the only defence the platform
+    # has against a wrong number, and it is a weak one: it does not catch the
+    # error, it makes the error findable. On 2026-08-14 a run reported a fee of
+    # 48 where the answer was 0.12 and every check passed it, because the prose
+    # and the file agreed with each other. Both were wrong, and the derivation
+    # was sitting in the notebook the whole time.
+    #
+    # Said by the platform rather than asked of the model, because it is a fact
+    # about what was attached rather than a judgement, and the model has already
+    # been asked for the assumption in words.
+    if (
+        result_text.strip()
+        and _summary_figures_present(result_text)
+        and any("python-sandbox" in str(a) for a in state.actions_taken)
+        and "ipynb" not in result_text
+    ):
+        result_text = (
+            f"{result_text.rstrip()}\n\n"
+            "The working is attached as working.ipynb — every step I ran, in "
+            "order, with its output. If a figure looks wrong, that file will "
+            "show you where it came from."
+        )
+
     # Measured arithmetic drift with no budget left to correct it. Said plainly
     # and first among the caveats, because a wrong figure is worse than a
     # missing one: the reader has no reason to doubt it.
@@ -2912,6 +2958,16 @@ def _buyer_readable(results: list, limit: int = 3) -> str:
         kept.append(block)
 
     return "\n\n".join(kept[-limit:])
+
+
+# A figure worth standing behind: a decimal, or a number large enough not to be
+# a step count. "3 files" and "12 iterations" are not claims about the data.
+_FIGURE_IN_TEXT = re.compile(r"\d+\.\d|\d{3,}")
+
+
+def _summary_figures_present(text: str) -> bool:
+    """Does this reply actually assert a number?"""
+    return bool(_FIGURE_IN_TEXT.search(_URL_IN_TEXT.sub(" ", text or "")))
 
 
 def _failed_steps(results: list) -> list[str]:

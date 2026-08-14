@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, I encountered an issue running the Monte Carlo simulation for the capacity model. The script failed to complete, so I don't have the results for you yet. I'm investigating the root cause of the error and will rerun the simulation as soon as it's resolved. I will keep you updated on my progress. Data Analyst Two What stopped it, in case it is something you can see from your side: it needed more memory than the sandbox allows, so the system stopped it If it has to run at that size I cannot do it in one pass, but a smaller slice usually gets you the same answer — a sample, one region or one month at a time, or the aggregate rather than every row. Tell me which and I'll work it up from there. 

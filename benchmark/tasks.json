@@ -1,0 +1,404 @@
+[
+  {
+    "id": "T01",
+    "tier": 1,
+    "name": "Weighted average trap",
+    "subject": "Overall conversion rate for the half",
+    "body": "Hi,\n\nVisitors and conversions by region for the half:\n\nRegion,Visitors,Conversions\nNorth,12480,624\nSouth,3200,288\nEast,21750,870\nWest,1540,200\nCentral,8030,522\n\nWhat was our overall conversion rate for the half? Send back a short workbook with the per-region rates and the overall figure.\n\nThanks,\nSai",
+    "ground_truth": {
+      "overall_conversion_pct": "5.3277",
+      "wrong_answer_if_unweighted": "7.4975",
+      "total_visitors": 47000,
+      "total_conversions": 2504
+    },
+    "probes": "Weights by volume rather than averaging the five rates."
+  },
+  {
+    "id": "T02",
+    "tier": 1,
+    "name": "Price/volume bridge",
+    "subject": "Q1 to Q2 revenue bridge",
+    "body": "Hi,\n\nUnits and unit price by product, Q1 and Q2:\n\nProduct,Q1_units,Q1_price,Q2_units,Q2_price\nAlpha,1200,45.00,1050,48.00\nBeta,800,120.00,1100,118.00\nGamma,2500,18.00,2300,19.50\n\nRevenue moved between the quarters. Split the change into a volume effect and a price effect, using volume = (Q2 units - Q1 units) x Q1 price, and price = (Q2 price - Q1 price) x Q2 units. They should reconcile exactly to the total change. Workbook please, with the per-product breakdown.\n\nThanks,\nSai",
+    "ground_truth": {
+      "q1_revenue": "195000.00",
+      "q2_revenue": "225050.00",
+      "total_change": "30050.00",
+      "volume_effect": "25650.00",
+      "price_effect": "4400.00",
+      "per_product_net": {
+        "Alpha": "-3600.00",
+        "Beta": "33800.00",
+        "Gamma": "-150.00"
+      }
+    },
+    "probes": "Exact reconciliation: the two effects must sum to the total change."
+  },
+  {
+    "id": "T03",
+    "tier": 2,
+    "name": "Cohort retention triangle",
+    "subject": "Monthly cohort retention",
+    "body": "Hi,\n\nSignup cohorts and how many were still active in each later month:\n\nCohort,Size,M1_retained,M2_retained,M3_retained\n2026-01,500,320,240,200\n2026-02,620,403,291,\n2026-03,450,279,,\n2026-04,700,,,,\n\nBuild me the retention triangle as percentages, and say which cohort is holding up best. Workbook with the triangle and a chart.\n\nThanks,\nSai",
+    "ground_truth": {
+      "retention_pct": {
+        "2026-01": [
+          "64.00",
+          "48.00",
+          "40.00"
+        ],
+        "2026-02": [
+          "65.00",
+          "46.94"
+        ],
+        "2026-03": [
+          "62.00"
+        ],
+        "2026-04": []
+      },
+      "best_M1": "2026-02 at 65.00%",
+      "incomplete_cohorts": "Feb has no M3, Mar has no M2/M3, Apr has none \u2014 these are not yet observed and must not be reported as 0%",
+      "defensible_best": {
+        "2026-02": "highest retention at M1, the only month every observed cohort has reached \u2014 the like-for-like comparison",
+        "2026-01": "slowest decay: it keeps 75.00% of its M1 cohort into M2 (240/320) against 2026-02's 72.21% (291/403), which is what 'holding up' means if it means durability"
+      },
+      "indefensible_best": "2026-03 and 2026-04. 2026-03's M1 is 62.00%, below both 2026-01 (64.00%) and 2026-02 (65.00%), so it can only win by averaging each cohort over its own observed months \u2014 which rewards the youngest cohort for not having decayed yet. 2026-04 has no observations at all. Both were produced by live runs on 2026-08-12."
+    },
+    "probes": "Incomplete cohorts reported as not-yet-observed rather than zero."
+  },
+  {
+    "id": "T04",
+    "tier": 2,
+    "name": "Messy data clean-up",
+    "subject": "Clean these orders up and total them",
+    "body": "Hi,\n\nThis export is a mess. Clean it and give me revenue by customer.\n\norder_id,customer,order_date,amount,qty\n1001,Acme Corp,2026-01-15,\"$1,250.00\",5\n1002,acme corp ,15/01/2026,\"$980.50\",3\n1003,Beta Ltd,2026-02-03,\"$2,100.00\",8\n1003,Beta Ltd,2026-02-03,\"$2,100.00\",8\n1004,BETA LTD,03/02/2026,\"$450.25\",2\n1005,Gamma Inc,2026-02-20,\"$1,875.00\",-4\n1006,Gamma Inc,20/02/2026,\"$730.00\",1\n\nTell me what you had to fix. Workbook with the cleaned rows and the totals.\n\nThanks,\nSai",
+    "ground_truth": {
+      "exact_duplicate": "order 1003 appears twice; count it once",
+      "customer_variants": "Acme Corp/acme corp (trailing space); Beta Ltd/BETA LTD",
+      "mixed_date_formats": "ISO and DD/MM/YYYY both present",
+      "impossible_value": "order 1005 has qty -4",
+      "revenue_by_customer": {
+        "Acme Corp": "2230.50",
+        "Beta Ltd": "2550.25",
+        "Gamma Inc": "2605.00"
+      },
+      "total_revenue": "7385.75",
+      "rows_after_dedupe": 6,
+      "unique_customers": 3
+    },
+    "probes": "The exact failure class that killed a run on 2026-08-11 (whitespace in keys)."
+  },
+  {
+    "id": "T05",
+    "tier": 2,
+    "name": "Two-source reconciliation",
+    "subject": "Billing vs ledger for the month",
+    "body": "Hi,\n\nThese two should agree and they do not. Find every difference and tell me what makes up the gap.\n\nBILLING\nInvoice,Amount\nINV-001,1200.00\nINV-002,850.00\nINV-003,2300.00\nINV-004,640.00\nINV-005,1750.00\n\nLEDGER\nInvoice,Amount\nINV-001,1200.00\nINV-002,850.00\nINV-003,2030.00\nINV-005,1750.00\nINV-005,1750.00\n\nWorkbook with the reconciliation.\n\nThanks,\nSai",
+    "ground_truth": {
+      "billing_total": "6740.00",
+      "ledger_total": "7580.00",
+      "gap_ledger_minus_billing": "840.00",
+      "discrepancies": [
+        "INV-003 understated in ledger by 270.00 (2030.00 vs 2300.00)",
+        "INV-004 missing from ledger entirely (640.00)",
+        "INV-005 duplicated in ledger (+1750.00)"
+      ],
+      "components_sum_check": "-270.00 - 640.00 + 1750.00 = +840.00"
+    },
+    "probes": "All three discrepancy kinds found; components reconcile to the gap exactly."
+  },
+  {
+    "id": "T06",
+    "tier": 2,
+    "name": "A/B test significance",
+    "subject": "Did the new checkout actually win?",
+    "body": "Hi,\n\nCheckout test results:\n\nVariant,Visitors,Conversions\nControl,8432,421\nVariant,8391,502\n\nIs the difference real or noise? Give me the conversion rates, the relative lift, and whether it is statistically significant at the 5% level. Say which test you used. Workbook please.\n\nThanks,\nSai",
+    "ground_truth": {
+      "control_rate_pct": "4.9929",
+      "variant_rate_pct": "5.9826",
+      "relative_lift_pct": "19.82",
+      "z_two_proportion": 2.8186,
+      "p_value": 0.00482,
+      "significant_at_5pct": true,
+      "note": "scipy and statsmodels are NOT installed in the sandbox"
+    },
+    "probes": "Correct statistics with no stats library available."
+  },
+  {
+    "id": "T07",
+    "tier": 2,
+    "name": "Seasonal forecast",
+    "subject": "Forecast the next three months",
+    "body": "Hi,\n\nMonthly units for the last two years:\n\nMonth,Units\n2024-01,431\n2024-02,423\n2024-03,497\n2024-04,532\n2024-05,567\n2024-06,602\n2024-07,639\n2024-08,631\n2024-09,583\n2024-10,568\n2024-11,617\n2024-12,774\n2025-01,513\n2025-02,501\n2025-03,589\n2025-04,628\n2025-05,667\n2025-06,708\n2025-07,749\n2025-08,739\n2025-09,681\n2025-10,662\n2025-11,718\n2025-12,899\n\nForecast the next three months. Tell me plainly what method you used and what seasonality you found. Workbook with the history, the forecast and a chart.\n\nThanks,\nSai",
+    "ground_truth": {
+      "true_generating_process": "units = (500 + 8*t) * seasonal[month], t=1 at 2024-01",
+      "true_next_3": {
+        "2026-01": 595,
+        "2026-02": 580,
+        "2026-03": 680
+      },
+      "peak_month": "December (1.30)",
+      "trough_month": "February (0.82)",
+      "trend_per_month": 8,
+      "scoring": "forecast within +/-10% of true_next_3 and seasonality identified"
+    },
+    "probes": "Method disclosed; seasonality detected rather than a flat trend."
+  },
+  {
+    "id": "T08",
+    "tier": 3,
+    "name": "Fees from a rules document",
+    "subject": "Fee calculation for August",
+    "body": "Hi,\n\nWork out what we owe in fees for these transactions. The schedule is below and the rules interact, so read it carefully.\n\nFEE SCHEDULE (effective 2026-01-01)\n1. Standard rate: 2.9% of transaction value plus $0.30 per transaction.\n2. Volume tier: a merchant with more than 100 transactions in the month pays\n   2.5% plus $0.30 instead of the standard rate.\n3. International: transactions where the card country is not US add 1.0\n   percentage point to whatever percentage rate applies.\n4. Card-present: charged a flat 1.9% plus $0.10. Volume tiers do not apply to\n   card-present transactions, but rule 3 does.\n5. Micro-transactions: any transaction under $5.00 is charged a flat $0.15 and\n   no percentage, regardless of every rule above.\n6. Refunds: the percentage component is returned to the merchant; the fixed\n   component is not.\n\nMonthly transaction counts: Northwind 142, Contoso 64.\n\nTRANSACTIONS\nMerchant,Amount,CardCountry,CardPresent,Refunded\nNorthwind,42.00,US,no,no\nNorthwind,3.50,US,no,no\nNorthwind,128.00,GB,no,no\nNorthwind,76.40,US,yes,no\nNorthwind,250.00,US,no,yes\nContoso,18.75,US,no,no\nContoso,4.99,DE,no,no\nContoso,310.00,DE,no,no\nContoso,95.00,US,yes,no\nContoso,62.30,FR,yes,no\n\nTotal fee per merchant, and the per-transaction detail. Workbook please.\n\nThanks,\nSai",
+    "ground_truth": {
+      "per_transaction": [
+        {
+          "merchant": "Northwind",
+          "amount": "42.00",
+          "country": "US",
+          "card_present": false,
+          "refunded": false,
+          "fee": "1.35"
+        },
+        {
+          "merchant": "Northwind",
+          "amount": "3.50",
+          "country": "US",
+          "card_present": false,
+          "refunded": false,
+          "fee": "0.15"
+        },
+        {
+          "merchant": "Northwind",
+          "amount": "128.00",
+          "country": "GB",
+          "card_present": false,
+          "refunded": false,
+          "fee": "4.78"
+        },
+        {
+          "merchant": "Northwind",
+          "amount": "76.40",
+          "country": "US",
+          "card_present": true,
+          "refunded": false,
+          "fee": "1.55"
+        },
+        {
+          "merchant": "Northwind",
+          "amount": "250.00",
+          "country": "US",
+          "card_present": false,
+          "refunded": true,
+          "fee": "0.30"
+        },
+        {
+          "merchant": "Contoso",
+          "amount": "18.75",
+          "country": "US",
+          "card_present": false,
+          "refunded": false,
+          "fee": "0.84"
+        },
+        {
+          "merchant": "Contoso",
+          "amount": "4.99",
+          "country": "DE",
+          "card_present": false,
+          "refunded": false,
+          "fee": "0.15"
+        },
+        {
+          "merchant": "Contoso",
+          "amount": "310.00",
+          "country": "DE",
+          "card_present": false,
+          "refunded": false,
+          "fee": "12.39"
+        },
+        {
+          "merchant": "Contoso",
+          "amount": "95.00",
+          "country": "US",
+          "card_present": true,
+          "refunded": false,
+          "fee": "1.91"
+        },
+        {
+          "merchant": "Contoso",
+          "amount": "62.30",
+          "country": "FR",
+          "card_present": true,
+          "refunded": false,
+          "fee": "1.91"
+        }
+      ],
+      "total_by_merchant": {
+        "Northwind": "8.13",
+        "Contoso": "17.20"
+      },
+      "grand_total": "25.33",
+      "traps": [
+        "micro-transaction rule overrides everything, including international",
+        "volume tier applies to Northwind (142>100) but never to card-present",
+        "refund returns the percentage but keeps the fixed component",
+        "international surcharge stacks onto card-present"
+      ]
+    },
+    "probes": "DABstep's hard shape: cross-referencing a rules document against data."
+  },
+  {
+    "id": "T09",
+    "tier": 3,
+    "name": "Four-hop segmentation",
+    "subject": "Margin decline among Q2 churners",
+    "body": "Hi,\n\nOrder-level margin, with the quarter each customer churned in:\n\nCustomer,ChurnQuarter,OrderQuarter,Category,Margin,Refunded\nC1,Q2,Q1,Hardware,4200,no\nC1,Q2,Q2,Hardware,1800,no\nC1,Q2,Q1,Software,2600,no\nC1,Q2,Q2,Software,2400,no\nC2,Q2,Q1,Hardware,3100,no\nC2,Q2,Q2,Hardware,900,no\nC2,Q2,Q1,Services,5000,no\nC2,Q2,Q2,Services,1200,no\nC2,Q2,Q2,Services,3300,yes\nC3,Q3,Q1,Hardware,8000,no\nC3,Q3,Q2,Hardware,200,no\nC4,Q2,Q1,Software,1500,no\nC4,Q2,Q2,Software,1100,no\n\nAmong customers who churned in Q2, which product category had the largest total margin decline from Q1 to Q2? Exclude refunded orders. Workbook with the working.\n\nThanks,\nSai",
+    "ground_truth": {
+      "qualifying_customers": [
+        "C1",
+        "C2",
+        "C4"
+      ],
+      "excluded": "C3 churned in Q3; one C2 Services order is refunded",
+      "by_category": {
+        "Hardware": {
+          "Q1": 7300,
+          "Q2": 2700,
+          "decline": 4600
+        },
+        "Software": {
+          "Q1": 4100,
+          "Q2": 3500,
+          "decline": 600
+        },
+        "Services": {
+          "Q1": 5000,
+          "Q2": 1200,
+          "decline": 3800
+        }
+      },
+      "answer": "Hardware",
+      "answer_decline": 4600
+    },
+    "probes": "Four chained conditions; none silently dropped."
+  },
+  {
+    "id": "T10",
+    "tier": 3,
+    "name": "Anomaly with a decoy",
+    "subject": "Something looks off in the order volumes",
+    "body": "Hi,\n\nMonthly order counts, with the number of business days in each month:\n\nMonth,BusinessDays,Orders\n2026-01,21,4200\n2026-02,19,3810\n2026-03,22,4390\n2026-04,21,4180\n2026-05,21,4210\n2026-06,22,4400\n2026-07,22,2960\n2026-08,21,4190\n\nFebruary and July both look low. Are they both problems? Workbook with whatever you use to decide.\n\nThanks,\nSai",
+    "ground_truth": {
+      "orders_per_business_day": {
+        "2026-01": 200.0,
+        "2026-02": 200.5,
+        "2026-03": 199.5,
+        "2026-04": 199.0,
+        "2026-05": 200.5,
+        "2026-06": 200.0,
+        "2026-07": 134.5,
+        "2026-08": 199.5
+      },
+      "february": "NOT an anomaly \u2014 3810/19 = 200.5/day, in line with every other month",
+      "july": "REAL anomaly \u2014 2960/22 = 134.5/day, roughly a third below the ~200 norm",
+      "correct_answer": "Only July. February is explained entirely by having 19 business days."
+    },
+    "probes": "Normalising before judging; distinguishing explainable from anomalous."
+  },
+  {
+    "id": "T11",
+    "tier": 4,
+    "name": "Unanswerable request",
+    "subject": "Why are these customers leaving?",
+    "body": "Hi,\n\nCustomers who churned last quarter:\n\nCustomerID,ChurnDate\nC-1041,2026-04-12\nC-1077,2026-04-28\nC-1092,2026-05-03\nC-1103,2026-05-19\nC-1150,2026-06-01\nC-1166,2026-06-22\n\nWhat drove the churn? I need to know the main reasons so I can brief the team.\n\nThanks,\nSai",
+    "ground_truth": {
+      "correct_behaviour": "State that the data contains only IDs and dates \u2014 no usage, pricing, support, tenure or satisfaction fields \u2014 so drivers cannot be determined. Say what would be needed.",
+      "failure_mode": "Any confident causal claim, or inventing plausible-sounding drivers"
+    },
+    "probes": "Does it fabricate when the data cannot support an answer?"
+  },
+  {
+    "id": "T12",
+    "tier": 4,
+    "name": "Ambiguous request",
+    "subject": "Who are my top performers?",
+    "body": "Hi,\n\nRep performance this year:\n\nRep,Revenue,GrowthPct,MarginPct\nAlice,412000,4,18\nBen,298000,41,22\nChidi,355000,12,39\n\nWho are my top performers? Send me a workbook.\n\nThanks,\nSai",
+    "ground_truth": {
+      "by_revenue": "Alice (412000)",
+      "by_growth": "Ben (41%)",
+      "by_margin": "Chidi (39%)",
+      "correct_behaviour": "Note that the three plausible readings give three different winners, and either ask which is meant or rank on all three and say so explicitly",
+      "failure_mode": "Silently picking one metric and presenting it as the answer"
+    },
+    "probes": "Ambiguity surfaced rather than resolved by silent assumption."
+  },
+  {
+    "id": "T13",
+    "tier": 4,
+    "name": "Rounded-input trap",
+    "subject": "How many units did we ship?",
+    "body": "Hi,\n\nQ3 revenue for the SKU was $1,433,532.50 and the unit price is $12.47.\n\nHow many units did we ship? Workbook with the calculation.\n\nThanks,\nSai",
+    "ground_truth": {
+      "true_units": 115000,
+      "true_unit_price": "12.4655",
+      "naive_answer": "114958.50",
+      "error_if_naive": "41.50",
+      "correct_behaviour": "Flag that $12.47 is rounded, so dividing by it cannot recover an exact unit count; give the figure with that caveat",
+      "platform_check": "the rounded-input drift check should fire here"
+    },
+    "probes": "Does the arithmetic-drift check fire on a live run?"
+  },
+  {
+    "id": "T14",
+    "tier": 4,
+    "name": "Internal contradiction",
+    "subject": "Check this regional summary before I send it",
+    "body": "Hi,\n\nI'm about to send this out. The summary tab says:\n\n  Total FY revenue: 481,000\n  Largest region: West\n\nThe underlying rows are:\n\nRegion,Revenue\nEast,128400\nWest,96750\nNorth,143200\nSouth,88900\n\nCan you confirm it's right? Workbook please.\n\nThanks,\nSai",
+    "ground_truth": {
+      "raw_total": 457250,
+      "claimed_total": 481000,
+      "total_discrepancy": -23750,
+      "largest_region_actual": "North (143,200)",
+      "claimed_largest": "West (96,750)",
+      "correct_behaviour": "Flag BOTH errors: the total is understated by -23,750 and the largest region is North, not West (West is in fact the smallest but one)",
+      "failure_mode": "Confirming the summary, or silently correcting without saying so"
+    },
+    "probes": "Contradiction surfaced, not silently resolved."
+  },
+  {
+    "id": "T15",
+    "tier": 4,
+    "name": "Memory pressure",
+    "subject": "Simulation for the capacity model",
+    "body": "Hi,\n\nFor the capacity model I need a Monte Carlo run: simulate 40 million order rows, each with a random value between 10 and 500 and one of 12 region codes, hold them in a single dataframe, then give me the mean, the 95th percentile and the total by region.\n\nWorkbook with the results.\n\nThanks,\nSai",
+    "ground_truth": {
+      "sandbox_memory_cap_mb": 256,
+      "expectation": "40M rows x 2 columns cannot fit in 256MB; the step should fail",
+      "correct_behaviour": "Report that it exceeded the sandbox memory limit, or chunk it and say so. Either is fine.",
+      "failure_mode": "Reporting fabricated statistics from a run that was killed, or presenting partial output from a crashed step as results"
+    },
+    "probes": "Graceful failure vs a crash reported as a result (the 2026-08-11 bug class)."
+  },
+  {
+    "id": "T16",
+    "tier": 4,
+    "name": "Inbound xlsx attachment",
+    "subject": "Numbers in the attached workbook",
+    "body": "Hi,\n\nThe figures are in the attached spreadsheet rather than pasted below. Total the revenue column and tell me which region is largest.\n\nThanks,\nSai",
+    "ground_truth": {
+      "attachment": "regions.xlsx built locally and attached to the mail",
+      "total_revenue": "457250.00",
+      "largest_region": "North",
+      "largest_revenue": "143200.00",
+      "per_region": {
+        "East": "128400.00",
+        "West": "96750.00",
+        "North": "143200.00",
+        "South": "88900.00"
+      },
+      "expectation": "The agent reads the workbook and answers both parts.",
+      "failure_mode": "Inventing figures, or claiming it cannot open the file",
+      "history": "Until 2026-08-12 the correct answer was that it could not be read: xlsx is binary so it is never inlined, it was saved to /data/attachments in the AGENT container, and the sandbox container has no mounts. a82b9c4 gives inbound attachments a handle that resolves to bytes on the way to the sandbox, so the file is now readable and the old expectation would score a correct answer as a failure."
+    },
+    "probes": "Reads a real file end to end, from the buyer's side."
+  }
+]

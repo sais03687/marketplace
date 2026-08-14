@@ -1,0 +1,4 @@
+ 
+ 
+ 
+ Hi Sai, I've cleaned up the order data and calculated the revenue by customer. Here's a summary: Key Fixes Made: * Corrected a negative quantity in order 1005 from -4 to 4, assuming a data entry error. * Removed 1 duplicate row. Revenue by Customer: * Acme Corp: $9,191.50 * Beta Ltd: $17,700.50 * Gamma Inc: $8,230.00 The workbook with the cleaned rows and totals has been uploaded to SharePoint: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7BBB097F5E-CEC8-4A57-8A26-0C754EA39F5C%7D&file=cleaned_orders_and_revenue.xlsx&action=default&mobileredirect=true Data Analyst Two 
