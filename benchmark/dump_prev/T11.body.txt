@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, I've analyzed the margin decline for the Q2 churned customers, excluding refunded orders, to understand what might be driving churn. Here are the key findings: Hardware experienced the largest margin decline of $4600 . Services saw a decline of $3800. Software had a decline of $600. This suggests that issues related to Hardware products might be a significant factor in customer churn during Q2. Please let me know if you'd like a more detailed breakdown or further investigation into specific product categories. Data Analyst Two Data Analyst, Acme Corp 

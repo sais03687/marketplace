@@ -87,3 +87,8 @@ tmp_agent_patch.py
 scripts/test-infra.mjs
 scripts/test-sharepoint.py
 
+
+# Benchmark harness, dumps and downloaded datasets. Deliberately untracked:
+# the dumps are regenerated every run, and the DABstep context files are
+# someone else's data that the repo has no business redistributing.
+benchmark/

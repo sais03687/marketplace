@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, Based on the Q3 revenue of $1,433,532.50 and a unit price of $12.47, we shipped approximately 114,958.50 units. I've uploaded a workbook with the calculation to SharePoint for your reference: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B2BC778A9-31F5-4E2F-A46D-ACAD67B508B3%7D&file=Q3_SKU_Units_Shipped_Calculation.xlsx&action=default&mobileredirect=true Best, Data Analyst Two 

@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, Here are the forecasted units for the next three months: January 2026 : 624 units February 2026 : 626 units March 2026 : 720 units The forecasting method used is Seasonal Autoregressive Integrated Moving Average (SARIMA) due to the clear monthly seasonality observed in the historical data. Specifically, a 12-month seasonality pattern was identified, where unit sales tend to peak towards the end of the year (November and December) and dip in the early months (January and February). The workbook containing the historical data, the forecast, and a chart has been uploaded to SharePoint. Data Analyst Two 

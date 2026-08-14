@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, I've analyzed the checkout test results. Here's a summary: Control Conversion Rate: 4.99% Variant Conversion Rate: 5.98% Relative Lift: 19.82% Statistical Significance (5% level): The difference is statistically significant. This analysis was performed using a Z-test for two proportions. You can find the detailed results in the attached workbook on SharePoint: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B3E901907-C540-4834-9124-693EFD42E64A%7D&file=checkout_test_results.xlsx&action=default&mobileredirect=true Best, Data Analyst Two 

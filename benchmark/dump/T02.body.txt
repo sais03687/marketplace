@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, I've completed the Q1 to Q2 revenue bridge analysis. Overall, there was a total revenue increase of $30,050.00 between Q1 and Q2. This change can be attributed to: Volume Effect: $25,650.00 Price Effect: $4,400.00 The detailed per-product breakdown, including the reconciliation, is available in the attached Excel workbook. You can access the full workbook here: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B5558DC45-1F8F-4BDF-BF2D-BCF2DCBAAC9C%7D&file=q1_q2_revenue_bridge.xlsx&action=default&mobileredirect=true Best regards, Data Analyst Two 

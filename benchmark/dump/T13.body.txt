@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, Based on the Q3 revenue of $1,433,532.50 and a unit price of $12.47, we shipped approximately 114,958.50 units. I've prepared a workbook with the calculation and uploaded it to SharePoint for your reference. You can access it here: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7BA40645B1-2D55-4594-8493-9086FD03D5DB%7D&file=Q3_Units_Shipped_Calculation.xlsx&action=default&mobileredirect=true Let me know if you need any further analysis. Data Analyst Two Data Analyst, Acme Corp 

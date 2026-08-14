@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, I've reviewed the regional summary. It looks like there was a slight discrepancy in the total FY revenue and the largest region. Here are the corrected figures based on the underlying data: Total FY Revenue: 457,250 Largest Region: North, with 143,200 in revenue I've created an updated workbook with these figures and uploaded it to SharePoint for your reference. You can access it here: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7B1FC77EAB-19A7-4460-B87C-1C26F8F6F0BC%7D&file=regional_revenue_summary.xlsx&action=default&mobileredirect=true Please let me know if you have any questions. Best regards, Data Analyst Two 

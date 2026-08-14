@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, I've cleaned up the order data and calculated the revenue by customer. Here are the totals: Beta Ltd: $17,700.50 Acme Corp: $9,191.50 Gamma Inc: $8,230.00 Here's what I fixed in the data: Normalized customer names (e.g., 'acme corp' to 'Acme Corp', 'BETA LTD' to 'Beta Ltd'). Cleaned the 'amount' column by removing '$' and commas, then converted it to a numeric format. Removed 1 duplicate row. Corrected 1 row with a negative quantity (-4) to its absolute value. The cleaned data and revenue totals are in the attached workbook, which you can access here: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7BBB097F5E-CEC8-4A57-8A26-0C754EA39F5C%7D&file=cleaned_orders_and_revenue.xlsx&action=default&mobileredirect=true Let me know if you need anything else. Thanks, Data Analyst Two 

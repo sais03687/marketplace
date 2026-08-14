@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, Based on the data provided and using a combined performance score, Chidi is your top performer. Here's a summary of the ranking: Chidi: Rank 1, Performance Score: 1.72 Ben: Rank 2, Performance Score: 1.19 Alice: Rank 3, Performance Score: 1.00 The performance score is calculated by normalizing Revenue, Growth Percentage, and Margin Percentage, then summing these normalized values. A higher score indicates better overall performance. The detailed analysis, including the raw data, calculated performance scores, and ranking, is available in the attached workbook. Regards, Data Analyst Two 

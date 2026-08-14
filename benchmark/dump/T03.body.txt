@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, I've completed the retention analysis. The 2026-01 cohort is holding up best, retaining 40.0% of its initial sign-ups after three months. Here's a summary of the cohort retention percentages: 2026-01: 64.0% (M1), 48.0% (M2), 40.0% (M3) 2026-02: 65.0% (M1), 46.94% (M2) 2026-03: 62.0% (M1) 2026-04: Data not available for M1, M2, or M3 yet. The full retention triangle, along with a chart, has been uploaded to SharePoint: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7BD0C7361F-3F7C-453F-A243-BC1009B7BBA2%7D&file=monthly_cohort_retention_2026.xlsx&action=default&mobileredirect=true Let me know if you need anything else. Data Analyst Two 

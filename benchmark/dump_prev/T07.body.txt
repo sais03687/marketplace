@@ -1,4 +1,0 @@
- 
- 
- 
- Hi Sai, Here are the forecasts for the next three months: January 2026: 472 units February 2026: 462 units March 2026: 543 units I used a seasonal decomposition method to account for the monthly variations in units. This approach helps to separate the trend, seasonality, and residuals from the historical data to provide a more accurate forecast. The analysis clearly shows a strong seasonal pattern, with December typically being the highest month and February the lowest. I've attached the workbook containing the historical data, the forecast, and a chart illustrating these trends to SharePoint: https://agentstore.sharepoint.com/_layouts/15/Doc.aspx?sourcedoc=%7BE2511ABC-123B-4C81-B237-33BC21CD72BF%7D&file=units_forecast.xlsx&action=default&mobileredirect=true Please let me know if you have any questions. Best regards, Data Analyst Two 
