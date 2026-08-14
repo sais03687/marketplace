@@ -181,8 +181,20 @@ def test_the_error_lists_what_did_arrive():
 
 
 def test_the_error_says_so_when_nothing_arrived():
-    err = adapter._unresolved_handle_error(["inbound:wrong"])
-    assert "No files arrived" in err["error"]
+    # Both registries, because a sandbox-produced file is just as referenceable
+    # as an inbound one — and because leaving them populated makes this depend
+    # on which tests ran first.
+    inbound, sandbox = dict(adapter._INBOUND_FILES), dict(adapter._SANDBOX_FILES)
+    adapter._INBOUND_FILES.clear()
+    adapter._SANDBOX_FILES.clear()
+    try:
+        err = adapter._unresolved_handle_error(["inbound:wrong"])
+        assert "holds no files at all" in err["error"]
+        # Say what to do about it, not just that it is wrong.
+        assert "drive_fetch" in err["error"]
+    finally:
+        adapter._INBOUND_FILES.update(inbound)
+        adapter._SANDBOX_FILES.update(sandbox)
 
 
 def test_the_wrapper_returns_the_error_instead_of_calling_the_sandbox(monkeypatch):

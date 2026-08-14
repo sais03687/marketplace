@@ -658,6 +658,92 @@ def resolve_file_handle(ref: Any) -> dict | None:
     return {"name": entry["name"], "bytes": entry["bytes"]} if entry else None
 
 
+# Keys a model reaches for when it has a handle and a filename and wants to give
+# you both. Ordered by how likely the value under them is the handle itself.
+_HANDLE_KEYS = ("file_id", "handle", "id", "path", "name", "filename", "file")
+
+
+def _as_handle(ref: Any) -> str | None:
+    """The handle inside whatever shape the model sent, or None.
+
+    On 2026-08-14, 58 of 77 sandbox calls in the DABstep run failed on "Unknown
+    file handle" — and 38 of those carried a perfectly good `inbound:` handle,
+    wrapped:
+
+        {'file_id': 'inbound:1a5a24ef5f37', 'filename': 'payments.csv'}
+        {'handle': 'inbound:9ee9903d30ae', 'filename': 'payments.csv'}
+        {'id': 'inbound:afd3643c0c30', 'name': 'payments.csv'}
+
+    The model was not losing handles. It was sending the handle together with
+    the name it wanted the file staged under, which is a sensible thing to
+    send, and the boundary demanded a bare string and rejected all of it. Those
+    refusals consumed three quarters of every sandbox call in the run, out of a
+    twelve-step budget — which is most of why the hard tasks ended in "I was
+    unable to" rather than in a wrong answer.
+
+    A tool boundary that knows what was meant and refuses it on packaging is
+    not being strict, it is being expensive. Strictness belongs where a
+    mistake would be dangerous; this one is a dict with the right value in it.
+    """
+    if isinstance(ref, str):
+        return ref.strip() or None
+    if isinstance(ref, dict):
+        # A handle under any of the usual keys wins outright.
+        for key in _HANDLE_KEYS:
+            val = ref.get(key)
+            if isinstance(val, str) and val.strip().startswith(("inbound:", "sandbox:")):
+                return val.strip()
+        # Otherwise the first string that could be an id or a name, in key order,
+        # and let the caller decide whether it resolves to anything.
+        for key in _HANDLE_KEYS:
+            val = ref.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+
+def _handle_for_name(name: str) -> str | None:
+    """The handle of a file this run already has, addressed by its filename.
+
+    The model knows the file as "payments.csv" because that is what it asked
+    for; the token is bookkeeping the platform imposed. Accepting the name
+    removes a whole class of failure rather than instructing the model harder.
+    """
+    if not name:
+        return None
+    target = name.strip().lower().lstrip("/").split("/")[-1]
+    for handle, entry in list(_INBOUND_FILES.items()) + list(_SANDBOX_FILES.items()):
+        if (entry.get("name") or "").strip().lower() == target:
+            return handle
+    return None
+
+
+def _resolve_one(ref: Any) -> dict | None:
+    """{name, bytes} for anything the model might mean by "this file"."""
+    candidate = _as_handle(ref)
+    if not candidate:
+        return None
+    entry = resolve_file_handle(candidate)
+    if entry:
+        return entry
+    # Not a handle. It may be the file's name, which is what the model actually
+    # knows the file by.
+    by_name = _handle_for_name(candidate)
+    if by_name:
+        return resolve_file_handle(by_name)
+    # Or a dict whose handle key held something else, but whose filename is one
+    # of ours — {'id': '01HBC…', 'filename': 'payments.csv'} is the SharePoint
+    # id beside a name this run has already fetched.
+    if isinstance(ref, dict):
+        for key in ("name", "filename", "file", "path"):
+            named = ref.get(key)
+            if isinstance(named, str):
+                found = _handle_for_name(named)
+                if found:
+                    return resolve_file_handle(found)
+    return None
+
+
 def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, list[str]]:
     """Swap file handles in MCP arguments for the bytes they stand for.
 
@@ -673,25 +759,34 @@ def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, lis
     out = dict(arguments)
     unresolved: list[str] = []
 
-    # parse_pdf / parse_docx / parse_xlsx take the document directly.
+    # parse_pdf / parse_docx / parse_xlsx take the document directly. Anything
+    # that is not already base64 is treated as a reference to a file we hold —
+    # a bare handle, a handle in a dict, or a filename.
     ref = out.get("file_content_base64")
-    if isinstance(ref, str) and ref.startswith(("inbound:", "sandbox:")):
-        entry = resolve_file_handle(ref)
+    if ref is not None and not (isinstance(ref, str) and len(ref) > 512):
+        entry = _resolve_one(ref)
         if entry:
             out["file_content_base64"] = base64.b64encode(entry["bytes"]).decode()
             print(
-                f"[adapter] {tool}: resolved {ref} → {entry['name']} "
+                f"[adapter] {tool}: resolved {_as_handle(ref)} → {entry['name']} "
                 f"({len(entry['bytes'])} bytes)",
                 flush=True,
             )
-        else:
+        elif isinstance(ref, str) and ref.startswith(("inbound:", "sandbox:")):
             unresolved.append(ref)
+        elif isinstance(ref, dict):
+            unresolved.append(repr(ref))
 
-    # execute_python takes a list of handles to stage into /tmp/input/.
+    # execute_python takes a list of handles to stage into /tmp/input/. A single
+    # reference is accepted where a list was asked for: the model that sends one
+    # file means one file, and refusing it costs a step to learn nothing.
     if out.get("input_files"):
         staged = []
-        for ref in out["input_files"] if isinstance(out["input_files"], list) else []:
-            entry = resolve_file_handle(ref)
+        refs = out["input_files"]
+        if not isinstance(refs, list):
+            refs = [refs]
+        for ref in refs:
+            entry = _resolve_one(ref)
             if entry:
                 staged.append({
                     "name": entry["name"],
@@ -711,20 +806,36 @@ def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, lis
 
 
 def _unresolved_handle_error(unresolved: list[str]) -> dict:
-    """What the agent gets back when it names a file that does not exist."""
-    known = [f"{h} ({e['name']})" for h, e in _INBOUND_FILES.items()]
+    """What the agent gets back when it names a file nobody has.
+
+    Reached only after every reasonable reading of the argument has failed — a
+    bare handle, a handle inside a dict, a filename this run has fetched. So
+    the file genuinely is not here, and the useful reply is what *is* here plus
+    a line the model can copy, rather than a rule it has already tried to
+    follow.
+    """
+    known = [f"{h} ({e['name']})" for h, e in
+             list(_INBOUND_FILES.items()) + list(_SANDBOX_FILES.items())]
+    example = next(iter(_INBOUND_FILES), None) or next(iter(_SANDBOX_FILES), None)
     return {
         "error": (
-            "Unknown file handle(s): "
+            "No file here matches: "
             + ", ".join(unresolved)
             + ". "
             + (
-                "Files available on this message: " + "; ".join(known)
+                "Files this run holds: " + "; ".join(known) + ". "
                 if known
-                else "No files arrived with this message."
+                else "This run holds no files at all — nothing was attached and "
+                     "nothing has been fetched. Use drive_list to find the file "
+                     "and drive_fetch to take it before asking for it here. "
             )
-            + " Use a handle exactly as it was given to you — do not invent or "
-            "abbreviate one, and do not paste file contents."
+            + (
+                f'Either the handle or the filename works, so input_files: '
+                f'["{example}"] and input_files: ["{_INBOUND_FILES.get(example, _SANDBOX_FILES.get(example, {})).get("name", "file.csv")}"] '
+                f"are both fine."
+                if example
+                else ""
+            )
         )
     }
 
