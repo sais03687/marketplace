@@ -718,6 +718,34 @@ def _handle_for_name(name: str) -> str | None:
     return None
 
 
+def _reference_list(value: Any) -> list:
+    """Every file reference in `value`, whatever shape it arrived in.
+
+    The list-of-handles the tool asks for is one of several reasonable ways to
+    say this, and on 2026-08-14 the model chose another: it sent input_files as
+    a mapping of name to handle,
+
+        {'payments.csv': 'inbound:c7239fdd558f', 'fees.json': '01HBC6OG7V…'}
+
+    which is arguably clearer than a bare list, since it says which file is
+    which. Refused, it cost the run every remaining step — the agent had all
+    three files registered and never got one of them into the sandbox.
+
+    A mapping becomes {"file_id": handle, "filename": name} per entry, which is
+    the shape `_resolve_one` already reads: the handle if it resolves, the name
+    if it does not.
+    """
+    if isinstance(value, dict):
+        # A single reference, described — {'file_id': …, 'filename': …}.
+        if any(k in value for k in _HANDLE_KEYS):
+            return [value]
+        # Otherwise a mapping of name to reference.
+        return [{"file_id": v, "filename": k} for k, v in value.items()]
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def _resolve_one(ref: Any) -> dict | None:
     """{name, bytes} for anything the model might mean by "this file"."""
     candidate = _as_handle(ref)
@@ -782,10 +810,7 @@ def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, lis
     # file means one file, and refusing it costs a step to learn nothing.
     if out.get("input_files"):
         staged = []
-        refs = out["input_files"]
-        if not isinstance(refs, list):
-            refs = [refs]
-        for ref in refs:
+        for ref in _reference_list(out["input_files"]):
             entry = _resolve_one(ref)
             if entry:
                 staged.append({

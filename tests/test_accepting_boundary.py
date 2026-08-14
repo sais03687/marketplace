@@ -74,6 +74,31 @@ def test_a_sharepoint_id_beside_a_name_we_hold_resolves_by_the_name(held):
     assert out["input_files"][0]["name"] == "payments.csv"
 
 
+def test_a_mapping_of_name_to_handle_is_read_as_the_files_it_names(held):
+    # The shape that cost DB1753 every remaining step: all three files fetched
+    # and registered, none of them ever staged, because input_files arrived as
+    # {'payments.csv': 'inbound:…'} — which says which file is which, and is
+    # arguably clearer than the list we ask for.
+    out, unresolved = _stage({"input_files": {"payments.csv": held}})
+    assert unresolved == []
+    assert [f["name"] for f in out["input_files"]] == ["payments.csv"]
+
+
+def test_a_mapping_falls_back_to_its_key_when_the_value_is_not_a_handle(held):
+    # Half-fetched: one file has a handle, the other still carries the id the
+    # model saw in drive_list. The name is enough for the one we hold.
+    out, unresolved = _stage({"input_files": {
+        "payments.csv": "01HBC6OGZI6DGJVGGOLVHK4CWQGNYWZZLO",
+    }})
+    assert unresolved == []
+    assert out["input_files"][0]["name"] == "payments.csv"
+
+
+def test_a_mapping_naming_a_file_nobody_has_is_still_refused(held):
+    out, unresolved = _stage({"input_files": {"ledger_2019.csv": "01HBCNOTOURS"}})
+    assert unresolved and out["input_files"] == []
+
+
 def test_one_file_sent_unwrapped_is_not_refused_for_not_being_a_list(held):
     out, unresolved = _stage({"input_files": held})
     assert unresolved == [] and len(out["input_files"]) == 1
