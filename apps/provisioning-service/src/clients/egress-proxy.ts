@@ -25,6 +25,12 @@ export function baselineAllowedDomains(): string[] {
     "host.docker.internal",
   ]);
 
+  // The tenant's SharePoint host, when there is one. A file download is a 302
+  // from Graph to this host, so without it the agent can list files it can
+  // never open — which is exactly what happened to drive_fetch on 2026-08-14:
+  // "403 Filtered", three times, on a 23.58 MB CSV it was authorised to read.
+  if (config.sharepointHost) hosts.add(config.sharepointHost);
+
   for (const url of [config.approvalWebhookUrl, config.llmBaseUrl, config.publicUrl]) {
     if (!url) continue;
     try {

@@ -14,6 +14,17 @@ export const config = {
   // subscription validation fail with 404 and no push notifications are ever delivered.
   publicUrl: process.env.PROVISIONING_PUBLIC_URL || "https://api.agentstore.it.com",
   approvalWebhookToken: process.env.APPROVAL_WEBHOOK_TOKEN || "",
+  // The tenant's own SharePoint host, e.g. "contoso.sharepoint.com".
+  //
+  // Graph does not serve file bytes itself: /items/{id}/content answers 302 with
+  // a short-lived pre-authenticated URL on the tenant's SharePoint host, so an
+  // agent allowed to reach graph.microsoft.com and nothing else can list a file
+  // and never read one. Named here rather than wildcarded to *.sharepoint.com,
+  // which would let an agent reach any tenant in the world — including one an
+  // attacker controls, which is an exfiltration route rather than a download.
+  //
+  // Empty by default: an agent with no SharePoint has no reason to reach one.
+  sharepointHost: process.env.SHAREPOINT_HOST || "",
   provisioningSecret: process.env.PROVISIONING_SECRET || "",
   agentPackagePath: process.env.AGENT_PACKAGE_PATH || "../../agents/v5-agent-package",
   customStarterPath: process.env.CUSTOM_STARTER_PATH || "../../agents/langchain-starter",
