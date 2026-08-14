@@ -1481,6 +1481,16 @@ async def execute_action(state: AgentState) -> AgentState:
             item_id = params.get("item_id", params.get("id", ""))
             name, raw = await _mt.drive_download(item_id)
             handle = _file_registrar(name, raw) if _file_registrar else None
+            # Logged because the first time this failed in the wild there was
+            # nothing in the container log to say whether the download, the
+            # registration or the reference had gone wrong — every other action
+            # says what it did, and this one said nothing at all.
+            print(
+                f"[agent] drive_fetch: {name} ({len(raw):,} bytes) → "
+                + (handle if handle else
+                   "NOT REGISTERED" + ("" if _file_registrar else " (no registrar wired)")),
+                flush=True,
+            )
             if handle:
                 # The handle and the size, never the content. The whole point is
                 # that this file is too big to put in a prompt.
