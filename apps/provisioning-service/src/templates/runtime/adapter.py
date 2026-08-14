@@ -347,6 +347,38 @@ _SANDBOX_FILE_LIMIT = 32  # per process; oldest evicted, these are single-run ar
 _INBOUND_FILES: dict[str, dict] = {}
 _INBOUND_FILE_LIMIT = 16
 
+# And a ceiling on what they weigh, which is the one that matters.
+#
+# Sixteen files is a sensible number of files and, at the 25 MB a handle will
+# hold, 377 MB of a 512 MB container. The registry is process-global and
+# outlives the run that filled it, so a buyer whose agent opens a large
+# spreadsheet a few times a day accumulates them until something dies.
+#
+# It died on 2026-08-14, mid-benchmark: six consecutive tasks had each fetched
+# the same 23.58 MB CSV, and staging three files into one sandbox call — raw
+# bytes, base64, the JSON body, the request — spiked on top of everything the
+# five runs before it were still holding.
+#
+# 64 MB retained leaves room for that spike, which is roughly four times the
+# largest single file, inside 512 MB.
+_INBOUND_BYTES_LIMIT = 64 * 1024 * 1024
+
+
+def _evict_to_fit(registry: dict, count_limit: int, byte_limit: int) -> None:
+    """Drop the oldest entries until the registry is within both ceilings.
+
+    Insertion-ordered, so the first key is the oldest. The newest entry is never
+    evicted even if it alone exceeds the ceiling: it is the file the run in
+    progress just asked for, and dropping it would fail the work being done now
+    to protect work that is already finished.
+    """
+    while len(registry) > count_limit:
+        registry.pop(next(iter(registry)))
+    total = sum(len(e.get("bytes") or b"") for e in registry.values())
+    while total > byte_limit and len(registry) > 1:
+        oldest = next(iter(registry))
+        total -= len(registry.pop(oldest).get("bytes") or b"")
+
 # A handle costs a few tokens whatever the file weighs, so this ceiling is about
 # memory and mail limits rather than prompt budget — two orders of magnitude
 # above _ATTACHMENT_INLINE_LIMIT, which has to sit inside the prompt.
@@ -612,8 +644,7 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
 
         file_id = f"sandbox:{uuid.uuid4().hex[:12]}"
         _SANDBOX_FILES[file_id] = {"name": f.get("name", "output"), "bytes": raw}
-        while len(_SANDBOX_FILES) > _SANDBOX_FILE_LIMIT:
-            _SANDBOX_FILES.pop(next(iter(_SANDBOX_FILES)))
+        _evict_to_fit(_SANDBOX_FILES, _SANDBOX_FILE_LIMIT, _INBOUND_BYTES_LIMIT)
 
         run_files = current_run_files()
         if file_id not in run_files:
@@ -640,8 +671,7 @@ def _register_inbound_file(name: str, raw: bytes) -> str | None:
         return None
     handle = f"inbound:{uuid.uuid4().hex[:12]}"
     _INBOUND_FILES[handle] = {"name": name, "bytes": raw}
-    while len(_INBOUND_FILES) > _INBOUND_FILE_LIMIT:
-        _INBOUND_FILES.pop(next(iter(_INBOUND_FILES)))
+    _evict_to_fit(_INBOUND_FILES, _INBOUND_FILE_LIMIT, _INBOUND_BYTES_LIMIT)
     return handle
 
 
