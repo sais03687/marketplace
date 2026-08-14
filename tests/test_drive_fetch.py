@@ -87,15 +87,17 @@ def test_the_action_says_what_to_do_with_the_handle(workspace):
     i = src.index('action_type == "drive_fetch"')
     block = src[i:src.index('elif action_type ==', i + 10)]
     # A handle with no instructions is how the model ends up pasting it as data.
-    assert "input_files" in block and "parse_xlsx" in block
+    # Names rather than handles now: the sandbox accepts them, and the name is
+    # what the model will already have written into its code.
+    assert "input_files" in block and "/tmp/input/" in block
 
 
 def test_a_file_too_large_to_hold_says_so_rather_than_failing_silently(workspace):
     src = io.open(AGENT_SRC, encoding="utf-8").read()
     i = src.index('action_type == "drive_fetch"')
     block = src[i:src.index('elif action_type ==', i + 10)]
-    assert "Could not take" in block
-    assert "smaller extract" in block
+    assert "Could not fetch" in block
+    assert "past the size the platform holds" in block
 
 
 # ── wired everywhere, like the resolver it mirrors ─────────────────────────
@@ -132,9 +134,9 @@ def test_the_truncation_notice_only_fires_when_something_was_cut():
 
 def test_the_model_is_told_which_tool_to_use_for_data():
     src = io.open(AGENT_SRC, encoding="utf-8").read()
-    assert "| drive_fetch | Hand a workspace file" in src, (
+    assert "| drive_fetch | Hand workspace files" in src, (
         "the action is not in the table the model reads")
-    i = src.index("| drive_fetch | Hand a workspace file")
+    i = src.index("| drive_fetch | Hand workspace files")
     row = src[i:src.index("\n", i)]
     assert "2000 characters" in row, (
         "the row must say why drive_read_text is the wrong tool for a dataset, "

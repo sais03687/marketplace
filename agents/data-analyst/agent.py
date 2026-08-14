@@ -643,7 +643,7 @@ Produce a JSON response (no markdown fences):
 | drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
 | drive_read_text | Read a SMALL text file you need to quote — a note, a README. It is cut at 2000 characters, so it is the wrong tool for data: a fee table or a dataset read this way arrives truncated and every figure taken from it is unsafe. For anything you mean to compute with, use drive_fetch. Never for .xlsx. | item_id |
-| drive_fetch | Hand a workspace file to the sandbox without reading it here. Use for ANY file you mean to analyse rather than quote — a dataset, a spreadsheet, anything over a few hundred rows. Returns a handle; pass it in `input_files` to execute_python, or as the file to parse_xlsx/parse_pdf/parse_docx. drive_read_text puts the content in this conversation and is cut at 2000 characters, so it is for reading a note, not for analysing data. | item_id |
+| drive_fetch | Hand workspace files to the sandbox without reading them here. Use for ANY file you mean to analyse rather than quote — a dataset, a spreadsheet, anything over a few hundred rows. **Ask for every file you need in one call**, by name: `files: ["payments.csv", "fees.json"]`. Names are looked up for you, so you do not need drive_list first. Then open them in the sandbox as /tmp/input/<name>. drive_read_text puts the content in this conversation and is cut at 2000 characters, so it is for reading a note, not for analysing data. | files (list of names or ids), subfolder (optional) |
 | drive_upload | Upload a file to your SharePoint folder. `content_base64` takes the `file_id` the sandbox returned — never file content. To upload anything, write it to `/tmp/output/` in the python-sandbox first and pass the id you get back. | filename, content_base64, content_type |
 | drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
 | drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
@@ -703,6 +703,85 @@ Produce a JSON response (no markdown fences):
 - If an action fails (e.g., email bounce, API error), do NOT spiral into retries or request_decision loops. Report the error in your reply and move on.
 - You can only START a conversation with, or share a file with, people inside this organisation: the company domain, your manager, or addresses on the buyer's allowlist. If you are asked to email or share with someone outside it, do not attempt the action and do not look for a way around it. Reply to the person who asked, tell them plainly that you cannot reach that address and why, and suggest they send it themselves. Replying to anyone who emails you first is always allowed.
 """
+
+
+# One action's worth. A request naming more files than this is either confused
+# or about to exhaust the container's memory, and the cap is high enough that no
+# honest request has met it.
+_MAX_FETCH_PER_ACTION = 8
+
+# SharePoint item ids: long, upper-case, no dots. A filename has an extension and
+# a drive id does not, which is enough to tell them apart without asking.
+_DRIVE_ID_RE = re.compile(r"^[A-Z0-9]{20,}$")
+
+
+def _looks_like_drive_id(ref: str) -> bool:
+    return bool(_DRIVE_ID_RE.match((ref or "").strip()))
+
+
+def _requested_files(params: dict) -> list[str]:
+    """Everything the model asked for, however it phrased the request.
+
+    Singular and plural, ids and names, a list or one string. The same lesson as
+    the sandbox boundary: the shapes a model reaches for are all reasonable, and
+    refusing them costs a step to teach it a rule it will not remember.
+    """
+    out: list[str] = []
+    for key in ("item_ids", "items", "files", "filenames", "names",
+                "item_id", "id", "filename", "name", "file"):
+        val = params.get(key)
+        if isinstance(val, str):
+            val = [val]
+        if isinstance(val, (list, tuple)):
+            for v in val:
+                if isinstance(v, dict):
+                    v = v.get("id") or v.get("item_id") or v.get("name") or v.get("filename")
+                if isinstance(v, str) and v.strip() and v.strip() not in out:
+                    out.append(v.strip())
+    return out
+
+
+async def _folder_index(subfolder: str = "") -> dict[str, str]:
+    """Filename → item id for the agent's folder, and one level of subfolders.
+
+    Listing is what the model was spending a whole step on before it could fetch
+    anything, so the fetch does it here instead. One level down because that is
+    where a request that says "in dabstep/" means, and no deeper because a full
+    walk of someone's SharePoint is not something to do on every fetch.
+    """
+    index: dict[str, str] = {}
+    try:
+        entries = await _mt.drive_list(subfolder or "")
+    except Exception as exc:
+        print(f"[agent] drive_fetch: could not list '{subfolder}': {exc}", flush=True)
+        return index
+
+    subfolders = []
+    for e in entries or []:
+        name = (e.get("name") or "").strip()
+        if not name:
+            continue
+        # `"folder" in e`, not `e.get("folder")`. Graph marks a directory by the
+        # presence of the facet, and an empty one — {"folder": {}} — is falsy,
+        # so a truthiness test files directories away as documents and never
+        # looks inside them.
+        if "folder" in e:
+            subfolders.append(name)
+        elif e.get("id"):
+            index.setdefault(name.lower(), e["id"])
+
+    if subfolder:
+        return index
+
+    for sub in subfolders[:6]:
+        try:
+            for e in await _mt.drive_list(sub) or []:
+                name = (e.get("name") or "").strip()
+                if name and e.get("id") and "folder" not in e:
+                    index.setdefault(name.lower(), e["id"])
+        except Exception:
+            continue
+    return index
 
 
 def _trim_traceback(stderr: str, limit: int = 1200) -> str:
@@ -1478,34 +1557,73 @@ async def execute_action(state: AgentState) -> AgentState:
             state.actions_taken.append(f"Read file: {item_id[:20]}")
 
         elif action_type == "drive_fetch" and _mt:
-            item_id = params.get("item_id", params.get("id", ""))
-            name, raw = await _mt.drive_download(item_id)
-            handle = _file_registrar(name, raw) if _file_registrar else None
-            # Logged because the first time this failed in the wild there was
-            # nothing in the container log to say whether the download, the
-            # registration or the reference had gone wrong — every other action
-            # says what it did, and this one said nothing at all.
-            print(
-                f"[agent] drive_fetch: {name} ({len(raw):,} bytes) → "
-                + (handle if handle else
-                   "NOT REGISTERED" + ("" if _file_registrar else " (no registrar wired)")),
-                flush=True,
-            )
-            if handle:
-                # The handle and the size, never the content. The whole point is
-                # that this file is too big to put in a prompt.
+            # Several files, by name or by id, in one step.
+            #
+            # One file per action cost DB1753 four of its twelve steps before any
+            # analysis began — a drive_list to learn the ids, then a fetch each
+            # for payments.csv, fees.json and merchant_data.json — and it ran out
+            # mid-analysis. Every one of those steps was bookkeeping the platform
+            # could do itself: a request that says "the data is in dabstep/" has
+            # already told us where to look.
+            wanted = _requested_files(params)
+            fetched, failed = [], []
+            listing: dict[str, str] | None = None
+            for ref in wanted[:_MAX_FETCH_PER_ACTION]:
+                item_id = ref
+                if not _looks_like_drive_id(ref):
+                    # A name. Resolve it against the folder, listing once and
+                    # reusing that for the rest — this is what drive_list was
+                    # being spent as a whole step on.
+                    if listing is None:
+                        listing = await _folder_index(params.get("subfolder", ""))
+                    # Not in the folder is not proof it is not an id: the shape
+                    # test is a hint, and an id from a tenant whose ids look
+                    # unusual would fail here for no reason. Try it as one and
+                    # let the download be the judge.
+                    item_id = listing.get(ref.strip().lower(), "") or ref
+                try:
+                    name, raw = await _mt.drive_download(item_id)
+                except Exception as exc:
+                    failed.append(
+                        f"{ref} (no such file in the folder)"
+                        if item_id == ref and not _looks_like_drive_id(ref)
+                        else f"{ref} ({type(exc).__name__})"
+                    )
+                    continue
+                handle = _file_registrar(name, raw) if _file_registrar else None
+                print(
+                    f"[agent] drive_fetch: {name} ({len(raw):,} bytes) → "
+                    + (handle if handle else
+                       "NOT REGISTERED" + ("" if _file_registrar else " (no registrar wired)")),
+                    flush=True,
+                )
+                if handle:
+                    fetched.append((name, len(raw), handle))
+                else:
+                    failed.append(
+                        f"{name} ({len(raw):,} bytes — past the size the platform holds)"
+                    )
+
+            if fetched:
+                lines = "\n".join(
+                    f"- {n} ({size:,} bytes) → {h}" for n, size, h in fetched
+                )
+                # Names, because the sandbox now takes those too, and a name is
+                # the thing the model will already have written into its code.
                 result_text = (
-                    f"Fetched {name} ({len(raw):,} bytes). Its handle is {handle} — "
-                    f"pass it in input_files to execute_python, or as the file to "
-                    f"parse_xlsx/parse_pdf/parse_docx. Do not try to read it here."
+                    f"Fetched {len(fetched)} file(s):\n{lines}\n\n"
+                    "Open them in the sandbox by name — read "
+                    f"/tmp/input/{fetched[0][0]} in your code and pass the same "
+                    "names in input_files. Do not try to read them here."
                 )
             else:
-                result_text = (
-                    f"Could not take {name} ({len(raw):,} bytes) — it is past the "
-                    f"size the platform will hold. Ask for a smaller extract, or "
-                    f"work from a filtered export."
-                )
-            state.actions_taken.append(f"Fetched file: {name}")
+                result_text = "Fetched nothing."
+            if failed:
+                result_text += "\n\nCould not fetch: " + "; ".join(failed)
+            state.actions_taken.append(
+                "Fetched " + ", ".join(n for n, _, _ in fetched) if fetched
+                else "Fetched no files"
+            )
 
         elif action_type == "drive_upload" and _mt:
             filename = params.get("filename", "output.xlsx")
