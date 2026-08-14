@@ -3126,6 +3126,23 @@ async def graph_request(
             params=params,
         )
 
+        # Graph answers /items/{id}/content with a 302 to a short-lived,
+        # pre-authenticated URL on a storage host rather than serving the bytes
+        # itself. httpx does not follow redirects by default, so the agent got a
+        # 302 with an empty body and no file — drive_fetch on payments.csv
+        # retried three times on 2026-08-14 before the loop guard stopped it.
+        #
+        # Followed here rather than by setting follow_redirects on the client:
+        # that would apply to every call including the mutating ones, where a
+        # redirect would replay the body at whatever the Location says. GET only,
+        # and the credential is deliberately not carried over — the target is a
+        # different origin and the URL already carries its own authorisation.
+        if method.upper() == "GET" and resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("location")
+            if location:
+                async with httpx.AsyncClient(timeout=120.0) as follower:
+                    resp = await follower.get(location)
+
     # Mailbox reads are filtered against the sender allowlist before the agent
     # sees them. This has to happen for raw callers too — the agent's own tools
     # use raw and call .json() themselves, so filtering only the parsed path would
