@@ -78,9 +78,6 @@ class _State:
         self.rebuild_unfixable = False
         self.deliverable_gaps = []
         self.deliverable_unfixable = False
-        self.superlative_claims = []
-        self.superlative_attempts = 0
-        self.superlative_unfixable = False
         self.verify_attempts = 0
         self.iteration = 1
         self.max_iterations = 12

@@ -29,9 +29,6 @@ class _State:
         self.rebuilt_figures = []
         self.rebuild_unfixable = False
         self.rebuild_attempts = 0
-        self.superlative_claims = []
-        self.superlative_attempts = 0
-        self.superlative_unfixable = False
         self.verify_attempts = 0
         self.max_verify_attempts = 2
         self.iteration = 3
