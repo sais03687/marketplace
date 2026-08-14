@@ -3653,6 +3653,7 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             # instrumentation the first half had.
             **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
+            file_registrar_fn=_register_inbound_file,
             verify_fn=verify_deliverables,
             superlative_fn=check_superlatives,
         )
@@ -4380,6 +4381,7 @@ async def receive_teams_message(request: Request):
             thread_id=thread_id,
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
+            file_registrar_fn=_register_inbound_file,
             verify_fn=verify_deliverables,
             superlative_fn=check_superlatives,
             # Checked, never re-run. Teams is synchronous — the prompt tells the
@@ -4437,6 +4439,7 @@ async def receive_teams_message(request: Request):
                 thread_id=retry_thread_id,
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
                 file_resolver_fn=resolve_sandbox_file,
+                file_registrar_fn=_register_inbound_file,
                 verify_fn=verify_deliverables,
                 superlative_fn=check_superlatives,
                 verify_attempts=0,
@@ -4618,6 +4621,7 @@ async def _handle_message(message: str, context: dict):
             thread_id=thread_id,
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
+            file_registrar_fn=_register_inbound_file,
             verify_fn=verify_deliverables,
             superlative_fn=check_superlatives,
         )
@@ -4956,6 +4960,7 @@ async def _handle_message(message: str, context: dict):
                     # needs what the first attempt was given.
                     **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
                     file_resolver_fn=resolve_sandbox_file,
+                    file_registrar_fn=_register_inbound_file,
                     verify_fn=verify_deliverables,
                     superlative_fn=check_superlatives,
                 )

@@ -326,6 +326,31 @@ async def drive_read_text(item_id: str) -> str:
     return resp.text
 
 
+async def drive_download(item_id: str) -> tuple[str, bytes]:
+    """The raw bytes of a SharePoint file, with its name.
+
+    `drive_read_text` decodes to a string for the model to read. This one does
+    not decode and does not go near the model: the bytes are handed to the
+    platform, which holds them and returns a handle. A 23 MB CSV cannot be read
+    as text into a prompt, and an .xlsx never could be — both can be analysed
+    once the sandbox can open them.
+    """
+    token = await _get_access_token()
+    async with _GraphClient() as client:
+        meta = await client.get(
+            _drive_url(f"items/{item_id}"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        meta.raise_for_status()
+        name = (meta.json() or {}).get("name") or f"{item_id}.bin"
+        resp = await client.get(
+            _drive_url(f"items/{item_id}/content"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp.raise_for_status()
+    return name, resp.content
+
+
 async def drive_delete(item_id: str) -> None:
     """Delete a file or folder from the SharePoint site drive."""
     token = await _get_access_token()

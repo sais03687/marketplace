@@ -28,7 +28,7 @@ does not reach anybody — it silently does nothing and your task stalls.
 | Find out what files exist | `drive_list` first — SharePoint search indexing lags, so `drive_search` may return nothing when the file is there |
 | Read a spreadsheet | `drive_list` → `excel_list_sheets` → `excel_read`. Never guess a sheet name |
 | Read a text/CSV/JSON file | `drive_read_text` |
-| Analyse a dataset | `excel_read` or `drive_read_text`, then `mcp_call` with server `python-sandbox` |
+| Analyse a dataset | `drive_fetch` for the handle, then `mcp_call` with server `python-sandbox` and the handle in `input_files`. Never `drive_read_text` — that puts the file in the conversation and cuts it at 2000 characters |
 | Create a chart or parse a PDF | `mcp_call` with `python-sandbox` |
 | Put a file on SharePoint | Write it to `/tmp/output/` in the python-sandbox, then `drive_upload` with the `file_id` you get back. Uploads only accept a `file_id`. |
 | Update a spreadsheet | `excel_write` (fixed range) or `excel_append` (add rows at the end) |

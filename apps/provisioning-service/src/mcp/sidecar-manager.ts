@@ -27,7 +27,11 @@ const INTEGRATION_PORTS: Record<string, number> = {
 
 /** Resource limits per sidecar type */
 const SIDECAR_LIMITS: Record<string, { memory: number; cpus: number; pids: number }> = {
-  "python-sandbox": { memory: 256 * 1024 * 1024, cpus: 1_000_000_000, pids: 128 },
+  // 768 MB, raised from 256 on 2026-08-13. A 20 MB CSV measured at 82 MB as a
+  // DataFrame and 105 MB peak RSS, so a 23.58 MB file fits in 256 MB for a read
+  // and a groupby and nothing beyond it — DABstep joins that file against others.
+  // Host has ~2.5 GB free; the agent container next to this one has 512 MB.
+  "python-sandbox": { memory: 768 * 1024 * 1024, cpus: 1_000_000_000, pids: 128 },
 };
 
 const DEFAULT_LIMITS = { memory: 256 * 1024 * 1024, cpus: 1_000_000_000, pids: 128 };
@@ -115,7 +119,10 @@ export async function spawnMcpSidecars(
           CapDrop: ["ALL"],
           ReadonlyRootfs: false, // python sandbox needs writable /tmp
           Tmpfs: {
-            "/tmp": "rw,noexec,nosuid,size=64m",
+            // 128 MB, raised from 64. This is where inbound files are staged and
+            // outputs written, and it is a tmpfs — every byte here is RAM out of
+            // the limit above, which is why it is not larger.
+            "/tmp": "rw,noexec,nosuid,size=128m",
           },
           // No port bindings — only reachable via internal Docker network
           NetworkMode: networkName,

@@ -88,6 +88,27 @@ def set_file_resolver(fn) -> None:
     _file_resolver = fn
 
 
+# The same idea pointing the other way, for a file that already exists in the
+# workspace. `drive_read_text` returns a file's content as a string, which the
+# model then holds in its context and which RESULT_CHAR_LIMIT cuts at 2000
+# characters — fine for a note, useless for a dataset. So a workspace file large
+# enough to be worth analysing could not be analysed at all: too big to read,
+# and with no way to reach the sandbox, which is the only thing that can open it.
+#
+# The gap `a82b9c4` closed for an emailed attachment, still open for the more
+# common case — "the data is in the shared folder". The platform downloads the
+# bytes, holds them, and gives the model a handle, exactly as it does for an
+# attachment; the model never sees the content and passes the handle to the
+# sandbox instead.
+_file_registrar = None
+
+
+def set_file_registrar(fn) -> None:
+    """Called by the adapter with a fn(name, bytes) -> handle."""
+    global _file_registrar
+    _file_registrar = fn
+
+
 # Checks the summary about to be sent against the files actually produced, and
 # returns the figures asserted in one but absent from the other. Platform-side
 # for the same reason as the resolver above: it needs the real bytes, and asking
@@ -565,7 +586,7 @@ Produce a JSON response (no markdown fences):
   "plan": "Overall plan for this task (update if needed)",
   "completed": <true if the task is fully done and the final response is ready>,
   "action": {{
-    "type": "send_email | reply_email | inbox_list | inbox_read | inbox_search | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_list | drive_upload | drive_share | drive_create_link | my_drive_list | my_drive_read | my_drive_search | my_drive_upload | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_list | calendar_create | request_decision | none",
+    "type": "send_email | reply_email | inbox_list | inbox_read | inbox_search | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_fetch | drive_list | drive_upload | drive_share | drive_create_link | my_drive_list | my_drive_read | my_drive_search | my_drive_upload | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_list | calendar_create | request_decision | none",
     "params": {{
       // For send_email/reply_email:
       "to": "recipient email",
@@ -622,6 +643,7 @@ Produce a JSON response (no markdown fences):
 | drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
 | drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
 | drive_read_text | Read content of plain text files (.txt, .csv, .md, .json). Do NOT use for .xlsx files. | item_id |
+| drive_fetch | Hand a workspace file to the sandbox without reading it here. Use for ANY file you mean to analyse rather than quote — a dataset, a spreadsheet, anything over a few hundred rows. Returns a handle; pass it in `input_files` to execute_python, or as the file to parse_xlsx/parse_pdf/parse_docx. drive_read_text puts the content in this conversation and is cut at 2000 characters, so it is for reading a note, not for analysing data. | item_id |
 | drive_upload | Upload a file to your SharePoint folder. `content_base64` takes the `file_id` the sandbox returned — never file content. To upload anything, write it to `/tmp/output/` in the python-sandbox first and pass the id you get back. | filename, content_base64, content_type |
 | drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
 | drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
@@ -1435,6 +1457,26 @@ async def execute_action(state: AgentState) -> AgentState:
             content = await _mt.drive_read_text(item_id)
             result_text = content[:2000] if content else "(empty file)"
             state.actions_taken.append(f"Read file: {item_id[:20]}")
+
+        elif action_type == "drive_fetch" and _mt:
+            item_id = params.get("item_id", params.get("id", ""))
+            name, raw = await _mt.drive_download(item_id)
+            handle = _file_registrar(name, raw) if _file_registrar else None
+            if handle:
+                # The handle and the size, never the content. The whole point is
+                # that this file is too big to put in a prompt.
+                result_text = (
+                    f"Fetched {name} ({len(raw):,} bytes). Its handle is {handle} — "
+                    f"pass it in input_files to execute_python, or as the file to "
+                    f"parse_xlsx/parse_pdf/parse_docx. Do not try to read it here."
+                )
+            else:
+                result_text = (
+                    f"Could not take {name} ({len(raw):,} bytes) — it is past the "
+                    f"size the platform will hold. Ask for a smaller extract, or "
+                    f"work from a filtered export."
+                )
+            state.actions_taken.append(f"Fetched file: {name}")
 
         elif action_type == "drive_upload" and _mt:
             filename = params.get("filename", "output.xlsx")
@@ -3133,6 +3175,7 @@ async def run_agent(
     mcp_fn=None,
     graph_fn=None,
     file_resolver_fn=None,
+    file_registrar_fn=None,
     verify_fn=None,
     superlative_fn=None,
     thread_id: str = "",
@@ -3168,6 +3211,8 @@ async def run_agent(
     # Sandbox handles resolve through the adapter; see _resolve_upload_content.
     if file_resolver_fn is not None:
         set_file_resolver(file_resolver_fn)
+    if file_registrar_fn is not None:
+        set_file_registrar(file_registrar_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
     if superlative_fn is not None:
@@ -3242,6 +3287,7 @@ async def resume_agent(
     mcp_fn=None,
     graph_fn=None,
     file_resolver_fn=None,
+    file_registrar_fn=None,
     verify_fn=None,
     superlative_fn=None,
 ) -> dict:
@@ -3271,6 +3317,8 @@ async def resume_agent(
     # Sandbox handles resolve through the adapter; see _resolve_upload_content.
     if file_resolver_fn is not None:
         set_file_resolver(file_resolver_fn)
+    if file_registrar_fn is not None:
+        set_file_registrar(file_registrar_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
     if superlative_fn is not None:
