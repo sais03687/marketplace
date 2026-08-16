@@ -136,6 +136,19 @@ def set_deliverable_verifier(fn) -> None:
     _deliverable_verifier = fn
 
 
+# Reads the superlative claims in the summary — "best", "highest", "worst" —
+# against the columns of the file delivered with them. Same reason as above for
+# living platform-side: it needs the file's real structure, not the model's
+# account of it.
+_ranking_verifier = None
+
+
+def set_ranking_verifier(fn) -> None:
+    """Called by the adapter with an async fn(summary_text) -> list[dict]."""
+    global _ranking_verifier
+    _ranking_verifier = fn
+
+
 # Leading bytes that identify the formats this agent uploads. Used to refuse
 # content that decoded successfully but is plainly not the file it claims to be.
 _FILE_SIGNATURES = {
@@ -405,11 +418,19 @@ class AgentState(BaseModel):
     # was sound in the first place, and a wrong number agrees with itself.
     rebuilt_figures: list = Field(default_factory=list)
     rebuild_attempts: int = 0
+    # Ranking claims — "best", "highest", "worst" — that the delivered file
+    # argues against on its own figures, and how many times they have been handed
+    # back. A third question again: not whether the file backs the reply, nor
+    # whether the arithmetic drifted, but whether a claim about a number survives
+    # the column that number came from.
+    ranking_conflicts: list = Field(default_factory=list)
+    ranking_attempts: int = 0
     # Set once the drift is measured and there is no budget to send the agent
     # back for it. The reply goes out with a note rather than looping.
     rebuild_unfixable: bool = False
     # Set once the last attempt has been spent and the gap survived it.
     deliverable_unfixable: bool = False
+    ranking_unfixable: bool = False
 
     # Output
     result: dict = Field(default_factory=dict)
@@ -1888,6 +1909,35 @@ def route_after_execution(state: AgentState) -> str:
     return "reason_and_act"
 
 
+def _render_ranking_conflicts(conflicts: list, limit: int = 4) -> str:
+    """The disagreement in one sentence, however many columns it spans.
+
+    A claim that names a row rather than a figure is checked against every
+    column the row loses in, because nothing in the file says which column the
+    claim was about. Rendering those one per clause repeats "you call 2026-03
+    the best" three times; the subject is said once and the columns listed after
+    it, which is also the shape of the answer being asked for.
+    """
+    subject = conflicts[0].get("subject") if conflicts else None
+    if subject and all(c.get("subject") == subject for c in conflicts):
+        beats = ", ".join(
+            f"{c.get('beaten_by')} in {c.get('column') or 'another column'}"
+            + (f" ({c.get('row')})" if c.get("row") else "")
+            for c in conflicts[:limit]
+        )
+        mine = ", ".join(str(c.get("value")) for c in conflicts[:limit])
+        return (
+            f"you call {subject} the {conflicts[0].get('word')}, and the file has "
+            f"{beats} — against its own {mine}"
+        )
+    return "; ".join(
+        f"you call {c.get('value')} the {c.get('word')}, but "
+        f"{c.get('column') or 'the same column'} also holds {c.get('beaten_by')}"
+        + (f" ({c.get('row')})" if c.get("row") else "")
+        for c in conflicts[:limit]
+    )
+
+
 async def verify_deliverables(state: AgentState) -> AgentState:
     """Compare the reply about to be sent against the files it describes.
 
@@ -1906,6 +1956,8 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     state.deliverable_gaps = []
     state.rebuilt_figures = []
     state.rebuild_unfixable = False
+    state.ranking_conflicts = []
+    state.ranking_unfixable = False
 
     # Checked before the file check, and against the results rather than the
     # reply, because this is an error in the work itself and not in the write-up.
@@ -1957,6 +2009,53 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     text = (final.get("text") or "").strip() if isinstance(final, dict) else ""
     if not text:
         return state  # nothing asserted yet; finalize's own fallback covers this
+
+    # Between the two: a wrong claim is worse than a missing figure and better
+    # than wrong arithmetic. Checked before the gap check because it can send the
+    # agent back to rewrite the sentence, and the gap check is about that same
+    # sentence.
+    if _ranking_verifier is not None:
+        try:
+            conflicts = await _ranking_verifier(text)
+        except Exception as e:
+            print(f"[agent] Ranking check failed to run ({e}) — sending as-is", flush=True)
+            conflicts = []
+        if conflicts:
+            state.ranking_conflicts = list(conflicts)
+            if state.ranking_attempts >= state.max_verify_attempts:
+                state.ranking_unfixable = True
+                print(
+                    f"[agent] Ranking check: {len(conflicts)} claim(s) the file "
+                    "disagrees with, and no attempts left — delivering with a note",
+                    flush=True,
+                )
+            else:
+                state.ranking_attempts += 1
+                pairs = _render_ranking_conflicts(conflicts)
+                print(
+                    f"[agent] Ranking check: handing back {len(conflicts)} claim(s) "
+                    f"(attempt {state.ranking_attempts}/{state.max_verify_attempts})",
+                    flush=True,
+                )
+                state.context.pop("_wrapping_up", None)
+                state.action_results.append(
+                    "RANKING CHECK — the platform read the file you are about to "
+                    f"send and compared it against the claim in your reply: {pairs}.\n"
+                    "One of these is true, and you need to know which before this "
+                    "goes out:\n"
+                    "1. The claim is wrong. Say what the figures say instead.\n"
+                    "2. You meant a narrower comparison than the column you are "
+                    "quoting — a different metric, or a subset of the rows. Then say "
+                    "which, in the sentence itself, so the reader can see what is "
+                    "being ranked.\n"
+                    "3. The comparison itself is not like-for-like — an average over "
+                    "different numbers of periods ranks the youngest highest whatever "
+                    "the data says. If that is what happened, rank on something every "
+                    "row has.\n"
+                    "This is the file's own figures disagreeing with your sentence, "
+                    "not a style note."
+                )
+                return state
 
     if _deliverable_verifier is None:
         return state
@@ -2044,6 +2143,16 @@ def route_after_verify(state: AgentState) -> str:
     if (
         state.rebuilt_figures
         and not state.rebuild_unfixable
+        and state.iteration < state.max_iterations
+    ):
+        return "reason_and_act"
+
+    # Then a claim the file contradicts, for the same reason in a different
+    # register: a reader acts on "2026-03 is holding up best" without ever
+    # opening the workbook, so a wrong ranking travels further than a wrong cell.
+    if (
+        state.ranking_conflicts
+        and not state.ranking_unfixable
         and state.iteration < state.max_iterations
     ):
         return "reason_and_act"
@@ -2302,6 +2411,45 @@ async def finalize(state: AgentState) -> AgentState:
         print(
             f"[agent] Delivering with a rounded-input note "
             f"({len(state.rebuilt_figures)} figures)",
+            flush=True,
+        )
+
+    # A ranking the file disagrees with, still standing after the hand-backs.
+    # Named as a disagreement rather than an error: the check reads columns, not
+    # meaning, and the sentence may be about a narrower comparison than the one
+    # it can see. What it can say for certain is which figures are in the file,
+    # so it says that and lets the reader judge.
+    if state.ranking_unfixable and state.ranking_conflicts and result_text.strip():
+        c = state.ranking_conflicts[0]
+        if c.get("subject"):
+            # Every column it loses in, not the first — the first is often one
+            # nobody ranks on, and "2026-04 is ahead in Size" alone reads as a
+            # confused caveat rather than a real doubt about the ranking.
+            ahead = ", ".join(
+                f"{x.get('row')} in {x.get('column')}"
+                for x in state.ranking_conflicts[:3] if x.get("row")
+            )
+            middle = (
+                f"I call {c['subject']} the {c.get('word')}, and other rows in "
+                f"the file are ahead of it — {ahead}"
+            )
+        else:
+            where = f" in {c['column']}" if c.get("column") else ""
+            who = f" ({c['row']})" if c.get("row") else ""
+            middle = (
+                f"I call {c.get('value')} the {c.get('word')}, and the file also "
+                f"holds {c.get('beaten_by')}{who}{where}"
+            )
+        result_text = (
+            f"{result_text.rstrip()}\n\n---\n"
+            f"One thing to check before you rely on the ranking above: {middle}. "
+            "Either I am ranking on something narrower than those figures or the "
+            "ranking is wrong — I could not settle it, so please look at the file "
+            "before quoting the comparison."
+        )
+        print(
+            f"[agent] Delivering with a ranking note "
+            f"({len(state.ranking_conflicts)} claim(s))",
             flush=True,
         )
 
@@ -2574,6 +2722,7 @@ _INTERNAL_PREFIXES = (
     # file". A new check must be added here on the day it is written.
     "DELIVERABLE CHECK",
     "ROUNDED-INPUT CHECK",
+    "RANKING CHECK",
 )
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -3249,6 +3398,7 @@ async def run_agent(
     file_resolver_fn=None,
     file_registrar_fn=None,
     file_describer_fn=None,
+    ranking_fn=None,
     verify_fn=None,
     thread_id: str = "",
     verify_attempts: int | None = None,
@@ -3287,6 +3437,8 @@ async def run_agent(
         set_file_registrar(file_registrar_fn)
     if file_describer_fn is not None:
         set_file_describer(file_describer_fn)
+    if ranking_fn is not None:
+        set_ranking_verifier(ranking_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
 
@@ -3361,6 +3513,7 @@ async def resume_agent(
     file_resolver_fn=None,
     file_registrar_fn=None,
     file_describer_fn=None,
+    ranking_fn=None,
     verify_fn=None,
 ) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
@@ -3393,6 +3546,8 @@ async def resume_agent(
         set_file_registrar(file_registrar_fn)
     if file_describer_fn is not None:
         set_file_describer(file_describer_fn)
+    if ranking_fn is not None:
+        set_ranking_verifier(ranking_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
     if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):

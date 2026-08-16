@@ -76,6 +76,9 @@ class _State:
         self.rebuild_attempts = 0
         self.rebuilt_figures = []
         self.rebuild_unfixable = False
+        self.ranking_conflicts = []
+        self.ranking_attempts = 0
+        self.ranking_unfixable = False
         self.deliverable_gaps = []
         self.deliverable_unfixable = False
         self.verify_attempts = 0

@@ -1356,6 +1356,373 @@ async def verify_deliverables(summary_text: str, file_ids: list[str] | None = No
     return missing
 
 
+# ─── Ranking claims, checked against the file ──────────────────────────────────────────────────────
+#
+# The check above asks whether a figure is in the file. This one asks whether a
+# claim made *about* a figure survives the column it came from.
+#
+# Benchmark task T03 on 2026-08-12 built a correct retention triangle — 64/48/40,
+# 65/46.94, 62 — and then reported "2026-03 is holding up best at 62.00%", with
+# 65.00 and 64.00 sitting in the same column of the workbook it attached. It had
+# averaged each cohort over only the months that cohort had reached, so the
+# youngest cohort won by not having decayed yet, and it took the max of that.
+#
+# Every other check in this file verifies internal consistency, and that is why
+# T04 passed while being wrong: prose and file agreed, and both were wrong. This
+# one needs no domain knowledge either — but it does not need consistency to be
+# the answer. "Best is 62.00%" beside a column containing 65.00 is a contradiction
+# on the face of the deliverable, and reading it takes no understanding of what a
+# cohort is.
+#
+# Narrow on purpose. It fires only where the claimed value is itself in a column
+# of the delivered file and that column beats it, and it hands back a question
+# rather than a verdict: the model may have meant a subset, and the check cannot
+# know that.
+
+_RANKS_HIGHEST = (
+    "best", "highest", "largest", "greatest", "strongest", "top", "peak",
+    "maximum", "max", "most", "best-performing", "leading",
+)
+_RANKS_LOWEST = (
+    "worst", "lowest", "smallest", "weakest", "minimum", "min", "least",
+    "poorest", "worst-performing",
+)
+_RANKING_WORD_RE = re.compile(
+    r"\b(" + "|".join(sorted(_RANKS_HIGHEST + _RANKS_LOWEST, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+# "2026-03" is a cohort, not two numbers, and _NUMBER_RE reads it as 2026 and
+# -03. Left in, the label alone pushes a sentence over the enumeration limit
+# below and the real claim is never tested — which is precisely the sentence
+# this check exists for.
+_DATELIKE_RE = re.compile(r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b")
+
+# A row whose label says it summarises the others. Its value beats every
+# individual one by construction, so comparing a claim against it would flag
+# "North is highest at 45,000" for losing to a 120,000 total.
+_SUMMARY_ROW_RE = re.compile(
+    r"\b(total|totals|sum|subtotal|grand|overall|all|average|avg|mean|median|"
+    r"combined|cumulative|aggregate)\b",
+    re.IGNORECASE,
+)
+
+# Beyond this many figures a sentence is a list, not a claim about one of them.
+_MAX_FIGURES_IN_CLAIM = 2
+
+# Header words too generic to tell one column from another.
+_HEADER_STOPWORDS = {
+    "the", "of", "and", "in", "for", "per", "by", "to", "a", "an", "is",
+    "value", "values", "amount", "number", "col", "column", "data",
+}
+
+
+def _claimed_figures(sentence: str) -> list[tuple[str, Decimal, int]]:
+    """Figures a sentence states, as (as-written, value, position).
+
+    Looser than `_summary_figures`: a retention percentage is 62.00 and a
+    margin is 8.5%, both far under the substantive floor that check applies.
+    A decimal point, a percent sign or real magnitude is what separates a
+    claimed figure from "top 5" or "month 1".
+    """
+    cleaned = _DATELIKE_RE.sub(" ", _URL_RE.sub(" ", sentence or ""))
+    out: list[tuple[str, Decimal, int]] = []
+    for m in _NUMBER_RE.finditer(cleaned):
+        raw = m.group(0).rstrip(".,")
+        val = _normalise_number(raw)
+        if val is None:
+            continue
+        pct = cleaned[m.end():m.end() + 1] == "%"
+        has_decimal = "." in raw
+        if not has_decimal and "," not in raw and 1900 <= val <= 2100:
+            continue  # a year
+        if not (has_decimal or pct or abs(val) >= _SUBSTANTIVE_MIN):
+            continue
+        out.append((raw, val, m.start()))
+    return out
+
+
+def _file_grids(parsed: dict) -> list[list[list[str]]]:
+    """Every table in a parsed file, as rows of cell strings."""
+    grids: list[list[list[str]]] = []
+
+    # Only formats that are delimited data to begin with. A PDF's or a Word
+    # document's `text` is prose, and prose split on its commas is a table with
+    # columns nobody wrote — "Revenue was up, 45,000 in Q3" becomes three
+    # fields, two of them fragments of one number. A PDF's real tables come
+    # through `tables` below, which pdfplumber has already found.
+    text = parsed.get("__text__")
+    if isinstance(text, str) and text.strip():
+        rows = [
+            [c.strip() for c in re.split(r"\t|,", line)]
+            for line in text.splitlines() if line.strip()
+        ]
+        # Delimited data is rectangular; prose that happens to contain commas is
+        # not. Keep the rows that agree on a width, and only if most of them do.
+        widths = [len(r) for r in rows]
+        modal = max(set(widths), key=widths.count) if widths else 0
+        if modal > 1 and widths.count(modal) >= max(2, 0.8 * len(rows)):
+            grids.append([r for r in rows if len(r) == modal])
+
+    sheets = parsed.get("sheets")
+    if isinstance(sheets, dict):
+        for rows in sheets.values():
+            if isinstance(rows, list) and rows:
+                grids.append([[str(c) for c in r] for r in rows if isinstance(r, list)])
+
+    for table in parsed.get("tables") or []:  # parse_pdf
+        data = table.get("data") if isinstance(table, dict) else table
+        if isinstance(data, list) and data:
+            grids.append([
+                [("" if c is None else str(c)) for c in r]
+                for r in data if isinstance(r, list)
+            ])
+
+    return [g for g in grids if len(g) > 1]
+
+
+def _grid_columns(grid: list[list[str]]) -> list[tuple[str, list[tuple[Decimal, str]]]]:
+    """Numeric columns of one table, as (header, [(value, row label)])."""
+    width = max(len(r) for r in grid)
+    header_row = grid[0] if not _claimed_figures(" ".join(grid[0])) else []
+    body = grid[1:] if header_row else grid
+
+    columns: list[tuple[str, list[tuple[Decimal, str]]]] = []
+    for i in range(width):
+        header = header_row[i].strip() if i < len(header_row) else ""
+        cells: list[tuple[Decimal, str]] = []
+        for row in body:
+            if i >= len(row):
+                continue
+            val = _normalise_number(str(row[i]).strip().rstrip("%"))
+            if val is None:
+                continue
+            # The row's own label — the first cell in it that is not a number.
+            label = next(
+                (str(c).strip() for c in row
+                 if str(c).strip() and _normalise_number(str(c).strip().rstrip("%")) is None),
+                "",
+            )
+            if _SUMMARY_ROW_RE.search(label):
+                continue  # a total or an average, which outranks by construction
+            cells.append((val, label))
+        if len(cells) > 1:
+            columns.append((header, cells))
+    return columns
+
+
+def _column_named_in(header: str, sentence: str) -> bool:
+    """Does the sentence mention this column by name?"""
+    tokens = [t for t in re.split(r"[^0-9A-Za-z]+", header.lower())
+              if len(t) > 1 and t not in _HEADER_STOPWORDS]
+    return any(re.search(rf"\b{re.escape(t)}\b", sentence, re.IGNORECASE) for t in tokens)
+
+
+def _conflicts_for_named_row(
+    sentence: str,
+    sup: re.Match,
+    columns: list[tuple[str, list[tuple[Decimal, str]]]],
+    want_high: bool,
+    limit: int = 3,
+) -> list[dict]:
+    """A superlative that names a row rather than quoting a figure.
+
+    "The best performing cohort is 2026-03" is the most natural way to say it
+    and carries no number at all, so the figure path above never sees it. T03 on
+    2026-08-13 said exactly that, over a workbook whose M1 column has 2026-02 at
+    65 above 2026-03's 62 — the claim this whole check was built for, phrased in
+    the one shape it could not read.
+
+    Unlike the figure form, this cannot tell a right claim from a wrong one. The
+    claimed value pins down which column is meant; a bare row name does not, and
+    in that same workbook *every* cohort is beaten somewhere — 2026-03 loses on
+    M1, and 2026-02, which is the defensible answer, loses on the average of
+    differing numbers of months. So this does not say the ranking is wrong. It
+    says the file supports more than one ranking and the sentence does not say
+    which, and it asks for the metric to be named. That is the right response to
+    both claims: the defensible answer here is "2026-02 at M1, the only month
+    every cohort has reached", and naming the metric is what makes it defensible.
+
+    Every column the row is beaten in, not the first. The first is often one
+    nobody would rank on — in that same workbook it is `Size`, where 2026-04's
+    700 beats 2026-03's 450 and means nothing about performance. There is no
+    honest way to tell a metric from a given input here, so the answer is to
+    show them all: "Size has 700 above its 450; M1_retention% has 65 above its
+    62" is answerable in one sentence, and the reply that comes back names the
+    metric, which is the whole object.
+    """
+    mentioned: list[str] = []
+    for _, cells in columns:
+        for _, label in cells:
+            if len(label) > 1 and re.search(
+                rf"(?<!\w){re.escape(label)}(?!\w)", sentence, re.IGNORECASE
+            ):
+                mentioned.append(label)
+    if not mentioned:
+        return []
+
+    # When several rows are named — "2026-03, ahead of 2026-01" — the superlative
+    # is about the nearest one.
+    lowered = sentence.lower()
+    subject = min(set(mentioned), key=lambda l: abs(lowered.find(l.lower()) - sup.start()))
+
+    out: list[dict] = []
+    named = [c for c in columns if _column_named_in(c[0], sentence)]
+    for header, cells in (named or columns):
+        mine = next((v for v, label in cells if label == subject), None)
+        if mine is None:
+            continue
+        beaters = [(v, l) for v, l in cells
+                   if l != subject and (v > mine if want_high else v < mine)]
+        if not beaters:
+            continue
+        best = max(beaters) if want_high else min(beaters)
+        out.append({
+            "claim": sentence.strip()[:200],
+            "word": sup.group(1).lower(),
+            "subject": subject[:60],
+            "value": f"{mine.normalize():f}",
+            "beaten_by": f"{best[0].normalize():f}",
+            "row": best[1][:60],
+            "column": header[:60],
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _ranking_conflicts(summary_text: str, grids: list[list[list[str]]]) -> list[dict]:
+    """Ranking claims, checked against the file the delivered file contradicts on its own figures."""
+    columns: list[tuple[str, list[tuple[Decimal, str]]]] = []
+    for grid in grids:
+        columns.extend(_grid_columns(grid))
+    if not columns:
+        return []
+
+    conflicts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for sentence in re.split(r"(?<=[.!?;:])\s+|\n+", summary_text or ""):
+        # "at least 62.00%" and "at most 40 units" are bounds, not rankings, and
+        # they are ordinary enough in a summary that reading them as claims would
+        # make this check noise. Skipped word by word rather than sentence by
+        # sentence: "retention held at least 60%, and 2026-03 is best at 62.00%"
+        # still has a claim in it.
+        sup = next(
+            (m for m in _RANKING_WORD_RE.finditer(sentence)
+             if not (m.group(1).lower() in ("least", "most")
+                     and re.search(r"\bat\s+$", sentence[:m.start()], re.IGNORECASE))),
+            None,
+        )
+        if not sup:
+            continue
+        want_high = sup.group(1).lower() in _RANKS_HIGHEST
+        figures = _claimed_figures(sentence)
+        if len(figures) > _MAX_FIGURES_IN_CLAIM:
+            continue  # an enumeration is not a claim about any one of them
+
+        if not figures:
+            # No figure to read it against, but it may name a row instead.
+            for conflict in _conflicts_for_named_row(sentence, sup, columns, want_high):
+                key = (conflict["subject"], conflict["column"], conflict["beaten_by"])
+                if key not in seen:
+                    seen.add(key)
+                    conflicts.append(conflict)
+            continue
+
+        # The figure the superlative attaches to: the first one after the word,
+        # or failing that the last one before it.
+        after = [f for f in figures if f[2] > sup.start()]
+        raw, val, _ = after[0] if after else figures[-1]
+
+        places = len(raw.split(".")[1]) if "." in raw else 0
+        quantum = Decimal(1).scaleb(-places)
+        try:
+            claimed = val.quantize(quantum)
+        except InvalidOperation:
+            continue
+
+        # A figure sits in more than one column of a triangle — 62.00 is both
+        # 2026-03's M1 and its average — and the two disagree about what "best"
+        # means. Where the sentence names a column, that is the one it is a
+        # claim about: "the weakest at M1 is 62.00%" is true of M1 and false of
+        # the averages beside it, and reading it against the averages would hand
+        # back a correct sentence as an error. Costs the case where the model
+        # names the column that flatters it; that claim is consistent with its
+        # own file, and consistency is not what this check can see through.
+        named = [c for c in columns if _column_named_in(c[0], sentence)]
+        for header, cells in (named or columns):
+            rounded = []
+            for cell_val, label in cells:
+                try:
+                    rounded.append((cell_val.quantize(quantum), label))
+                except InvalidOperation:
+                    continue
+            if not any(v == claimed for v, _ in rounded):
+                continue  # the claim is not about this column
+            beaters = [(v, l) for v, l in rounded if (v > claimed if want_high else v < claimed)]
+            if not beaters:
+                continue
+            best = max(beaters) if want_high else min(beaters)
+            key = (raw, str(best[0]))
+            if key in seen:
+                continue
+            seen.add(key)
+            conflicts.append({
+                "claim": sentence.strip()[:200],
+                "word": sup.group(1).lower(),
+                "value": raw,
+                "beaten_by": f"{best[0].normalize():f}",
+                "row": best[1][:60],
+                "column": header[:60],
+            })
+            break  # one column is enough to raise the question
+
+    return conflicts
+
+
+async def check_rankings_against_file(summary_text: str, file_ids: list[str] | None = None) -> list[dict]:
+    """Ranking claims, checked against the file in the summary that the delivered file argues against.
+
+    Empty means nothing to raise — including when there is no table to read,
+    since an unparseable file is not evidence of a wrong claim.
+    """
+    if file_ids is None:
+        file_ids = list(current_run_files())
+    if not summary_text or not file_ids or not _RANKING_WORD_RE.search(summary_text):
+        return []
+
+    grids: list[list[list[str]]] = []
+    for fid in file_ids:
+        entry = _SANDBOX_FILES.get((fid or "").strip())
+        if not entry:
+            continue
+        parsed = await _parsed_file(entry["name"], entry["bytes"])
+        if parsed:
+            grids.extend(_file_grids(parsed))
+
+    conflicts = _ranking_conflicts(summary_text, grids)
+    if conflicts:
+        # Logged in full, deliberately. This check was deleted on 2026-08-16 for
+        # firing zero times in 44 tasks, and restored hours later when it would
+        # have caught T03 claiming 2026-03 the best cohort at 62.00% with 65 and
+        # 64 in the same column. The deletion reasoning was wrong in a specific
+        # way: a check aimed at a rare, expensive failure cannot be judged by its
+        # firing rate over a window in which that failure did not occur.
+        #
+        # So the next decision about it gets evidence instead of judgement —
+        # every fire, what was claimed, and what the file held.
+        print(
+            f"[ranking-check] FIRED on {len(conflicts)} claim(s): "
+            + "; ".join(
+                f"{c.get('subject') or c.get('value')} called {c['word']}, "
+                f"{c['column']} holds {c['beaten_by']} ({c['row']})"
+                for c in conflicts[:4]
+            ),
+            flush=True,
+        )
+    return conflicts
+
+
 _CONTENT_TYPES = {
     "png": "image/png",
     "jpg": "image/jpeg",
@@ -3746,6 +4113,7 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             file_registrar_fn=_register_inbound_file,
             file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
+            ranking_fn=check_rankings_against_file,
         )
     except Exception as e:
         print(f"[adapter] resume_agent failed: {e}", flush=True)
@@ -4520,6 +4888,7 @@ async def receive_teams_message(request: Request):
             file_registrar_fn=_register_inbound_file,
             file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
+            ranking_fn=check_rankings_against_file,
             # Checked, never re-run. Teams is synchronous — the prompt tells the
             # agent someone is waiting in real time — so a hand-back would buy
             # correctness with two extra model turns of silence in a chat
@@ -4578,6 +4947,7 @@ async def receive_teams_message(request: Request):
                 file_registrar_fn=_register_inbound_file,
                 file_describer_fn=describe_file_shape,
                 verify_fn=verify_deliverables,
+                ranking_fn=check_rankings_against_file,
                 verify_attempts=0,
             )
             # Check if the retry hit an interrupt (blocked action)
@@ -4760,6 +5130,7 @@ async def _handle_message(message: str, context: dict):
             file_registrar_fn=_register_inbound_file,
             file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
+            ranking_fn=check_rankings_against_file,
         )
 
         if not isinstance(result, dict):
@@ -5099,6 +5470,7 @@ async def _handle_message(message: str, context: dict):
                     file_registrar_fn=_register_inbound_file,
                     file_describer_fn=describe_file_shape,
                     verify_fn=verify_deliverables,
+                    ranking_fn=check_rankings_against_file,
                     )
                 # Check if the retry hit an interrupt (blocked action)
                 if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
