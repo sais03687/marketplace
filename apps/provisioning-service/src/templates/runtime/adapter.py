@@ -16,6 +16,7 @@ import time
 import asyncio
 import contextvars
 import hashlib
+import io
 import traceback
 from datetime import datetime, timezone
 from typing import Any
@@ -663,6 +664,136 @@ def resolve_sandbox_file(ref: str) -> bytes | None:
     """Bytes for a handle from _register_sandbox_files, or None if it is not one."""
     entry = _SANDBOX_FILES.get((ref or "").strip())
     return entry["bytes"] if entry else None
+
+
+# How much of a file is read to describe it. Enough to characterise the columns
+# of anything realistic, small enough that a 24 MB CSV costs milliseconds.
+_PROFILE_SAMPLE_BYTES = 2 * 1024 * 1024
+_PROFILE_SAMPLE_ROWS = 400
+_PROFILE_MAX_FIELDS = 40
+
+
+def _profile_csv(name: str, raw: bytes) -> str:
+    import csv as _csv
+
+    head = raw[:_PROFILE_SAMPLE_BYTES]
+    text = head.decode("utf-8", errors="replace")
+    # The sample almost certainly ends mid-row. Drop the tail, or every file
+    # larger than the sample gets a ragged-row warning about damage this
+    # function did itself — which is worse than saying nothing, because it
+    # sends the agent hunting a defect that is not there.
+    if len(head) < len(raw):
+        cut = text.rfind("\n")
+        if cut > 0:
+            text = text[:cut + 1]
+    rows = [r for r in _csv.reader(io.StringIO(text)) if r]
+    if not rows:
+        return f"{name}: empty or unreadable as CSV"
+
+    header = rows[0]
+    body = rows[1:]
+    partial = len(head) < len(raw)
+    out = [f"{name}: CSV, {len(header)} columns, "
+           + (f"first {len(body):,} rows sampled of a larger file"
+              if partial else f"{len(body):,} rows")]
+
+    bad = next((i + 2 for i, r in enumerate(body) if len(r) != len(header)), None)
+    if bad:
+        out.append(
+            f"  !! RAGGED: the header has {len(header)} fields but row {bad} has "
+            f"{len(body[bad - 2])}. A strict parser will refuse this file — read it "
+            f"with on_bad_lines set, or fix the row, and say which you did."
+        )
+
+    for i, col in enumerate(header[:_PROFILE_MAX_FIELDS]):
+        vals = [r[i] for r in body[:_PROFILE_SAMPLE_ROWS] if len(r) > i and r[i] != ""]
+        if not vals:
+            out.append(f"  {col!r}: no values in the sample")
+            continue
+        numeric = sum(1 for v in vals[:100]
+                      if v.replace(".", "", 1).replace("-", "", 1).isdigit())
+        kind = "number" if numeric > len(vals[:100]) * 0.8 else "text"
+        distinct = sorted(set(vals))
+        note = (f"; {len(distinct)} distinct: {distinct[:6]}"
+                if len(distinct) <= 8 else f"; {len(distinct)} distinct in the sample")
+        out.append(f"  {col!r}: {kind}, e.g. {vals[:3]}{note}")
+    if len(header) > _PROFILE_MAX_FIELDS:
+        out.append(f"  … and {len(header) - _PROFILE_MAX_FIELDS} more columns")
+    return "\n".join(out)
+
+
+def _profile_json(name: str, raw: bytes) -> str:
+    try:
+        doc = json.loads(raw)
+    except Exception as exc:
+        return f"{name}: not valid JSON ({type(exc).__name__})"
+
+    if not (isinstance(doc, list) and doc and isinstance(doc[0], dict)):
+        kind = type(doc).__name__
+        size = f", {len(doc)} entries" if isinstance(doc, (list, dict)) else ""
+        return f"{name}: JSON {kind}{size}"
+
+    sample = [r for r in doc[:_PROFILE_SAMPLE_ROWS] if isinstance(r, dict)]
+    out = [f"{name}: JSON, {len(doc):,} records. Fields:"]
+    for key in list(doc[0])[:_PROFILE_MAX_FIELDS]:
+        vals = [r.get(key) for r in sample]
+        kinds = {type(v).__name__ for v in vals}
+        if "list" in kinds:
+            # The one that cost three tasks: a field holding a list will never
+            # equal a scalar, and an equality test against it silently matches
+            # nothing at all.
+            inner = sorted({type(x).__name__ for v in vals if isinstance(v, list) for x in v})
+            example = next((v for v in vals if isinstance(v, list) and v), [])
+            empty = sum(1 for v in vals if v == [])
+            out.append(
+                f"  {key}: LIST of {'/'.join(inner) or 'nothing'} — e.g. {example[:4]}; "
+                f"{empty} of {len(vals)} sampled are empty. Test membership, never "
+                f"equality."
+            )
+        else:
+            example = next((v for v in vals if v is not None), None)
+            nulls = sum(1 for v in vals if v is None)
+            out.append(
+                f"  {key}: {'/'.join(sorted(kinds - {'NoneType'})) or 'always null'} — "
+                f"e.g. {example!r}; {nulls} of {len(vals)} sampled are null"
+            )
+    if len(doc[0]) > _PROFILE_MAX_FIELDS:
+        out.append(f"  … and {len(doc[0]) - _PROFILE_MAX_FIELDS} more fields")
+    return "\n".join(out)
+
+
+def describe_file_shape(name: str, raw: bytes) -> str:
+    """What is actually in this file, before anyone writes code against it.
+
+    The most repeated failure in this agent's history is code written against an
+    assumed shape rather than an observed one: a ragged row that made pandas
+    refuse the file, `KeyError: 'merchant_name'` where the column is `merchant`,
+    a header of `Month, North` parsed as the column `" North"`, `"Acme Corp "`
+    and `"Acme Corp"` counted as two customers, and — three times in one
+    benchmark — an equality test against a field holding a list, which matches
+    nothing and returns an empty answer that looks like a finding.
+
+    None of that is a capability gap. Handed the record structure directly, the
+    model we run writes correct list-handling code, and so do the two frontier
+    models it was compared against. What it lacks is the structure, so the
+    platform supplies it: it already holds the bytes at the moment it hands out
+    a handle, and this is the cheapest thing it can do with them.
+
+    Descriptive, never authoritative. It reads a sample, and it says so, because
+    "5 distinct merchants" is a fact about the first 400 rows and not a promise
+    about the file.
+    """
+    try:
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext == "json":
+            return _profile_json(name, raw)
+        if ext in ("csv", "tsv", "txt"):
+            return _profile_csv(name, raw)
+        return ""
+    except Exception as exc:
+        # A description that fails must never cost the file it describes.
+        print(f"[adapter] Could not profile {name}: {type(exc).__name__}", flush=True)
+        return ""
 
 
 def _register_inbound_file(name: str, raw: bytes) -> str | None:
@@ -3558,6 +3689,7 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
             file_registrar_fn=_register_inbound_file,
+            file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
         )
     except Exception as e:
@@ -4051,9 +4183,11 @@ def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
             handle = _register_inbound_file(safe_name, raw)
             if handle:
                 handles += 1
-                lines.append(
-                    f"- {name} ({ctype}, {len(raw)} bytes) — handle: {handle}"
-                )
+                shape = describe_file_shape(safe_name, raw)
+                described = f"- {name} ({ctype}, {len(raw)} bytes) — handle: {handle}"
+                if shape:
+                    described += "\n" + shape
+                lines.append(described)
             else:
                 why = (
                     f"larger than the {_ATTACHMENT_HANDLE_LIMIT // (1024 * 1024)}MB limit"
@@ -4329,6 +4463,7 @@ async def receive_teams_message(request: Request):
             **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
             file_registrar_fn=_register_inbound_file,
+            file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
             # Checked, never re-run. Teams is synchronous — the prompt tells the
             # agent someone is waiting in real time — so a hand-back would buy
@@ -4386,6 +4521,7 @@ async def receive_teams_message(request: Request):
                 **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
                 file_resolver_fn=resolve_sandbox_file,
                 file_registrar_fn=_register_inbound_file,
+                file_describer_fn=describe_file_shape,
                 verify_fn=verify_deliverables,
                 verify_attempts=0,
             )
@@ -4567,6 +4703,7 @@ async def _handle_message(message: str, context: dict):
             **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
             file_resolver_fn=resolve_sandbox_file,
             file_registrar_fn=_register_inbound_file,
+            file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
         )
 
@@ -4905,6 +5042,7 @@ async def _handle_message(message: str, context: dict):
                     **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
                     file_resolver_fn=resolve_sandbox_file,
                     file_registrar_fn=_register_inbound_file,
+                    file_describer_fn=describe_file_shape,
                     verify_fn=verify_deliverables,
                     )
                 # Check if the retry hit an interrupt (blocked action)

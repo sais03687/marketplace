@@ -109,6 +109,19 @@ def set_file_registrar(fn) -> None:
     _file_registrar = fn
 
 
+# What is in the file, handed over with the handle so the first line of code is
+# written against an observed shape rather than an assumed one. Platform-side
+# because it needs the bytes, and because it must not depend on the model
+# remembering to look.
+_file_describer = None
+
+
+def set_file_describer(fn) -> None:
+    """Called by the adapter with a fn(name, bytes) -> str description."""
+    global _file_describer
+    _file_describer = fn
+
+
 # Checks the summary about to be sent against the files actually produced, and
 # returns the figures asserted in one but absent from the other. Platform-side
 # for the same reason as the resolver above: it needs the real bytes, and asking
@@ -1596,15 +1609,20 @@ async def execute_action(state: AgentState) -> AgentState:
                     flush=True,
                 )
                 if handle:
-                    fetched.append((name, len(raw), handle))
+                    # The shape travels with the handle, so the first line of
+                    # code is written against an observed file rather than an
+                    # assumed one.
+                    shape = _file_describer(name, raw) if _file_describer else ""
+                    fetched.append((name, len(raw), handle, shape))
                 else:
                     failed.append(
                         f"{name} ({len(raw):,} bytes — past the size the platform holds)"
                     )
 
             if fetched:
-                lines = "\n".join(
-                    f"- {n} ({size:,} bytes) → {h}" for n, size, h in fetched
+                lines = "\n\n".join(
+                    f"- {n} ({size:,} bytes) → {h}" + (f"\n{shape}" if shape else "")
+                    for n, size, h, shape in fetched
                 )
                 # Names, because the sandbox now takes those too, and a name is
                 # the thing the model will already have written into its code.
@@ -1619,7 +1637,7 @@ async def execute_action(state: AgentState) -> AgentState:
             if failed:
                 result_text += "\n\nCould not fetch: " + "; ".join(failed)
             state.actions_taken.append(
-                "Fetched " + ", ".join(n for n, _, _ in fetched) if fetched
+                "Fetched " + ", ".join(n for n, _, _, _ in fetched) if fetched
                 else "Fetched no files"
             )
 
@@ -3230,6 +3248,7 @@ async def run_agent(
     graph_fn=None,
     file_resolver_fn=None,
     file_registrar_fn=None,
+    file_describer_fn=None,
     verify_fn=None,
     thread_id: str = "",
     verify_attempts: int | None = None,
@@ -3266,6 +3285,8 @@ async def run_agent(
         set_file_resolver(file_resolver_fn)
     if file_registrar_fn is not None:
         set_file_registrar(file_registrar_fn)
+    if file_describer_fn is not None:
+        set_file_describer(file_describer_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
 
@@ -3339,6 +3360,7 @@ async def resume_agent(
     graph_fn=None,
     file_resolver_fn=None,
     file_registrar_fn=None,
+    file_describer_fn=None,
     verify_fn=None,
 ) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
@@ -3369,6 +3391,8 @@ async def resume_agent(
         set_file_resolver(file_resolver_fn)
     if file_registrar_fn is not None:
         set_file_registrar(file_registrar_fn)
+    if file_describer_fn is not None:
+        set_file_describer(file_describer_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
     if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):
