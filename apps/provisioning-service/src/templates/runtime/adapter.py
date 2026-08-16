@@ -3602,8 +3602,17 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
     reply_text = result.get("text", "")
     action = result.get("action", "none")
 
+    # Composed text is the reply, whatever the action field says.
+    #
+    # This used to require action to be send_email or reply_email, so a run that
+    # wrote its answer and labelled it action=none fell through to the last
+    # action result below — a raw tool envelope with a tick in front of it —
+    # while the actual reply sat unused in result["text"]. Degraded rather than
+    # silent, which is why it outlived the email version of the same bug.
+    if not reply_text:
+        reply_text = result.get("text", "") or reply_text
     if not reply_text and action in ("send_email", "reply_email"):
-        reply_text = result.get("text", "") or "Action completed successfully."
+        reply_text = "Action completed successfully."
 
     # Include action results in the reply (e.g., written data readback)
     action_results = result.get("action_results", [])
@@ -3800,10 +3809,45 @@ async def _deliver_email_result(
             "REJECTED": f"[{AGENT_NAME}] Action rejected — nothing was done",
             "EXPIRED": f"[{AGENT_NAME}] Action expired without a decision",
         }.get(decided, f"[{AGENT_NAME}] Approved action completed")
-        if manager_to:
+
+        # The requester first, and only then the manager.
+        #
+        # This branch used to send `reply_text` to the manager alone, on the
+        # stated grounds that the deliverable "went to the requester with its
+        # files". That is true of the reply_email branch above it and false
+        # here: on action=none nothing at all reached the person who asked.
+        # They wrote in, a human approved or rejected something on their
+        # behalf, and the only account of it went to a third party.
+        #
+        # Same family as the composed reply `_set_reply` was discarding, and
+        # the fourth instance this month of finished work not reaching the one
+        # person waiting for it.
+        requester = _extract_email(ctx.get("sender", ""))
+        if requester and reply_text.strip():
             try:
-                # notice: a copy for the manager of what was decided, not the
-                # deliverable itself — that went to the requester with its files.
+                await reply_email(
+                    message_id=ctx.get("message_id", ""),
+                    text=reply_text,
+                    fallback_to=requester,
+                    fallback_subject=ctx.get("subject", ""),
+                    fallback_thread_id=ctx.get("thread_id"),
+                    # Whatever the run built before the gate travels with it.
+                    attachments=run_attachments(
+                        request=ctx.get("original_message", "") or reply_text,
+                        subject=ctx.get("subject", ""),
+                    ) or None,
+                )
+                print(f"[adapter] Post-resume: told {requester} the outcome", flush=True)
+            except Exception as e:
+                print(f"[adapter] Post-resume reply to requester failed: {e}", flush=True)
+        elif requester:
+            print("[adapter] Post-resume: nothing composed, requester not written to",
+                  flush=True)
+
+        if manager_to and manager_to != requester:
+            try:
+                # notice: the manager's audit copy of a decision they made. The
+                # requester has already been answered above.
                 await send_email(
                     to=manager_to,
                     subject=headline,

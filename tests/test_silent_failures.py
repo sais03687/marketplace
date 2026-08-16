@@ -20,6 +20,7 @@ out about it for a day. The tests below cover both — the missing parameter, an
 the guarantee that whatever else breaks, the sender is told.
 """
 import ast
+import io
 import asyncio
 import inspect
 from pathlib import Path
@@ -103,17 +104,46 @@ def test_action_none_notifies_the_manager_of_the_real_decision(
         {"status": status},
     ))
 
-    assert len(sent) == 1, "the manager was told nothing"
-    kind, kwargs = sent[0]
-    assert kind == "send"
-    assert expected in kwargs["subject"].lower()
+    # Two messages now, and the order is the point: the person who asked hears
+    # first, the manager gets the audit copy of their own decision. This branch
+    # used to write to the manager alone, so a requester whose request was
+    # approved or rejected on their behalf heard nothing at all.
+    kinds = [k for k, _ in sent]
+    assert "reply" in kinds, "the requester was told nothing"
+    assert "send" in kinds, "the manager was told nothing"
+
+    to_requester = next(kw for k, kw in sent if k == "reply")
+    assert to_requester["fallback_to"] == "sai@acme.com"
+    assert "Retention triangle attached." in to_requester["text"]
+
+    to_manager = next(kw for k, kw in sent if k == "send")
+    assert to_manager["to"] == "manager@acme.com"
+    assert expected in to_manager["subject"].lower()
 
 
 def test_a_missing_resolution_still_delivers(sent, monkeypatch):
     # Nothing here should be load-bearing enough to lose the message over.
     monkeypatch.setattr(adapter, "_manager_email", lambda: "manager@acme.com")
     asyncio.run(adapter._deliver_email_result("done", {"action": "none"}, CTX, None))
-    assert len(sent) == 1
+    assert [k for k, _ in sent] == ["reply", "send"], (
+        "requester then manager, even with no resolution to report"
+    )
+
+
+def test_the_requester_is_not_written_to_twice_when_they_are_the_manager(sent, monkeypatch):
+    # A one-person tenant: the same address should get the answer, not the
+    # answer and an audit copy of their own decision.
+    monkeypatch.setattr(adapter, "_manager_email", lambda: "sai@acme.com")
+    asyncio.run(adapter._deliver_email_result("done", {"action": "none"}, CTX, None))
+    assert [k for k, _ in sent] == ["reply"]
+
+
+def test_nothing_composed_means_nothing_claimed(sent, monkeypatch):
+    # An empty reply is not an answer. Say nothing to the requester rather than
+    # send them a blank message, but still leave the manager their record.
+    monkeypatch.setattr(adapter, "_manager_email", lambda: "manager@acme.com")
+    asyncio.run(adapter._deliver_email_result("   ", {"action": "none"}, CTX, {"status": "REJECTED"}))
+    assert [k for k, _ in sent] == ["send"]
 
 
 # ── the reason it went unnoticed: a crash meant silence ─────────────────────
@@ -191,3 +221,30 @@ def test_the_handler_of_last_resort_is_wired_to_the_catch_all():
         )
     ]
     assert notified, "no catch-all in _handle_message tells the sender anything"
+
+
+# ── the same loss on the chat path ─────────────────────────────────────────
+
+def test_the_chat_reply_is_the_composed_text_not_the_last_tool_result():
+    """Degraded rather than silent, which is why it outlived the email version.
+
+    `_resume_and_deliver` took `result["text"]` only when the action said
+    send_email or reply_email. A run that wrote its answer and labelled it
+    action=none fell through to the last action result — a raw tool envelope
+    with a tick in front of it — while the reply sat unused in the same dict.
+
+    Asserted against the source because the composition sits inside a 140-line
+    resume path that needs an approval, a checkpoint and a live graph to reach;
+    the condition is the whole of the fix and it is one line.
+    """
+    src = io.open(RUNTIME, encoding="utf-8").read()
+    i = src.index("Composed text is the reply, whatever the action field says")
+    block = src[i:i + 700]
+    assert "if not reply_text:" in block, (
+        "composed text is gated on the action again; a reply labelled "
+        "action=none will be replaced by a tool envelope"
+    )
+    # The old gate must not be what decides whether the text is used.
+    first = block.index("reply_text = result.get")
+    gate = block[:first]
+    assert 'action in ("send_email", "reply_email")' not in gate
