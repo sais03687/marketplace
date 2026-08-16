@@ -153,3 +153,76 @@ def test_the_describer_is_injected_at_every_call_site():
         src.count("file_registrar_fn=_register_inbound_file"), (
         "a workspace file can be fetched somewhere that cannot describe it"
     )
+
+
+# ── data pasted into the message, not attached ─────────────────────────────
+
+T03_EMAIL = """Hi,
+
+Signup cohorts and how many were still active in each later month:
+
+Cohort,Size,M1_retained,M2_retained,M3_retained
+2026-01,500,320,240,200
+2026-02,620,403,291,
+2026-03,450,279,,
+2026-04,700,,,,
+
+Build me the retention triangle as percentages, and say which cohort is
+holding up best. Workbook with the triangle and a chart.
+
+Thanks,
+Sai"""
+
+
+def test_the_ragged_row_that_cost_t03_three_runs_is_caught_in_the_body():
+    # The profile existed all week and only ran on files. T03 pastes its data
+    # into the message, so the one thing that would have saved it was reachable
+    # only by attaching the same bytes.
+    out = adapter._describe_pasted_data(T03_EMAIL)
+    assert "RAGGED" in out
+    assert "6" in out and "5 fields" in out
+
+
+def test_the_columns_are_named_so_code_is_written_against_real_ones():
+    out = adapter._describe_pasted_data(T03_EMAIL)
+    for col in ("Cohort", "Size", "M1_retained"):
+        assert col in out
+
+
+def test_prose_with_commas_is_not_a_table():
+    prose = ("Hi Sai,\n\nThanks for the note, and for the update on Tuesday.\n"
+             "We spoke, at length, about the revenue figures, and I think,\n"
+             "on balance, we agree.\n\nRegards,\nBen")
+    assert adapter._describe_pasted_data(prose) == ""
+
+
+def test_a_signature_block_is_not_a_table():
+    sig = ("Thanks,\nSai\n\nSai Suram, Director, Operations\n"
+           "Acme Corp, 12 High St, London\n")
+    assert adapter._describe_pasted_data(sig) == ""
+
+
+def test_a_message_with_no_data_says_nothing():
+    assert adapter._describe_pasted_data("Can you send me last quarter's numbers?") == ""
+
+
+def test_a_short_run_of_lines_is_not_enough():
+    # Two or three comma'd lines happen in ordinary writing; four agreeing on a
+    # field count do not.
+    assert adapter._describe_pasted_data("a,b\n1,2\n3,4\n") == ""
+
+
+def test_the_longest_table_wins_when_there_are_several():
+    text = ("x,y\n1,2\n3,4\n5,6\n\nsome prose here\n\n"
+            "a,b,c\n1,2,3\n4,5,6\n7,8,9\n10,11,12\n")
+    out = adapter._describe_pasted_data(text)
+    assert "3 columns" in out
+
+
+def test_the_body_description_reaches_the_agent():
+    import io as _io
+    from pathlib import Path
+    src = _io.open(Path(adapter.__file__), encoding="utf-8").read()
+    assert "_describe_pasted_data(text)" in src, (
+        "pasted data is described but never added to the message the agent reads"
+    )

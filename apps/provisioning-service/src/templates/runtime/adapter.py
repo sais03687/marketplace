@@ -762,6 +762,61 @@ def _profile_json(name: str, raw: bytes) -> str:
     return "\n".join(out)
 
 
+# A pasted table has to be more than "some lines with commas in them", or every
+# ordinary sentence becomes a data set. Four rows agreeing on a field count is
+# the bar, which prose does not clear by accident.
+_PASTED_MIN_ROWS = 4
+_PASTED_MIN_FIELDS = 2
+
+
+def _find_pasted_table(text: str) -> str | None:
+    """The largest run of consecutive delimited lines in a message, or None."""
+    best: list[str] = []
+    current: list[str] = []
+    width = 0
+
+    def _fields(line: str) -> int:
+        return max(line.count(","), line.count("\t")) + 1
+
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        n = _fields(stripped) if stripped else 0
+        if stripped and n >= _PASTED_MIN_FIELDS and (width == 0 or n == width):
+            width = n
+            current.append(stripped)
+            continue
+        # A row with a different field count may still belong: a ragged row is
+        # exactly what this exists to find. Keep it if the run is established
+        # and the line still looks delimited.
+        if stripped and current and n >= _PASTED_MIN_FIELDS:
+            current.append(stripped)
+            continue
+        if len(current) > len(best):
+            best = current
+        current, width = [], 0
+    if len(current) > len(best):
+        best = current
+    return "\n".join(best) if len(best) >= _PASTED_MIN_ROWS else None
+
+
+def _describe_pasted_data(text: str) -> str:
+    """Describe a table pasted into the message, the way an attachment is.
+
+    The shape profile only ever ran on files, and a buyer who pastes fifty rows
+    into an email is asking exactly the same question as one who attaches them.
+    """
+    table = _find_pasted_table(text)
+    if not table:
+        return ""
+    shape = describe_file_shape("pasted.csv", table.encode())
+    if not shape:
+        return ""
+    return (
+        "The table pasted in the message above has this shape — read it before "
+        "writing code against the data:\n" + shape.replace("pasted.csv: ", "", 1)
+    )
+
+
 def describe_file_shape(name: str, raw: bytes) -> str:
     """What is actually in this file, before anyone writes code against it.
 
@@ -4676,6 +4731,17 @@ async def receive_agentmail_webhook(request: Request):
     attachment_note = _describe_inbound_attachments(msg.get("attachments") or [], message_id)
     if attachment_note:
         formatted += attachment_note
+
+    # Data is often pasted into the message rather than attached, and until now
+    # that was the one route the profiler never saw. Benchmark task T03 pastes a
+    # retention table with a ragged last row, and it has cost that task three
+    # separate runs this week — each time the agent wrote pandas against an
+    # assumed shape, pandas refused the file, and the run ended in an apology.
+    # The description that would have prevented it existed the whole time and
+    # was only reachable by attaching the same bytes.
+    pasted = _describe_pasted_data(text)
+    if pasted:
+        formatted += "\n\n" + pasted
 
     context = {
         "agent_name": AGENT_NAME,
