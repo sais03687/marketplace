@@ -124,7 +124,9 @@ def test_execute_python_gets_named_files_to_stage():
     assert len(staged) == 1
     # The name has to survive: code is written against /tmp/input/orders.csv.
     assert staged[0]["name"] == "orders.csv"
-    assert base64.b64decode(staged[0]["content_base64"]).startswith(b"a,b")
+    # Raw bytes now: the base64 is generated in chunks as the request is
+    # written, so the whole encoding never exists in memory at once.
+    assert staged[0]["_bytes"].startswith(b"a,b")
 
 
 def test_a_file_the_run_produced_can_be_read_back():

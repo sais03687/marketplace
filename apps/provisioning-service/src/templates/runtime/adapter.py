@@ -1031,10 +1031,10 @@ def _resolve_handles_in_arguments(tool: str, arguments: dict) -> tuple[dict, lis
             if entry["name"] in seen_names:
                 return
             seen_names.add(entry["name"])
-            staged.append({
-                "name": entry["name"],
-                "content_base64": base64.b64encode(entry["bytes"]).decode(),
-            })
+            # Raw bytes, not base64. call_mcp_tool encodes them in chunks on
+            # the way out, so the whole encoding never exists at once — see
+            # _streamable_files for why that matters.
+            staged.append({"name": entry["name"], "_bytes": entry["bytes"]})
 
         missing = []
         for ref in _reference_list(out.get("input_files") or []):
@@ -1379,6 +1379,53 @@ async def _resume_capturing_mcp_fn(server: str, tool: str, arguments: dict):
     return _register_sandbox_files(mcp_result)
 
 
+# Base64 turns 3 bytes into 4 characters, so a chunk that is a multiple of 3
+# encodes independently — no padding appears until the end of the file.
+_B64_CHUNK = 3 * 64 * 1024
+
+
+def _streamable_files(arguments: dict) -> tuple[dict, list[tuple[str, bytes]]]:
+    """Pull file bytes out of the arguments, leaving a placeholder behind.
+
+    Staging one 23.58 MB file used to cost about 120 MB in flight: the raw
+    bytes we already hold, the base64 string, the JSON document containing that
+    string, and httpx's encoding of the document. Three files at once killed
+    the container twice — the second time after a byte cap had made it rarer
+    rather than impossible, which is what a cap does to a transient spike.
+
+    So the bytes never enter the document. The skeleton is serialised with a
+    marker where each file goes, and the body is streamed with the base64
+    generated in chunks on the way out. Peak cost becomes the raw bytes plus a
+    192 KB buffer.
+    """
+    files: list[tuple[str, bytes]] = []
+    staged = arguments.get("input_files")
+    if not isinstance(staged, list) or not staged:
+        return arguments, files
+
+    lean = []
+    for entry in staged:
+        if isinstance(entry, dict) and isinstance(entry.get("_bytes"), (bytes, bytearray)):
+            marker = f"@@FILE{len(files)}@@"
+            files.append((marker, bytes(entry["_bytes"])))
+            lean.append({"name": entry.get("name", "input"), "content_base64": marker})
+        else:
+            lean.append(entry)
+    return {**arguments, "input_files": lean}, files
+
+
+async def _stream_call_body(tool_name: str, arguments: dict, files: list):
+    """The request body, in pieces, with each file encoded as it goes."""
+    document = json.dumps({"name": tool_name, "arguments": arguments})
+    rest = document
+    for marker, raw in files:
+        head, _, rest = rest.partition(marker)
+        yield head.encode()
+        for i in range(0, len(raw), _B64_CHUNK):
+            yield base64.b64encode(raw[i:i + _B64_CHUNK])
+    yield rest.encode()
+
+
 async def call_mcp_tool(server_type: str, tool_name: str, arguments: dict) -> dict:
     """Call a tool on an MCP sidecar server.
 
@@ -1394,12 +1441,20 @@ async def call_mcp_tool(server_type: str, tool_name: str, arguments: dict) -> di
     if not url:
         return {"error": f"MCP server '{server_type}' not available"}
 
+    lean, files = _streamable_files(arguments)
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{url}/mcp/tools/call",
-                json={"name": tool_name, "arguments": arguments},
-            )
+            if files:
+                resp = await client.post(
+                    f"{url}/mcp/tools/call",
+                    content=_stream_call_body(tool_name, lean, files),
+                    headers={"Content-Type": "application/json"},
+                )
+            else:
+                resp = await client.post(
+                    f"{url}/mcp/tools/call",
+                    json={"name": tool_name, "arguments": lean},
+                )
             resp.raise_for_status()
             return resp.json().get("result", resp.json())
     except httpx.TimeoutException:
