@@ -117,6 +117,24 @@ def test_totaling_one_customer_is_not_a_top_line_word():
     assert adapter._headline_conflicts(d04, _values(summary)) == []
 
 
+def test_a_rate_stated_as_a_percentage_is_not_a_disagreement():
+    # Task E3 on 2026-08-17 reported a 90% SLA hit rate — correctly — from a
+    # Summary sheet holding 0.9, and this check told the reader the two
+    # disagreed. Every other figure in that reply was right too. A caveat on
+    # correct work is worse than no check at all.
+    sheet = {"sheets": {"Summary": [["Overall SLA Hit Rate", 0.9], ["High", 0.75]]}}
+    assert adapter._headline_conflicts(
+        "Overall first-response SLA hit rate: 90%.", _values(sheet)
+    ) == []
+
+
+def test_a_hundredfold_gap_that_is_not_a_percentage_still_fires():
+    # Only the fraction/percentage pairing is forgiven. A total that is a
+    # hundred times the summary's is a real disagreement.
+    sheet = {"sheets": {"Summary": [["Total", 1553]]}}
+    assert adapter._headline_conflicts("The total is 155300.", _values(sheet))
+
+
 def test_a_trailing_comma_is_not_part_of_the_figure():
     # The first live fire reported the claim as "148,850," because `[\\d,]*` runs
     # on into the comma that ends the clause.

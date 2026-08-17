@@ -1903,6 +1903,34 @@ def _summary_sheet_values(parsed: dict) -> list[Decimal]:
     return vals
 
 
+def _same_but_for_percent(val: Decimal, values: list[Decimal]) -> bool:
+    """Is this the summary's figure written the other way round — 90 for 0.9?
+
+    Task E3 on 2026-08-17 reported a 90% SLA hit rate, correctly, from a Summary
+    sheet holding 0.9. Every figure in that reply was right and the workbook
+    agreed with all of them, and the check appended "those disagree and I could
+    not settle which is right" to the bottom of it. A caveat on correct work
+    costs more than the check saves: it is the one thing that makes a reader
+    distrust a report that deserved trust.
+
+    A rate stored as a fraction and stated as a percentage is the same claim.
+    Only that: the first version of this forgave any hundredfold relationship,
+    so a summary holding 1,553 accepted a reply claiming 155,300 — which is the
+    exact class of error the check exists for. The pair has to look like a rate
+    on both sides, a fraction of one against a percentage of a hundred.
+    """
+    ONE, HUNDRED, TOL = Decimal(1), Decimal(100), Decimal("0.5")
+    for v in values:
+        try:
+            if 0 <= v <= ONE and 0 <= val <= HUNDRED and abs(v * 100 - val) < TOL:
+                return True
+            if 0 <= val <= ONE and 0 <= v <= HUNDRED and abs(val * 100 - v) < TOL:
+                return True
+        except (InvalidOperation, ArithmeticError):
+            continue
+    return False
+
+
 def _headline_conflicts(summary_text: str, values: list[Decimal]) -> list[dict]:
     """Headline figures in the reply that the summary sheet does not hold."""
     # Deduped here rather than at the caller, so a direct caller cannot quote a
@@ -1920,7 +1948,7 @@ def _headline_conflicts(summary_text: str, values: list[Decimal]) -> list[dict]:
         val = _normalise_number(raw)
         if val is None or val in seen:
             continue
-        if _figure_present(val, raw, values):
+        if _figure_present(val, raw, values) or _same_but_for_percent(val, values):
             continue
         seen.add(val)
         out.append({
