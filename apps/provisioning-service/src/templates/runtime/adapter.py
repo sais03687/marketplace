@@ -2496,6 +2496,22 @@ async def reply_email(
 
 # ─── Approval Queue ─────────────────────────────────────────────────────────
 
+# The agent's action is `request_decision`; the portal and server.ts both speak
+# `decision_request`. One call site mapped between them inline and the resume
+# path did not, so the same concept accrued trust under two names — the Trust
+# Scores page on 2026-08-16 showed `request_decision` and `decision_request` as
+# separate rows with one sample each, neither ever able to earn its way up.
+#
+# Trust is per task type, so a split name is a split reputation. The mapping
+# lives here now and every caller goes through it.
+_TASK_TYPE_ALIASES = {"request_decision": "decision_request"}
+
+
+def _task_type_for(action: str) -> str:
+    """The one name a task type is recorded under, whatever the caller calls it."""
+    return _TASK_TYPE_ALIASES.get((action or "").strip(), (action or "").strip())
+
+
 async def queue_for_approval(
     task_type: str,
     channel: str,
@@ -2509,8 +2525,10 @@ async def queue_for_approval(
 ) -> str:
     """Submit an action to the marketplace approval queue. Returns the approval ID."""
     combined = (stakes + ambiguity + reversibility) / 3
+    # Normalised here rather than at the four call sites, because the bug was a
+    # call site that forgot to.
     payload = {
-        "taskType": task_type,
+        "taskType": _task_type_for(task_type),
         "channel": channel,
         "draft": draft,
         "reasoning": reasoning,
@@ -4633,10 +4651,11 @@ async def _handle_interrupt(
     # Build a human-readable draft for the approval portal
     if action_name == "request_decision":
         draft = intr.get("question", "") if isinstance(intr, dict) else ""
-        task_type = "decision_request"
     else:
         draft = json.dumps(params, default=str, indent=2) if params else f"Action: {action_name}"
-        task_type = action_name
+    # Not renamed here any more: queue_for_approval normalises every caller, and
+    # doing it in both places is how the two spellings drifted apart.
+    task_type = action_name
 
     try:
         approval_id = await queue_for_approval(

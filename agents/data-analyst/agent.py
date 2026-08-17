@@ -1438,6 +1438,35 @@ async def execute_action(state: AgentState) -> AgentState:
         # score comes from this turn's own reasoning, which is where it is
         # produced. Passed together so the gate can answer the same question the
         # adapter would, rather than a hardcoded approximation of it.
+        # ── Refuse before asking, not after ─────────────────────────────────
+        # On 2026-08-16 task D05 emitted a drive_upload whose content_base64 was
+        # the repr of a bytes object — "b'PK\x03\x04\x14\x00...". That is not a
+        # handle and never resolves, so `_resolve_upload_content` was always
+        # going to raise. It raised *after* the approval, so a person was shown
+        # 30 KB of escaped binary in the portal, approved it, and the upload then
+        # failed anyway; the workbook was lost and the reply had to admit it.
+        #
+        # The platform knows the payload is bad before it knows whether anyone
+        # would have allowed it. Checking first turns a wasted human round trip
+        # into a hand-back the model can act on, which is the one thing that has
+        # reliably changed its behaviour: an error at the moment of the error.
+        if action_type in ("drive_upload", "my_drive_upload"):
+            try:
+                _resolve_upload_content(
+                    params.get("content_base64", ""), params.get("filename", "")
+                )
+            except ValueError as bad_upload:
+                print(
+                    f"[agent] {action_type} payload rejected before approval: {bad_upload}",
+                    flush=True,
+                )
+                state.action_results.append(
+                    f"STEP FAILED — {action_type} was not sent for approval, because "
+                    f"the file it carries is not one the platform holds: {bad_upload}"
+                )
+                state.actions_taken.append(f"{action_type} not attempted")
+                return state
+
         _risk = state.analysis.get("risk_assessment") or {}
         _gate_params = {**params, "_risk_combined": _risk.get("combined")}
         if _needs_manager_approval(
