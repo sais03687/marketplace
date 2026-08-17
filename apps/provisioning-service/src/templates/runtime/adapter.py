@@ -1839,7 +1839,10 @@ def _headline_conflicts(summary_text: str, values: list[Decimal]) -> list[dict]:
     out: list[dict] = []
     seen: set[Decimal] = set()
     for m in _HEADLINE_RE.finditer(summary_text or ""):
-        raw = m.group("num").strip().lstrip("$£€").strip()
+        # `[\d,]*` is greedy enough to swallow the comma that ends a clause, so
+        # the first live fire reported the claim as "148,850," — trailing
+        # punctuation is never part of a figure.
+        raw = m.group("num").strip().lstrip("$£€").strip().rstrip(".,")
         val = _normalise_number(raw)
         if val is None or val in seen:
             continue
@@ -1880,6 +1883,13 @@ async def check_headline_against_summary(
     # complaint from the detail sheets is how the broad check got it wrong.
     if not values:
         return []
+
+    # A run that delivers two workbooks contributes two summary sheets, and the
+    # first live fire read back "155300, 151450, 3850, 155300, 151450, 3850".
+    # Membership does not care, but the message quoting it is read by the model
+    # and by whoever approves the reply, and a list that repeats itself reads
+    # like two different sets of figures.
+    values = list(dict.fromkeys(values))
 
     conflicts = _headline_conflicts(summary_text, values)
     if conflicts:

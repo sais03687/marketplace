@@ -2573,6 +2573,42 @@ async def finalize(state: AgentState) -> AgentState:
             flush=True,
         )
 
+    # ── The headline the summary sheet disagreed with, and nobody fixed ──────
+    #
+    # Detecting the conflict is not the same as resolving it. On 2026-08-17 the
+    # check fired correctly on a re-run of D01 — the reply claimed totals of
+    # 148,850 and 146,800 where the workbook's own Summary sheet held 155,300,
+    # 151,450 and 3,850 — and the hand-back did nothing, because the run had
+    # already printed "out of steps after 12 action(s)". The conflict was found,
+    # the correction was requested, there was no budget left to make it, and the
+    # wrong draft went to the approval queue looking exactly like a right one.
+    #
+    # So the last resort is the same one the ranking check uses: say it in the
+    # message. The approval portal shows the complete draft, so this puts the
+    # disagreement in front of the person deciding whether to send it. It also
+    # survives a buyer whose policy is "never ask", where there is no portal and
+    # no other place a warning could go.
+    #
+    # The condition is the conflict list itself rather than a spent-attempts
+    # flag: wrap_up clears it on entry and re-checks, so anything still here at
+    # finalize was never resolved, whichever budget ran out first.
+    if state.headline_conflicts and result_text.strip():
+        c = state.headline_conflicts[0]
+        holds = ", ".join(c.get("summary_holds", [])) or "different figures"
+        result_text = (
+            f"{result_text.rstrip()}\n\n---\n"
+            f"Before you rely on the figure above: I lead with {c.get('claimed')} "
+            f"as the {c.get('word')}, and the Summary sheet of the workbook I am "
+            f"attaching holds {holds}. Those disagree and I could not settle which "
+            "is right, so please open the workbook before quoting the number in "
+            "this message."
+        )
+        print(
+            f"[agent] Delivering with a headline note "
+            f"({len(state.headline_conflicts)} claim(s))",
+            flush=True,
+        )
+
     state.result = {
         "action": result_action,
         "to": final.get("to"),

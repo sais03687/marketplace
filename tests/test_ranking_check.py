@@ -355,6 +355,9 @@ class _State:
         self.ranking_conflicts = []
         self.ranking_attempts = 0
         self.ranking_unfixable = False
+        self.headline_conflicts = []
+        self.headline_attempts = 0
+        self.headline_unfixable = False
         self.verify_attempts = 0
         self.max_verify_attempts = budget
         self.iteration = 3

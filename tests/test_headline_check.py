@@ -117,6 +117,25 @@ def test_totaling_one_customer_is_not_a_top_line_word():
     assert adapter._headline_conflicts(d04, _values(summary)) == []
 
 
+def test_a_trailing_comma_is_not_part_of_the_figure():
+    # The first live fire reported the claim as "148,850," because `[\\d,]*` runs
+    # on into the comma that ends the clause.
+    conflicts = adapter._headline_conflicts(
+        "The total is 148,850, and finance shows less.", _values(D01_PARSED)
+    )
+    assert conflicts and conflicts[0]["claimed"] == "148,850"
+
+
+def test_two_workbooks_do_not_report_their_summary_twice():
+    # A run delivering a report and an exceptions workbook contributes two
+    # summary sheets, and the message read "155300, 151450, 3850, 155300,
+    # 151450, 3850" — which reads like two different sets of figures.
+    doubled = _values(D01_PARSED) + _values(D01_PARSED)
+    deduped = list(dict.fromkeys(doubled))
+    assert len(deduped) == 3
+    assert deduped == _values(D01_PARSED)
+
+
 def test_a_reply_with_no_headline_word_is_left_alone():
     # D03 stated no figure at all. A refusal is not a claim about a total.
     assert adapter._headline_conflicts(
@@ -176,6 +195,82 @@ def test_the_verifier_is_injected_at_every_call_site():
         src.count("ranking_fn=check_rankings_against_file"), (
         "a run that can have its rankings checked must have its headline checked"
     )
+
+
+# ── found but not fixed: the draft has to say so ───────────────────────────
+#
+# On 2026-08-17 the check fired correctly on a live re-run of D01 — the reply
+# claimed totals of 148,850 and 146,800 where the workbook's Summary sheet held
+# 155,300, 151,450 and 3,850 — and the hand-back did nothing, because the line
+# above it read "out of steps after 12 action(s)". Detection without budget to
+# act is a wrong draft in the approval queue looking exactly like a right one.
+
+class _State:
+    def __init__(self, conflicts=(), text="The total is 148,850."):
+        self.content = "reconcile these please"
+        self.action_results = []
+        self.actions_taken = []
+        self.analysis = {"final_response": {"action": "reply_email", "text": text}}
+        self.context = {}
+        self.deliverable_gaps = []
+        self.deliverable_unfixable = False
+        self.rebuilt_figures = []
+        self.rebuild_unfixable = False
+        self.rebuild_attempts = 0
+        self.ranking_conflicts = []
+        self.ranking_attempts = 0
+        self.ranking_unfixable = False
+        self.headline_conflicts = list(conflicts)
+        self.headline_attempts = 0
+        self.headline_unfixable = False
+        self.verify_attempts = 0
+        self.max_verify_attempts = 2
+        self.iteration = 12
+        self.max_iterations = 12
+        self.result = None
+
+
+CONFLICT = [{"word": "total", "claimed": "148,850",
+             "summary_holds": ["155300", "151450", "3850"]}]
+
+
+def _finalize(state):
+    from creator import agent as creator_agent
+    asyncio.run(creator_agent.finalize(state))
+    return state.result["text"]
+
+
+def test_a_conflict_nobody_fixed_is_said_in_the_draft():
+    text = _finalize(_State(conflicts=CONFLICT))
+    assert "148,850" in text
+    assert "155300" in text
+
+
+def test_the_note_does_not_decide_which_side_is_right():
+    # The same lesson test_disagreement_note.py records: the check knows the two
+    # disagree and cannot know which is wrong. A note that vouches for one of
+    # them will eventually vouch for the wrong one.
+    text = _finalize(_State(conflicts=CONFLICT)).lower()
+    assert "could not settle" in text
+    for taking_a_side in ("the workbook is correct", "the figure above is wrong",
+                          "the summary is right"):
+        assert taking_a_side not in text
+
+
+def test_the_note_follows_the_answer():
+    text = _finalize(_State(conflicts=CONFLICT))
+    assert text.index("The total is 148,850.") < text.index("Before you rely on")
+
+
+def test_no_conflict_means_no_note():
+    text = _finalize(_State())
+    assert "Before you rely on" not in text
+
+
+def test_an_empty_reply_is_not_given_a_note_to_carry():
+    # A note appended to nothing is the whole message, and it would be the only
+    # thing the buyer received.
+    assert "Before you rely on" not in _finalize(_State(conflicts=CONFLICT, text=""))
 
 
 def test_the_hand_back_never_reaches_a_buyer():
