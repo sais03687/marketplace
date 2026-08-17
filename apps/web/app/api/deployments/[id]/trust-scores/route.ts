@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AUTONOMY_LEVELS, clampManualAutonomy } from "@/lib/autonomy";
 import { prisma } from "@/lib/db";
 import {
   jsonSuccess,
@@ -30,12 +31,7 @@ export async function GET(
 
 const overrideSchema = z.object({
   taskType: z.string().min(1),
-  autonomyLevel: z.enum([
-    "always_queue",
-    "queue_if_stakes_gt_5",
-    "queue_if_stakes_gt_7",
-    "auto_execute",
-  ]),
+  autonomyLevel: z.enum(AUTONOMY_LEVELS),
 });
 
 export async function PATCH(
@@ -55,6 +51,11 @@ export async function PATCH(
   if ("error" in parsed) return parsed.error;
   const { data } = parsed;
 
+  // A question always reaches a human, including when the buyer sets the level
+  // by hand. Every level above always_queue means the same thing on a question:
+  // the agent asks and nobody answers.
+  const autonomyLevel = clampManualAutonomy(data.taskType, data.autonomyLevel);
+
   const score = await prisma.trustScore.upsert({
     where: {
       deploymentId_taskType: {
@@ -65,10 +66,10 @@ export async function PATCH(
     create: {
       deploymentId: id,
       taskType: data.taskType,
-      autonomyLevel: data.autonomyLevel,
+      autonomyLevel,
     },
     update: {
-      autonomyLevel: data.autonomyLevel,
+      autonomyLevel,
       lastUpdated: new Date(),
     },
   });

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { autonomyFor } from "@/lib/autonomy";
 import { jsonSuccess, jsonError } from "@/lib/api-utils";
 
 /**
@@ -63,15 +64,8 @@ export async function POST(request: Request) {
 
     const total = recentApprovals.length + olderApprovals.length;
 
-    // Determine autonomy level from thresholds
-    let autonomyLevel = "always_queue";
-    if (weightedScore >= 0.95 && total >= 20) {
-      autonomyLevel = "auto_execute";
-    } else if (weightedScore >= 0.8) {
-      autonomyLevel = "queue_if_stakes_gt_7";
-    } else if (weightedScore >= 0.6) {
-      autonomyLevel = "queue_if_stakes_gt_5";
-    }
+    // Thresholds and the question floor both live in lib/autonomy.
+    const autonomyLevel = autonomyFor(score.taskType, weightedScore, total);
 
     await prisma.trustScore.update({
       where: { id: score.id },

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { generateReflection } from "@/lib/agentmind/reflect";
+import { autonomyFor } from "@/lib/autonomy";
 
 interface ResolveParams {
   approvalId: string;
@@ -90,10 +91,7 @@ export async function resolveApprovalAndUpdateTrust(
     trustScore.approvedNoEdit + trustScore.edited + trustScore.rejected;
   const score = total > 0 ? trustScore.approvedNoEdit / total : 0;
 
-  let autonomyLevel = "always_queue";
-  if (score >= 0.95 && total >= 20) autonomyLevel = "auto_execute";
-  else if (score >= 0.8) autonomyLevel = "queue_if_stakes_gt_7";
-  else if (score >= 0.6) autonomyLevel = "queue_if_stakes_gt_5";
+  const autonomyLevel = autonomyFor(trustScore.taskType, score, total);
 
   await prisma.trustScore.update({
     where: { id: trustScore.id },

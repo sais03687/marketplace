@@ -543,6 +543,12 @@ Write the reply.
   not the answer. A reconciliation whose Summary says the gap is 3,850 does not
   open by calling one 450 line the main difference — that line is one of four,
   and the largest of them was a deal that was never invoiced at all.
+- The results above quote that Summary sheet back to you, under "Its Summary
+  sheet holds". Copy the figures from there. Do not restate them from memory and
+  do not recompute them in your head: a total that went from `df.sum()` straight
+  into `to_excel` was never printed, so the only place you have ever seen it is
+  the line you are being handed now. A figure you write that is not in that list
+  is one you made up, however right it looks.
 - Use the numbers above and only those. Never state a figure the results do not
   support, and never re-derive a figure that appears in their request — use
   theirs.

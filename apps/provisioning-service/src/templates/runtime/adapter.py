@@ -660,6 +660,70 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
     return mcp_result
 
 
+async def _read_back_summary(mcp_result: Any) -> Any:
+    """Hand the model the summary figures out of the workbook it just wrote.
+
+    Task D01 on 2026-08-17 computed the reconciliation correctly — 155,300 CRM,
+    151,450 finance, a gap of 3,850 — wrote all three into the workbook's Summary
+    sheet, and then told the buyer the gap was 2,050 between totals of 148,850
+    and 146,800. None of those three figures appear anywhere in the notebook:
+    not in the code, not in any output. They were not miscalculated. They were
+    invented at composition time, because the correct ones went straight from
+    `df.sum()` into `to_excel` and were never printed, so the model writing the
+    email had no figure in front of it and produced three that looked right.
+
+    That is not a reasoning failure and no prompt fixes it: the model cannot
+    quote a number it has never been shown. So the platform reads the sheet back
+    and puts it in the tool result, where the rest of the run can see it.
+
+    Only the summary sheet, and only the first few rows of it. The detail sheets
+    are the workings and pasting a whole workbook back into the context is how
+    the run would lose its budget instead.
+    """
+    if not isinstance(mcp_result, dict) or not mcp_result.get("files"):
+        return mcp_result
+
+    for f in mcp_result["files"]:
+        entry = _SANDBOX_FILES.get(f.get("file_id", ""))
+        if not entry or not str(entry["name"]).lower().endswith((".xlsx", ".xls")):
+            continue
+        try:
+            parsed = await _parsed_file(entry["name"], entry["bytes"])
+        except Exception as exc:
+            print(f"[adapter] Summary read-back failed for {entry['name']}: {exc}", flush=True)
+            continue
+        if not parsed:
+            continue
+
+        sheets = parsed.get("sheets")
+        if not isinstance(sheets, dict):
+            continue
+        for name, rows in sheets.items():
+            if not _SUMMARY_SHEET_RE.match(str(name or "")) or not isinstance(rows, list):
+                continue
+            pairs = [
+                f"{str(r[0]).strip()}: {r[1]}"
+                for r in rows[:12]
+                if isinstance(r, (list, tuple)) and len(r) >= 2
+                and str(r[0]).strip() and r[1] is not None
+            ]
+            if pairs:
+                f["summary"] = pairs
+                f["note"] = (
+                    f"{f.get('note', '')} Its {name} sheet holds: "
+                    + "; ".join(pairs)
+                    + ". Quote these in your reply rather than restating them "
+                    "from memory — they are what you just wrote to the file."
+                ).strip()
+                print(
+                    f"[adapter] Summary read-back for {entry['name']}: {'; '.join(pairs[:4])}",
+                    flush=True,
+                )
+            break
+
+    return mcp_result
+
+
 def resolve_sandbox_file(ref: str) -> bytes | None:
     """Bytes for a handle from _register_sandbox_files, or None if it is not one."""
     entry = _SANDBOX_FILES.get((ref or "").strip())
@@ -1925,7 +1989,7 @@ async def _resume_capturing_mcp_fn(server: str, tool: str, arguments: dict):
     # Record the arguments the agent wrote, not the ones with the file bytes
     # spliced in — the notebook is meant to be readable.
     record_sandbox_step(tool, arguments, mcp_result)
-    return _register_sandbox_files(mcp_result)
+    return await _read_back_summary(_register_sandbox_files(mcp_result))
 
 
 # Base64 turns 3 bytes into 4 characters, so a chunk that is a multiple of 3
@@ -5083,7 +5147,7 @@ async def receive_teams_message(request: Request):
             # Same as the email path: the capture above keeps the bytes, the
             # agent gets a handle.
             record_sandbox_step(tool, arguments, result)
-            return _register_sandbox_files(result)
+            return await _read_back_summary(_register_sandbox_files(result))
 
         # Wrap message with Teams-specific instructions so the agent replies
         # in chat style rather than email style.
@@ -5370,7 +5434,7 @@ async def _handle_message(message: str, context: dict):
             # used to keep a second full copy of every file in a closure as well,
             # which is the copy the resume path had no way to reach.
             record_sandbox_step(tool, arguments, mcp_result)
-            return _register_sandbox_files(mcp_result)
+            return await _read_back_summary(_register_sandbox_files(mcp_result))
 
         print(f"[adapter] Running agent graph...", flush=True)
         result = await run_agent(
