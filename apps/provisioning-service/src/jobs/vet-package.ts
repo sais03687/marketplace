@@ -410,7 +410,18 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             // probes below would 503 and every package would fail vetting.
             `AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}`,
             `ANTHROPIC_API_KEY=vet-noop`,
-            `APPROVAL_WEBHOOK_TOKEN=vet-noop`,
+            // And /internal/* is authenticated too, against a *different* token.
+            // That guard was added on 2026-08-10; this line still said "vet-noop",
+            // so the harness's own probes of /internal/memory and /internal/skills
+            // got 401 on every run, whatever the package contained. Two of the
+            // five built-in HTTP tests could not pass, so nothing could ever be
+            // vetted — which is exactly what the record showed: not one package
+            // had passed since the guard landed.
+            //
+            // The same value as the hooks token on purpose. In production these
+            // are two independent secrets; here there is one caller and one
+            // container, and giving them different values is what broke this.
+            `APPROVAL_WEBHOOK_TOKEN=${VET_HOOKS_TOKEN}`,
             `MARKETPLACE_APPROVAL_WEBHOOK=http://host.docker.internal:3002`,
             `MARKETPLACE_URL=http://host.docker.internal:3002`,
             `PORTAL_TOKEN=vet-noop`,
@@ -557,9 +568,18 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           // Attached here rather than at each call site: the /hooks/* probes need
           // it, the others ignore it, and a probe that forgot would read as the
           // package failing rather than the harness misconfiguring itself.
+          //
+          // Both credentials, because the gateway uses two. /hooks/* reads the
+          // bearer; /internal/* reads x-deployment-token and only falls back to
+          // the bearer. Sending the canonical header as well means these probes
+          // do not depend on that fallback surviving.
           const r = await fetch(url, {
             ...init,
-            headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${VET_HOOKS_TOKEN}` },
+            headers: {
+              ...(init.headers as Record<string, string> | undefined),
+              Authorization: `Bearer ${VET_HOOKS_TOKEN}`,
+              "x-deployment-token": VET_HOOKS_TOKEN,
+            },
           });
           const raw = await r.text().catch(() => "");
           const responseBody = raw.slice(0, 500) + (raw.length > 500 ? "…" : "");
