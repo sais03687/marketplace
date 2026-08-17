@@ -54,6 +54,25 @@ _llm_api_key = os.environ.get("LLM_API_KEY", "")
 if not _llm_api_key:
     raise RuntimeError("LLM_API_KEY environment variable is required.")
 
+# How long one reasoning call may take, and a property of the model rather than
+# of the work.
+#
+# 60s was chosen against Gemini Flash. Measured on 2026-08-17 over a prompt the
+# size this agent actually sends:
+#
+#     google/gemini-2.5-flash    1.0s,  1.8s,  0.9s
+#     openai/gpt-oss-120b       37.5s, 30.2s, 28.4s
+#
+# So Flash never approaches the ceiling and gpt-oss spends half of it on every
+# single call, which is why task E1 lost a completed analysis to a timeout the
+# hour that model was switched on. The default is raised to suit the slower of
+# the two: a higher ceiling costs a fast model nothing, because it never reaches
+# it, and the only price is that a genuinely hung call takes longer to abandon.
+#
+# A timeout is no longer a lost run — see the handler — but every one still
+# costs a step, and a run has twelve.
+_LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "120"))
+
 _llm_model = os.environ.get("LLM_MODEL")
 if not _llm_model:
     raise RuntimeError("LLM_MODEL environment variable is required.")
@@ -1000,15 +1019,30 @@ async def reason_and_act(state: AgentState) -> AgentState:
     )
 
     try:
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=60)
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=_LLM_TIMEOUT_S)
     except asyncio.TimeoutError:
+        # The model went quiet. The run did not.
+        #
+        # This used to fill in "I need more time to process this — I'll follow up
+        # shortly" and mark the run complete. On 2026-08-17 task E1 had already
+        # computed headcount cost by department and written the workbook when the
+        # next reasoning call timed out, and the buyer was sent that sentence
+        # instead of the answer. Nothing followed up, because nothing was
+        # scheduled to: `completed` was true.
+        #
+        # Empty text rather than a placeholder, so finalize's own rendering
+        # decides what to say from what the run actually holds — the figures read
+        # back out of the workbook if there are any, what broke if something did,
+        # and only otherwise an admission that there is nothing.
+        print(
+            f"[agent] LLM timed out after {_LLM_TIMEOUT_S}s — composing from what "
+            "the run has produced rather than a placeholder",
+            flush=True,
+        )
         state.analysis = {
             "completed": True,
             "action": {"type": "none"},
-            "final_response": {
-                "action": "reply_email",
-                "text": "I need more time to process this — I'll follow up shortly.",
-            },
+            "final_response": {"action": "reply_email", "text": ""},
             "reasoning": "LLM timed out",
         }
         return state
@@ -2362,6 +2396,7 @@ async def finalize(state: AgentState) -> AgentState:
         # buyer tells them nothing and exposes internals besides.
         findings = _buyer_readable(state.action_results)
         failure = _failure_note(state.action_results)
+        computed = _summary_figures_from_results(state.action_results)
         steps = "\n".join(f"- {a}" for a in state.actions_taken[-6:])
         # Say what is actually known, which is only that no summary was written.
         #
@@ -2397,6 +2432,30 @@ async def finalize(state: AgentState) -> AgentState:
                     "\n\nTell me if you'd like this summarised differently or in "
                     "another format."
                 )
+        elif computed:
+            # The answer exists; only the sentence around it is missing.
+            #
+            # Task E1 on 2026-08-17 computed headcount cost by department
+            # correctly, wrote the workbook, and then the reasoning call timed
+            # out. The timeout handler replaced the whole run with "I need more
+            # time to process this — I'll follow up shortly", and the buyer got
+            # that instead of an answer that was already sitting in a file.
+            #
+            # `findings` cannot rescue it: the run's one real result is a sandbox
+            # envelope, and `_buyer_readable` filters those out on purpose —
+            # stdout, handles and a files array tell a buyer nothing. But the
+            # platform reads the workbook's Summary sheet back into that envelope
+            # now, so the figures are there to be quoted, and quoting them takes
+            # no model at all.
+            link = _delivered_file_line(state.action_results)
+            result_text = (
+                "I could not write this up in my own words, so here are the "
+                "figures exactly as they went into the workbook:\n\n"
+                f"{computed}\n\nThe workbook has the full breakdown. Ask me again "
+                "if you want this written up properly."
+            )
+            if link:
+                result_text += f"\n\n{link}"
         elif failure:
             # Nothing to show and something to explain. Both branches below are
             # false here in a way that matters: "I ran out of steps" names the
@@ -3256,6 +3315,79 @@ _LISTING_COLUMNS = {"weburl", "id", "item_id", "driveid", "parentreference"}
 def _is_listing(block: str) -> bool:
     cols = _table_columns(block)
     return cols is not None and any(c.lower() in _LISTING_COLUMNS for c in cols)
+
+
+# Last resort only. The platform writes the same figures into a `summary` list
+# on the file entry, and that structure is what this reads first — a sentence
+# can be reworded by whoever edits the adapter next, a JSON key cannot be
+# reworded by accident. The pattern stays for envelopes that reach here already
+# truncated, which the 300-char log path does routinely.
+_SUMMARY_HELD_RE = re.compile(
+    r"\b[\w &/-]{0,30}?[Ss]ummary sheet holds:\s*(.+?)(?:\.\s|\.$|$)", re.S
+)
+
+
+def _summary_pairs(node: Any) -> list[str]:
+    """Every `summary` list hanging off a file entry, however the result nests."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        summary = node.get("summary")
+        if isinstance(summary, list):
+            found += [str(p).strip() for p in summary if str(p).strip()]
+        elif isinstance(summary, str) and summary.strip():
+            found += [s.strip() for s in summary.split(";") if s.strip()]
+        for value in node.values():
+            found += _summary_pairs(value)
+    elif isinstance(node, list):
+        for item in node:
+            found += _summary_pairs(item)
+    return found
+
+
+def _summary_figures_from_results(results: list, limit: int = 10) -> str:
+    """The figures the platform read back out of a workbook this run produced.
+
+    These arrive inside the sandbox envelope, which `_buyer_readable` drops
+    whole — correctly, since the rest of it is handles and stdout. But the
+    figures in it are the answer, written by this run, and when composition
+    fails they are the difference between a reply with numbers in it and a reply
+    that says nothing at all.
+
+    Read out of the structure rather than out of the prose. An earlier version
+    matched the sentence the adapter writes, which works only for as long as
+    nobody rewords it — and the same figures are already sitting in a list on
+    the file entry. The prose is still parsed as a fallback, because a truncated
+    envelope has no parseable JSON left but usually still has the sentence.
+
+    Returns "" when no workbook was produced, so the branches that follow keep
+    their existing meaning.
+    """
+    seen: list[str] = []
+
+    def _keep(pairs):
+        for pair in pairs:
+            pair = pair.strip().rstrip(".").strip()
+            if pair and pair not in seen:
+                seen.append(pair)
+
+    for entry in results or []:
+        if isinstance(entry, (dict, list)):
+            _keep(_summary_pairs(entry))
+            continue
+        text = str(entry)
+        parsed = None
+        if "{" in text:
+            try:
+                parsed = json.loads(text[text.index("{"):])
+            except Exception:
+                parsed = None
+        if parsed is not None:
+            _keep(_summary_pairs(parsed))
+        if not seen:
+            for match in _SUMMARY_HELD_RE.finditer(text):
+                _keep(match.group(1).split(";"))
+
+    return "\n".join(f"- {p}" for p in seen[:limit])
 
 
 def _buyer_readable(results: list, limit: int = 3) -> str:
