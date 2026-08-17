@@ -95,6 +95,11 @@ export default function ApprovalsPage() {
           break;
         case "a":
           e.preventDefault();
+          // A question has no "approved" state — approving one resolves it with
+          // no answer, and the agent resumes having learned nothing. There is
+          // nothing this key can mean here, so it does nothing and the card's
+          // own answer box is the only way through.
+          if (pending[focusIndex].taskType === "decision_request") break;
           handleResolve(pending[focusIndex].id, "APPROVED", pending[focusIndex].deploymentId);
           break;
         case "e":
@@ -160,17 +165,37 @@ export default function ApprovalsPage() {
     // live list mid-loop would work against a list that is changing underneath.
     const pending = approvals.filter((a) => a.status === "PENDING");
     if (pending.length === 0) return;
+    // Questions are skipped by Approve All, never swept up by it. Approving a
+    // question resolves it with no answer, so the agent resumes knowing exactly
+    // as much as it did when it stopped to ask — and the buyer has no idea they
+    // just discarded it. Rejecting one is a real decision ("I can't answer
+    // that"), so bulk reject still includes them.
+    const targets =
+      action === "APPROVED"
+        ? pending.filter((a) => a.taskType !== "decision_request")
+        : pending;
+    const skipped = pending.length - targets.length;
+    if (targets.length === 0) {
+      setResolveError(
+        "Nothing to approve — the only items pending are questions, which need an answer.",
+      );
+      return;
+    }
     setBulkBusy(true);
     let done = 0;
-    for (const approval of pending) {
+    for (const approval of targets) {
       const ok = await handleResolve(approval.id, action, approval.deploymentId);
       if (!ok) break; // stop rather than press on silently against a broken endpoint
       done++;
     }
     setBulkBusy(false);
-    if (done < pending.length) {
+    if (done < targets.length) {
       setResolveError(
-        `Resolved ${done} of ${pending.length}. The rest were left pending.`,
+        `Resolved ${done} of ${targets.length}. The rest were left pending.`,
+      );
+    } else if (skipped > 0) {
+      setResolveError(
+        `Resolved ${done}. ${skipped} question${skipped === 1 ? "" : "s"} left for you to answer.`,
       );
     }
   };

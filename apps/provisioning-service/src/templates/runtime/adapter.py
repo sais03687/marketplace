@@ -4344,6 +4344,20 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
                     "thread_id": thread_id,
                     "channel": channel,
                     "channel_context": channel_ctx,
+                    # The same pre-authorisation the first interrupt records, and
+                    # for the same reason. Without it the manager approves this
+                    # action here, the graph resumes, and the Graph transport —
+                    # seeing nothing pre-authorised — queues a second approval
+                    # for the identical call.
+                    #
+                    # Task D02 on 2026-08-16 is the shape of it: a request for a
+                    # table and a chart took three approvals. The workbook took
+                    # one; the chart took two, because the chart was proposed on
+                    # a resume and so came through here. The second of those
+                    # carried no original request and no reasoning — only
+                    # "policy=always (drive_upload)" and a SharePoint path —
+                    # because the transport gate has access to neither.
+                    "action": action_name,
                 })
                 print(f"[adapter] Chained interrupt: new approval {new_approval_id}", flush=True)
             except Exception as e:
@@ -4616,6 +4630,37 @@ async def _deliver_email_result(
 
 # ─── Helper: handle interrupted graph result ─────────────────────────────────
 
+# Both notices open by saying they are not the answer, because that first line is
+# what an inbox shows as the preview. On 2026-08-16 one of these sat a single
+# line above the real reply in the buyer's inbox — same sender, same RE: subject,
+# and a preview that read like a result. Two messages looked like the deliverable
+# and only one was, and for about fifty minutes the only thing task D02 had
+# produced was this one.
+#
+# Both also say nothing is attached. The reply that eventually arrives carries
+# the workbook, and a reader who skimmed this one and moved on has no reason to
+# go back for it.
+#
+# Constants rather than inline strings so the tests can read what is actually
+# sent. The first version of those tests scanned the source for these sentences
+# and failed on where the lines happened to wrap.
+_NOT_THE_ANSWER = "Not finished yet — this is a status note, not the answer."
+
+WAITING_ON_APPROVAL_NOTICE = (
+    f"{_NOT_THE_ANSWER}\n\n"
+    "I need your approval to {action} before I can finish. It is waiting in your "
+    "approvals list. Nothing is attached to this message; I will send the "
+    "results once you have approved it."
+)
+
+WAITING_ON_ANSWER_NOTICE = (
+    f"{_NOT_THE_ANSWER}\n\n"
+    "I have asked you a question and I need it answered before I can carry on. "
+    "It is waiting in your approvals list. Nothing is attached to this message; "
+    "I will send the results once you reply."
+)
+
+
 async def _handle_interrupt(
     result: dict,
     channel: str,
@@ -4691,13 +4736,9 @@ async def _handle_interrupt(
         print(f"[adapter] Queued approval {approval_id} for interrupted graph (thread={thread_id})", flush=True)
 
         if action_name == "request_decision":
-            return (
-                f"I need your manager's input before I can proceed. "
-                f"An approval request has been sent. Once they respond, I'll continue automatically."
-            )
-        return (
-            f"Your request to {action_name.replace('_', ' ')} requires manager approval. "
-            f"An approval request has been sent. Once approved, I'll complete the action automatically."
+            return WAITING_ON_ANSWER_NOTICE
+        return WAITING_ON_APPROVAL_NOTICE.format(
+            action=action_name.replace("_", " ")
         )
     except Exception as e:
         print(f"[adapter] Failed to queue approval for interrupt: {e}", flush=True)

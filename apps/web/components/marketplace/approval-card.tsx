@@ -42,7 +42,19 @@ export function ApprovalCard({
   const [editedText, setEditedText] = useState(approval.draft);
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectionReason, setRejectionReason] = useState("");
+  const [answer, setAnswer] = useState("");
   const isPending = approval.status === "PENDING";
+
+  // The agent asked a question rather than proposing an action, so the card it
+  // gets is a different card. Approve/Edit/Reject makes no sense against a
+  // question — approving "which quarter did you mean?" is not an answer to it,
+  // and on 2026-08-16 the only way to answer one was to press Edit and overwrite
+  // the agent's own question with your reply, which works but reads as though
+  // you are correcting its wording.
+  //
+  // The answer travels as EDITED because that is what the graph already resumes
+  // on; only the surface changes.
+  const isQuestion = approval.taskType === "decision_request";
 
   return (
     <div
@@ -90,9 +102,9 @@ export function ApprovalCard({
 
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-1">
-              Draft
+              {isQuestion ? "Your agent is asking" : "Draft"}
             </p>
-            {editMode ? (
+            {editMode && !isQuestion ? (
               <Textarea
                 value={editedText}
                 onChange={(e) => setEditedText(e.target.value)}
@@ -105,6 +117,21 @@ export function ApprovalCard({
               </div>
             )}
           </div>
+
+          {isQuestion && isPending && (
+            <div>
+              <p className="text-xs font-medium text-muted-foreground mb-1">
+                Your answer
+              </p>
+              <Textarea
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                placeholder="Answer in your own words — the agent picks up where it left off."
+                className="text-sm"
+                rows={3}
+              />
+            </div>
+          )}
 
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-1">
@@ -172,6 +199,24 @@ export function ApprovalCard({
                     onClick={() => setRejectMode(false)}
                   >
                     Cancel
+                  </Button>
+                </>
+              ) : isQuestion ? (
+                <>
+                  <Button
+                    size="sm"
+                    disabled={!answer.trim()}
+                    onClick={() => onResolve(approval.id, "EDITED", { editedText: answer })}
+                  >
+                    Send answer
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => setRejectMode(true)}
+                  >
+                    Can&apos;t answer
+                    <kbd className="ml-1 text-[10px] opacity-50">r</kbd>
                   </Button>
                 </>
               ) : (
