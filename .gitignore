@@ -91,4 +91,14 @@ scripts/test-sharepoint.py
 # Benchmark harness, dumps and downloaded datasets. Deliberately untracked:
 # the dumps are regenerated every run, and the DABstep context files are
 # someone else's data that the repo has no business redistributing.
-benchmark/
+#
+# `benchmark/*` and not `benchmark/`: git cannot re-include a file whose parent
+# directory is excluded, so the negation below is silently dead against the
+# directory form.
+benchmark/*
+
+# Except the handover. It is the document that tells the next session where
+# everything stands and which reruns mean what, and it was living on one
+# laptop's disk with no history — the one file in that directory that is
+# writing rather than data.
+!benchmark/HANDOVER.md
