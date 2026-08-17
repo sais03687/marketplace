@@ -1778,6 +1778,123 @@ async def check_rankings_against_file(summary_text: str, file_ids: list[str] | N
     return conflicts
 
 
+# ─── The headline, checked against the sheet the workbook calls its summary ────
+#
+# Task D01 on 2026-08-16 reconciled a CRM export against a finance register and
+# got it exactly right. The workbook it attached carried a sheet named `Summary`
+# holding `Total CRM Revenue 155300`, `Total Finance Revenue 151450`, `Overall
+# Discrepancy 3850`, and a `Discrepancies` sheet listing all four exceptions.
+# The email led with "The primary difference of $450" and never mentioned the
+# £18,400 deal that was closed and never invoiced.
+#
+# `verify_deliverables` could not catch this and was never going to: it asks
+# whether a figure appears *anywhere* in the delivered files, and 450 does — it
+# is the D-1003 row of the Discrepancies sheet, correctly computed. Containment
+# passed on a reply whose headline contradicted the workbook's own summary.
+#
+# So this check asks the narrower question. Not "is this number in the file"
+# but "the file has a sheet that says what the top-line numbers are, and the
+# reply's top-line number is not one of them". It fires only where the workbook
+# volunteered a summary sheet, so an agent that writes no summary is not
+# accused of contradicting one.
+#
+# Deliberately not label-matching. The obvious design — read `Overall
+# Discrepancy` and look for the word "discrepancy" near a number in the reply —
+# fails on the case it was built for, because D01's reply said "difference".
+# A leading qualifier is allowed because real workbooks use one — D04 named its
+# sheet "AR Aging Summary" — and requiring the bare word would have meant the
+# check quietly never ran on them. Trailing words are not: "Summary of Findings
+# by Region" is a section of the analysis, not the place the top line lives.
+_SUMMARY_SHEET_RE = re.compile(
+    r"^\s*(?:[\w &/-]{0,30}?\s)?(summary|key figures?|headline|overview|totals?)\s*$", re.I
+)
+
+# A headline word sitting next to a figure. `total` is here and `totaling` is
+# not, which the word boundary already handles: D04 wrote "totaling $41,200"
+# about one customer and meant nothing top-line by it.
+_HEADLINE_RE = re.compile(
+    r"\b(primary|overall|net|grand total|in total|altogether|total)\b"
+    r"[^.\n]{0,40}?"
+    r"(?P<num>[$£€]?\s?-?\d[\d,]*(?:\.\d+)?)",
+    re.I,
+)
+
+
+def _summary_sheet_values(parsed: dict) -> list[Decimal]:
+    """Every figure on a sheet the workbook itself named as its summary."""
+    sheets = parsed.get("sheets")
+    if not isinstance(sheets, dict):
+        return []
+    vals: list[Decimal] = []
+    for name, rows in sheets.items():
+        if not _SUMMARY_SHEET_RE.match(str(name or "")):
+            continue
+        if isinstance(rows, list):
+            vals.extend(_file_figures(json.dumps(rows, default=str)))
+    return vals
+
+
+def _headline_conflicts(summary_text: str, values: list[Decimal]) -> list[dict]:
+    """Headline figures in the reply that the summary sheet does not hold."""
+    out: list[dict] = []
+    seen: set[Decimal] = set()
+    for m in _HEADLINE_RE.finditer(summary_text or ""):
+        raw = m.group("num").strip().lstrip("$£€").strip()
+        val = _normalise_number(raw)
+        if val is None or val in seen:
+            continue
+        if _figure_present(val, raw, values):
+            continue
+        seen.add(val)
+        out.append({
+            "word": m.group(1).lower(),
+            "claimed": raw,
+            "summary_holds": [str(v) for v in values[:6]],
+        })
+    return out
+
+
+async def check_headline_against_summary(
+    summary_text: str, file_ids: list[str] | None = None
+) -> list[dict]:
+    """Top-line claims the attached workbook's own summary sheet contradicts.
+
+    Empty means nothing to raise — including when no delivered file carries a
+    summary sheet, which is the common case and not evidence of anything.
+    """
+    if file_ids is None:
+        file_ids = list(current_run_files())
+    if not summary_text or not file_ids or not _HEADLINE_RE.search(summary_text):
+        return []
+
+    values: list[Decimal] = []
+    for fid in file_ids:
+        entry = _SANDBOX_FILES.get((fid or "").strip())
+        if not entry:
+            continue
+        parsed = await _parsed_file(entry["name"], entry["bytes"])
+        if parsed:
+            values.extend(_summary_sheet_values(parsed))
+
+    # No summary sheet anywhere. Nothing to contradict, and inventing a
+    # complaint from the detail sheets is how the broad check got it wrong.
+    if not values:
+        return []
+
+    conflicts = _headline_conflicts(summary_text, values)
+    if conflicts:
+        print(
+            f"[headline-check] FIRED on {len(conflicts)} claim(s): "
+            + "; ".join(
+                f"called {c['claimed']} the {c['word']}, summary sheet holds "
+                f"{', '.join(c['summary_holds'])}"
+                for c in conflicts[:4]
+            ),
+            flush=True,
+        )
+    return conflicts
+
+
 _CONTENT_TYPES = {
     "png": "image/png",
     "jpg": "image/jpeg",
@@ -4169,6 +4286,7 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
             ranking_fn=check_rankings_against_file,
+            headline_fn=check_headline_against_summary,
         )
     except Exception as e:
         print(f"[adapter] resume_agent failed: {e}", flush=True)
@@ -4955,6 +5073,7 @@ async def receive_teams_message(request: Request):
             file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
             ranking_fn=check_rankings_against_file,
+            headline_fn=check_headline_against_summary,
             # Checked, never re-run. Teams is synchronous — the prompt tells the
             # agent someone is waiting in real time — so a hand-back would buy
             # correctness with two extra model turns of silence in a chat
@@ -5014,6 +5133,7 @@ async def receive_teams_message(request: Request):
                 file_describer_fn=describe_file_shape,
                 verify_fn=verify_deliverables,
                 ranking_fn=check_rankings_against_file,
+                headline_fn=check_headline_against_summary,
                 verify_attempts=0,
             )
             # Check if the retry hit an interrupt (blocked action)
@@ -5197,6 +5317,7 @@ async def _handle_message(message: str, context: dict):
             file_describer_fn=describe_file_shape,
             verify_fn=verify_deliverables,
             ranking_fn=check_rankings_against_file,
+            headline_fn=check_headline_against_summary,
         )
 
         if not isinstance(result, dict):
@@ -5537,6 +5658,7 @@ async def _handle_message(message: str, context: dict):
                     file_describer_fn=describe_file_shape,
                     verify_fn=verify_deliverables,
                     ranking_fn=check_rankings_against_file,
+                    headline_fn=check_headline_against_summary,
                     )
                 # Check if the retry hit an interrupt (blocked action)
                 if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":

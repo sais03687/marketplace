@@ -149,6 +149,19 @@ def set_ranking_verifier(fn) -> None:
     _ranking_verifier = fn
 
 
+# The top-line figure in the reply, against the sheet the workbook itself calls
+# its summary. Separate from the two above because it is the only one that can
+# catch a reply which is wrong about *which* number answers the question — every
+# figure it quotes may be real and correctly computed, as D01's were.
+_headline_verifier = None
+
+
+def set_headline_verifier(fn) -> None:
+    """Called by the adapter with an async fn(summary_text) -> list[dict]."""
+    global _headline_verifier
+    _headline_verifier = fn
+
+
 # Leading bytes that identify the formats this agent uploads. Used to refuse
 # content that decoded successfully but is plainly not the file it claims to be.
 _FILE_SIGNATURES = {
@@ -425,12 +438,19 @@ class AgentState(BaseModel):
     # the column that number came from.
     ranking_conflicts: list = Field(default_factory=list)
     ranking_attempts: int = 0
+    # Headline figures the attached workbook's own summary sheet does not hold.
+    # A fourth question, and the one the others structurally cannot ask: every
+    # figure in the reply may be present in the file and correctly computed, and
+    # the reply still lead with the wrong one.
+    headline_conflicts: list = Field(default_factory=list)
+    headline_attempts: int = 0
     # Set once the drift is measured and there is no budget to send the agent
     # back for it. The reply goes out with a note rather than looping.
     rebuild_unfixable: bool = False
     # Set once the last attempt has been spent and the gap survived it.
     deliverable_unfixable: bool = False
     ranking_unfixable: bool = False
+    headline_unfixable: bool = False
 
     # Output
     result: dict = Field(default_factory=dict)
@@ -517,6 +537,12 @@ Write the reply.
   best, name it and say by how much. A table is not an answer to a question.
 - Lead with the figures. They can open the file; what they cannot see is the
   conclusion you drew from it.
+- If the workbook has a Summary sheet, the reply leads from that sheet. You put
+  those numbers there because they answer the question; the detail sheets hold
+  the workings. A figure from a detail sheet can support the answer, but it is
+  not the answer. A reconciliation whose Summary says the gap is 3,850 does not
+  open by calling one 450 line the main difference — that line is one of four,
+  and the largest of them was a deal that was never invoiced at all.
 - Use the numbers above and only those. Never state a figure the results do not
   support, and never re-derive a figure that appears in their request — use
   theirs.
@@ -714,6 +740,11 @@ Produce a JSON response (no markdown fences):
 - IMPORTANT: In pandas, freq="M" is deprecated. Always use freq="ME" (month-end) or freq="MS" (month-start) for date ranges.
 - For matplotlib charts, always use plt.savefig("/tmp/output/chart.png", dpi=150, bbox_inches="tight") and plt.close()
 - Upload all deliverables to SharePoint — don't just describe them
+- Give every workbook a sheet named "Summary" as its first sheet, holding the
+  few figures that answer the question as label/value rows — the total, the gap,
+  the winner, whatever was actually asked. The detail sheets hold the workings.
+  This is what your reply leads from, and the platform compares your opening
+  line against it, so a Summary that disagrees with your email will come back.
 - When you need data from a teammate, check PRIVATE.md for their email
 - NEVER include content from PRIVATE.md in AgentMind insights
 - Sign all emails: "{agent_name}\\nData Analyst, {company_name}"
@@ -1909,6 +1940,19 @@ def route_after_execution(state: AgentState) -> str:
     return "reason_and_act"
 
 
+def _render_headline_conflicts(conflicts: list, limit: int = 3) -> str:
+    """What the reply led with, and what the summary sheet holds instead."""
+    parts = []
+    for c in conflicts[:limit]:
+        holds = ", ".join(c.get("summary_holds", [])) or "nothing readable"
+        parts.append(
+            f"you call {c.get('claimed')} the {c.get('word')}, and the summary "
+            f"sheet holds {holds}"
+        )
+    more = len(conflicts) - limit
+    return "; ".join(parts) + (f" (and {more} more)" if more > 0 else "")
+
+
 def _render_ranking_conflicts(conflicts: list, limit: int = 4) -> str:
     """The disagreement in one sentence, however many columns it spans.
 
@@ -1958,6 +2002,8 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     state.rebuild_unfixable = False
     state.ranking_conflicts = []
     state.ranking_unfixable = False
+    state.headline_conflicts = []
+    state.headline_unfixable = False
 
     # Checked before the file check, and against the results rather than the
     # reply, because this is an error in the work itself and not in the write-up.
@@ -2009,6 +2055,51 @@ async def verify_deliverables(state: AgentState) -> AgentState:
     text = (final.get("text") or "").strip() if isinstance(final, dict) else ""
     if not text:
         return state  # nothing asserted yet; finalize's own fallback covers this
+
+    # First of the three, because it is the one that changes what the reply is
+    # *about*. A missing figure is a gap and a wrong ranking is a wrong sentence;
+    # a headline the summary sheet contradicts means the reader is being handed
+    # the wrong answer, with the right one sitting in the attachment.
+    if _headline_verifier is not None:
+        try:
+            conflicts = await _headline_verifier(text)
+        except Exception as e:
+            print(f"[agent] Headline check failed to run ({e}) — sending as-is", flush=True)
+            conflicts = []
+        if conflicts:
+            state.headline_conflicts = list(conflicts)
+            if state.headline_attempts >= state.max_verify_attempts:
+                state.headline_unfixable = True
+                print(
+                    f"[agent] Headline check: {len(conflicts)} claim(s) the summary "
+                    "sheet disagrees with, and no attempts left — delivering with a note",
+                    flush=True,
+                )
+            else:
+                state.headline_attempts += 1
+                pairs = _render_headline_conflicts(conflicts)
+                print(
+                    f"[agent] Headline check: handing back {len(conflicts)} claim(s) "
+                    f"(attempt {state.headline_attempts}/{state.max_verify_attempts})",
+                    flush=True,
+                )
+                state.context.pop("_wrapping_up", None)
+                state.action_results.append(
+                    "HEADLINE CHECK — the workbook you are about to attach has a "
+                    f"summary sheet, and your reply leads with a figure it does not "
+                    f"hold: {pairs}.\n"
+                    "You wrote that summary sheet. It is where you put the numbers "
+                    "that answer the question, so the reply should lead from it:\n"
+                    "1. If the summary sheet is right, lead with its figure and say "
+                    "what it means. The number you led with may still belong in the "
+                    "reply as supporting detail — it is the billing, not the fact.\n"
+                    "2. If the summary sheet is wrong, fix the sheet before sending, "
+                    "because that is the file the reader will open.\n"
+                    "3. Check you have not dropped a row the summary accounts for. A "
+                    "headline that is too small usually means one.\n"
+                    "This is your own file disagreeing with your own opening line."
+                )
+                return state
 
     # Between the two: a wrong claim is worse than a missing figure and better
     # than wrong arithmetic. Checked before the gap check because it can send the
@@ -2723,6 +2814,7 @@ _INTERNAL_PREFIXES = (
     "DELIVERABLE CHECK",
     "ROUNDED-INPUT CHECK",
     "RANKING CHECK",
+    "HEADLINE CHECK",
 )
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -3399,6 +3491,7 @@ async def run_agent(
     file_registrar_fn=None,
     file_describer_fn=None,
     ranking_fn=None,
+    headline_fn=None,
     verify_fn=None,
     thread_id: str = "",
     verify_attempts: int | None = None,
@@ -3439,6 +3532,8 @@ async def run_agent(
         set_file_describer(file_describer_fn)
     if ranking_fn is not None:
         set_ranking_verifier(ranking_fn)
+    if headline_fn is not None:
+        set_headline_verifier(headline_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
 
@@ -3514,6 +3609,7 @@ async def resume_agent(
     file_registrar_fn=None,
     file_describer_fn=None,
     ranking_fn=None,
+    headline_fn=None,
     verify_fn=None,
 ) -> dict:
     """Resume a previously interrupted graph with the manager's resolution.
@@ -3548,6 +3644,8 @@ async def resume_agent(
         set_file_describer(file_describer_fn)
     if ranking_fn is not None:
         set_ranking_verifier(ranking_fn)
+    if headline_fn is not None:
+        set_headline_verifier(headline_fn)
     if verify_fn is not None:
         set_deliverable_verifier(verify_fn)
     if any(f is not None for f in (contribute_fn, search_fn, use_fn, mcp_fn)):
