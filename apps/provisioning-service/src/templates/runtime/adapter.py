@@ -701,11 +701,16 @@ async def _read_back_summary(mcp_result: Any) -> Any:
         for name, rows in sheets.items():
             if not _SUMMARY_SHEET_RE.match(str(name or "")) or not isinstance(rows, list):
                 continue
+            # A header row is a pair like any other by shape — the first live
+            # read-back handed back "Metric: Value" alongside the figures, which
+            # is a label the model could quote as though it meant something.
+            # What separates them is that a summary value is a number.
             pairs = [
                 f"{str(r[0]).strip()}: {r[1]}"
                 for r in rows[:12]
                 if isinstance(r, (list, tuple)) and len(r) >= 2
                 and str(r[0]).strip() and r[1] is not None
+                and _normalise_number(str(r[1])) is not None
             ]
             if pairs:
                 f["summary"] = pairs

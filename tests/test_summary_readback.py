@@ -69,6 +69,21 @@ def test_the_original_note_is_kept(monkeypatch):
     assert "Pass this file_id" in _run(monkeypatch, WORKBOOK)["files"][0]["note"]
 
 
+def test_the_header_row_is_not_handed_back_as_a_figure(monkeypatch):
+    # The first live read-back returned "Metric: Value" alongside the totals —
+    # a header row is a two-cell row like any other by shape, and a label the
+    # model could quote as though it meant something. A summary value is a
+    # number; that is what separates them.
+    summary = _run(monkeypatch, WORKBOOK)["files"][0]["summary"]
+    assert not any(p.startswith("Metric:") for p in summary), summary
+    assert len(summary) == 3
+
+
+def test_a_summary_of_only_headers_yields_nothing(monkeypatch):
+    out = _run(monkeypatch, {"sheets": {"Summary": [["Metric", "Value"]]}})
+    assert "summary" not in out["files"][0]
+
+
 def test_detail_sheets_are_not_pasted_back(monkeypatch):
     # The workings can be thousands of rows. Only the sheet that answers the
     # question comes back, or the run loses its budget to its own output.
