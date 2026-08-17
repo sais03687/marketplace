@@ -1836,6 +1836,11 @@ def _summary_sheet_values(parsed: dict) -> list[Decimal]:
 
 def _headline_conflicts(summary_text: str, values: list[Decimal]) -> list[dict]:
     """Headline figures in the reply that the summary sheet does not hold."""
+    # Deduped here rather than at the caller, so a direct caller cannot quote a
+    # doubled list back at anyone. A run delivering two workbooks contributes
+    # two summary sheets, and the first live fire read back "155300, 151450,
+    # 3850, 155300, 151450, 3850" — which reads like two different sets.
+    values = list(dict.fromkeys(values))
     out: list[dict] = []
     seen: set[Decimal] = set()
     for m in _HEADLINE_RE.finditer(summary_text or ""):
@@ -1884,12 +1889,7 @@ async def check_headline_against_summary(
     if not values:
         return []
 
-    # A run that delivers two workbooks contributes two summary sheets, and the
-    # first live fire read back "155300, 151450, 3850, 155300, 151450, 3850".
-    # Membership does not care, but the message quoting it is read by the model
-    # and by whoever approves the reply, and a list that repeats itself reads
-    # like two different sets of figures.
-    values = list(dict.fromkeys(values))
+    # Deduping happens in _headline_conflicts, which every caller goes through.
 
     conflicts = _headline_conflicts(summary_text, values)
     if conflicts:

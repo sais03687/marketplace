@@ -127,13 +127,17 @@ def test_a_trailing_comma_is_not_part_of_the_figure():
 
 
 def test_two_workbooks_do_not_report_their_summary_twice():
-    # A run delivering a report and an exceptions workbook contributes two
-    # summary sheets, and the message read "155300, 151450, 3850, 155300,
-    # 151450, 3850" — which reads like two different sets of figures.
+    # D01 delivers a report and an exceptions workbook, so two summary sheets
+    # reach the check and the message read them back doubled — "155300, 151450,
+    # 3850, 155300, 151450, 3850" reads like two different sets of figures.
+    # Deliberately passing the doubled list into the same function production
+    # calls: the first version of this test deduped the list itself and then
+    # asserted on its own arithmetic, which would have passed with the fix
+    # reverted.
     doubled = _values(D01_PARSED) + _values(D01_PARSED)
-    deduped = list(dict.fromkeys(doubled))
-    assert len(deduped) == 3
-    assert deduped == _values(D01_PARSED)
+    assert len(doubled) == 6
+    conflicts = adapter._headline_conflicts("The total is 148,850.", doubled)
+    assert conflicts[0]["summary_holds"] == ["155300", "151450", "3850"]
 
 
 def test_a_reply_with_no_headline_word_is_left_alone():
