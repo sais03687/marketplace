@@ -402,7 +402,8 @@ async def run_agent(
   "category": "HR_OPS",
   "version": "1.0.0",
   "pricePerMonth": 5900,
-  "modelTier": "sonnet",
+  "model": "anthropic/claude-sonnet-5",
+  "modelTier": "pro",
   "runtime": "custom",
   "capabilities": [
     { "name": "Candidate screening", "description": "Replies to inbound applications and scores fit." },
@@ -426,8 +427,9 @@ async def run_agent(
           ["description", "string", "Yes", "Markdown. Max 2000 characters. Shown on the agent detail page."],
           ["category", "enum", "Yes", "SALES_OPERATIONS | CUSTOMER_SUCCESS | EXECUTIVE_ASSISTANT | RESEARCH | MARKETING_OPS | HR_OPS | FINANCE_OPS | ENGINEERING_OPS | IT_SUPPORT | GENERAL"],
           ["version", "string", "Yes", "Semver: 1.0.0, 1.1.0, etc."],
-          ["pricePerMonth", "integer", "Yes", "USD cents. Minimum: $29 (haiku), $59 (sonnet), $149 (opus). Buyers pay this monthly."],
-          ["modelTier", "enum", "Yes", "haiku | sonnet | opus. Determines which Claude model powers the agent and the minimum price."],
+          ["pricePerMonth", "integer", "Yes", "USD cents. Minimum is set by the tier your model falls into: $29 standard, $59 pro, $149 premium. Buyers pay this monthly."],
+          ["model", "string", "No", "Any model the provider serves, as \"vendor/model\" — e.g. openai/gpt-oss-120b. Sets which model runs your agent, and decides the tier. Omit it and the platform default is used."],
+          ["modelTier", "enum", "Yes", "standard | pro | premium. Ignored when you name a model — the tier is derived from what that model costs. Sets the price floor."],
           ["runtime", "string", "Yes", "Must be \"custom\"."],
           ["capabilities", "array", "Yes", "List of { name, description } objects. Shown as feature bullets on the listing."],
           ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, calendar, sharepoint, excel, teams, etc."],
@@ -436,6 +438,54 @@ async def run_agent(
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
         ]}
       />
+
+      {/* Models and tiers */}
+      <H2 id="models">Choosing a model</H2>
+
+      <P>
+        Name any model the provider serves in the <Code>model</Code> field, using its
+        full <Code>vendor/model</Code> id. You are not limited to a shortlist — if it is
+        on OpenRouter, you can publish on it. The platform supplies the API key and pays
+        the model bill; your code never sees a credential.
+      </P>
+
+      <P>
+        You do not choose a tier. The tier is worked out from what your model costs, and
+        it sets the minimum you may charge. This is why the two can never disagree: an
+        agent running an expensive model cannot be sold at the cheapest floor.
+      </P>
+
+      <Table
+        headers={["Tier", "Price floor", "Blended cost", "Examples"]}
+        rows={[
+          ["standard", "$29/mo", "up to $2.50 per M tokens", "openai/gpt-oss-120b, openai/gpt-4.1-mini, google/gemini-2.5-flash, anthropic/claude-haiku-4.5"],
+          ["pro", "$59/mo", "$2.50 – $6.00 per M tokens", "google/gemini-2.5-pro, openai/gpt-4.1, anthropic/claude-sonnet-5"],
+          ["premium", "$149/mo", "above $6.00 per M tokens", "anthropic/claude-opus-5"],
+        ]}
+      />
+
+      <P>
+        Blended cost is <Code>0.75 × input + 0.25 × output</Code> price per million
+        tokens, taken from the provider's published rates. It is weighted toward input
+        because these agents send large prompts — system rules, tool listings, memory and
+        prior results go up on every call — and get back a short JSON object.
+      </P>
+
+      <P>
+        Two things worth knowing before you pick. A cheaper model is not always a slower
+        or worse one: measured on 17 August 2026, <Code>openai/gpt-oss-120b</Code> read
+        subtotal rows correctly on a budget task that a pricier model double-counted
+        three times out of three. But it took 28–38 seconds per reasoning step against
+        1–2 seconds for <Code>google/gemini-2.5-flash</Code>, so a ten-step task is
+        minutes rather than seconds. Price, accuracy and latency are three separate
+        questions.
+      </P>
+
+      <P>
+        If you omit <Code>model</Code>, your agent runs the platform default and the tier
+        falls back to whatever <Code>modelTier</Code> declares. Naming a model is
+        strongly preferred: it is the only way a buyer can see what they are paying for.
+      </P>
 
       {/* Upload process */}
       <H2 id="upload">Uploading & Vetting</H2>

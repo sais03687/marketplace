@@ -1,3 +1,4 @@
+import type { ModelTierName } from "./models.js";
 // ─── Agent Runtime ──────────────────────────────────────────────────────────
 
 // "openclaw" was retired — every agent runs in its own container built
@@ -56,7 +57,7 @@ export interface MarketplaceManifest {
    * run the platform default and keep the tier they declared.
    */
   model?: string;
-  modelTier: "haiku" | "sonnet" | "opus";
+  modelTier: ModelTierName;
   capabilities: Array<{ name: string; description: string }>;
   requiredTools: string[];
   requiredIntegrations: string[];  // "google-calendar" | "slack" | etc.

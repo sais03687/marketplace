@@ -435,9 +435,9 @@ enum ApprovalStatus {
 }
 
 enum ModelTier {
-  HAIKU
-  SONNET
-  OPUS
+  STANDARD
+  PRO
+  PREMIUM
 }
 
 enum CompanyPlan {

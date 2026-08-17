@@ -1,6 +1,6 @@
 import type { AgentCategory, MarketplaceManifest } from "./types.js";
 import { VALID_INTEGRATIONS } from "./types.js";
-import { MODEL_CATALOGUE, VALID_MODEL_IDS } from "./models.js";
+import { MODEL_TIERS, canonicalTier } from "./models.js";
 
 export interface ValidationError {
   field: string;
@@ -9,6 +9,8 @@ export interface ValidationError {
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+/** "vendor/model", optionally with a :variant suffix the provider uses. */
+const MODEL_ID_RE = /^[a-z0-9][\w.-]*\/[\w.:-]+$/i;
 
 const VALID_CATEGORIES: Set<string> = new Set([
   "SALES_OPERATIONS",
@@ -23,7 +25,8 @@ const VALID_CATEGORIES: Set<string> = new Set([
   "GENERAL",
 ]);
 
-const VALID_TIERS: Set<string> = new Set(["haiku", "sonnet", "opus"]);
+// Tier names, and the retired ones they replaced, live in models.ts.
+// `canonicalTier` accepts either and returns the current name.
 
 /** The only runtimes that may be published. Exported so the creator UI can warn
  *  about a dead runtime using the same list the validator rejects on, rather
@@ -61,20 +64,29 @@ export function validateManifest(m: unknown): ValidationError[] {
     errors.push({ field: "category", message: `category must be one of: ${[...VALID_CATEGORIES].join(", ")}` });
   }
 
-  // Model tier enum
-  if (!VALID_TIERS.has(manifest.modelTier as string)) {
-    errors.push({ field: "modelTier", message: `modelTier must be one of: haiku, sonnet, opus` });
+  // Model tier enum. The retired names (haiku/sonnet/opus) still validate —
+  // they are in every manifest published before 2026-08-17 — but only the
+  // current names are offered back, so nobody learns the old ones from an error.
+  if (canonicalTier(manifest.modelTier) === null) {
+    errors.push({
+      field: "modelTier",
+      message: `modelTier must be one of: ${MODEL_TIERS.join(", ")}`,
+    });
   }
 
   // Model pick. Optional — manifests predating the catalogue run the platform
-  // default — but an unknown id is rejected rather than defaulted, because
-  // defaulting would hand the buyer a different model from the one advertised.
+  // default — and only its *shape* is checked here.
+  //
+  // This used to reject anything outside MODEL_CATALOGUE, which is eight models
+  // against the four hundred the provider serves. Whether an id is real, and
+  // which tier its price puts it in, is now settled against the provider at
+  // publish time (see apps/web/lib/model-resolver.ts). This function stays pure
+  // and offline, so it cannot ask.
   if (manifest.model !== undefined) {
-    if (typeof manifest.model !== "string" || !VALID_MODEL_IDS.has(manifest.model)) {
-      const offered = MODEL_CATALOGUE.map((m) => `${m.id} (${m.tier})`).join(", ");
+    if (typeof manifest.model !== "string" || !MODEL_ID_RE.test(manifest.model.trim())) {
       errors.push({
         field: "model",
-        message: `model must be one of: ${offered}`,
+        message: 'model must be a provider id in "vendor/model" form, e.g. "openai/gpt-oss-120b"',
       });
     }
   }

@@ -14,11 +14,17 @@ export { VALID_RUNTIMES } from "./validate.js";
 
 export {
   MODEL_CATALOGUE,
+  MODEL_TIERS,
+  TIER_ALIASES,
+  TIER_COST_CEILINGS,
   VALID_MODEL_IDS,
   PROVIDER_CREDENTIALS,
+  blendedCostPerM,
+  canonicalTier,
   findModel,
-  tierForModel,
   modelIdsForTier,
+  tierForModel,
+  tierForPricing,
   type ModelTierName,
   type ModelProvider,
   type ModelCatalogueEntry,

@@ -112,7 +112,7 @@ def _manager_email() -> str:
     """
     return (_manager_email_live or MANAGER_EMAIL or "").strip()
 ANTHROPIC_API_KEY = _secrets["ANTHROPIC_API_KEY"]
-MODEL = os.environ.get("MODEL", "sonnet")
+MODEL = os.environ.get("MODEL", "pro")
 APPROVAL_WEBHOOK = _secrets["MARKETPLACE_APPROVAL_WEBHOOK"] or "http://localhost:3002"
 APPROVAL_TOKEN = _secrets["APPROVAL_WEBHOOK_TOKEN"]
 MARKETPLACE_URL = os.environ.get("MARKETPLACE_URL", "http://localhost:3002")
@@ -3981,10 +3981,16 @@ def _validate_result(result: dict) -> None:
 # ─── Fix 6: Per-Deployment Usage Caps ────────────────────────────────────────
 
 _TIER_LIMITS = {
-    "haiku":  {"llm_calls": 500, "emails": 100},
-    "sonnet": {"llm_calls": 200, "emails": 100},
-    "opus":   {"llm_calls": 100, "emails": 50},
+    "standard": {"llm_calls": 500, "emails": 100},
+    "pro":      {"llm_calls": 200, "emails": 100},
+    "premium":  {"llm_calls": 100, "emails": 50},
 }
+
+# The names these replaced on 2026-08-17. MODEL is baked into a container at
+# provision time, so every deployment created before then still says "sonnet",
+# and a container that fell through to the default would silently get a
+# different budget than the one its buyer is paying for.
+_TIER_ALIASES = {"haiku": "standard", "sonnet": "pro", "opus": "premium"}
 
 _usage_counts: dict[str, int] = {"llm_calls": 0, "emails": 0}
 _usage_window_start = time.time()
@@ -3998,8 +4004,9 @@ def _check_and_increment(counter: str) -> bool:
         _usage_counts["emails"] = 0
         _usage_window_start = time.time()
 
-    tier = MODEL.lower()
-    limits = _TIER_LIMITS.get(tier, _TIER_LIMITS["sonnet"])
+    tier = MODEL.strip().lower()
+    tier = _TIER_ALIASES.get(tier, tier)
+    limits = _TIER_LIMITS.get(tier, _TIER_LIMITS["pro"])
     if _usage_counts[counter] >= limits[counter]:
         return False
     _usage_counts[counter] += 1

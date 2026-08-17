@@ -11,9 +11,15 @@
 
 /** Floor per model tier, in cents. Growth-phase figures; revisit deliberately. */
 export const MIN_PRICE_CENTS: Record<string, number> = {
-  HAIKU: 2900, // $29/mo
-  SONNET: 5900, // $59/mo
-  OPUS: 14900, // $149/mo
+  STANDARD: 2900, // $29/mo
+  PRO: 5900, // $59/mo
+  PREMIUM: 14900, // $149/mo
+  // The names these replaced on 2026-08-17. Kept because rows written before
+  // then still hold them, and a floor that silently falls back to the cheapest
+  // band would under-charge for an agent running the priciest model.
+  HAIKU: 2900,
+  SONNET: 5900,
+  OPUS: 14900,
 };
 
 /** Fallback for a tier we do not recognise — the cheapest floor, never free. */

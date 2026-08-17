@@ -81,7 +81,7 @@ const DANGEROUS_PATTERNS: { re: RegExp; label: string }[] = [
 // LLM_MODEL along with the key that pays for it. Creator code builds the LLM
 // client itself, so a literal model id in that constructor silently overrides
 // the pick — and bills the platform's key for whatever it names. That is the
-// hole that let an agent declare the haiku tier, charge the $29 floor, and run
+// hole that let an agent declare the standard tier, charge the $29 floor, and run
 // a top-tier model.
 //
 // Deliberately narrow: only a vendor/model literal assigned to a model kwarg.
@@ -402,7 +402,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `COMPANY_DOMAIN=vet.internal`,
             `MANAGER_EMAIL=manager@vet.internal`,
             `APPROVAL_POLICY=always`,
-            `MODEL=haiku`,
+            `MODEL=standard`,
             `LLM_API_KEY=vet-noop`,
             `LLM_BASE_URL=`,
             `LLM_MODEL=gpt-4o-mini`,

@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { validateApiKey } from "@/lib/api-key-auth";
-import { validateManifest, tierForModel } from "@marketplace/agent-package-schema";
+import { validateManifest, canonicalTier } from "@marketplace/agent-package-schema";
+import { resolveModel } from "@/lib/model-resolver";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
 import { priceRejection } from "@/lib/agent-pricing";
@@ -201,11 +202,25 @@ export async function POST(request: Request) {
   // declared independently, which meant a creator could name the haiku tier,
   // pay the $29 floor, and run whatever model their code constructed — the tier
   // chose nothing but the price. Deriving it makes the floor follow the model.
+  //
+  // The model is resolved against the provider rather than a hand-kept list, so
+  // any of the four hundred it serves can be published and the tier still comes
+  // from what that model costs. A typo is caught here, at publish time, instead
+  // of at hire time in front of a buyer.
   const declaredModel =
-    typeof manifest.model === "string" ? manifest.model : null;
-  const derivedTier = tierForModel(declaredModel);
+    typeof manifest.model === "string" ? manifest.model.trim() : null;
+
+  let derivedTier: string | null = null;
+  if (declaredModel) {
+    const resolved = await resolveModel(declaredModel);
+    if ("error" in resolved) return jsonError(resolved.error, 400);
+    derivedTier = resolved.model.tier;
+  }
+
+  // Falls back to the declared tier only when no model was named. `canonicalTier`
+  // maps the retired haiku/sonnet/opus spellings onto the current ones.
   const modelTierRaw = (
-    derivedTier ?? (manifest.modelTier as string)
+    derivedTier ?? canonicalTier(manifest.modelTier) ?? "standard"
   ).toUpperCase();
   const pricePerMonthRaw = formData.get("pricePerMonth") as string | null;
   const priceCheck = pricePerMonthRaw
