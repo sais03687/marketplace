@@ -1670,7 +1670,20 @@ def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
 # a defect (a workbook may hold detail the summary omits), and prose is not
 # checkable this way at all.
 
-_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+# A hyphen is a minus sign only where it does not follow a letter or a digit.
+#
+# `-?` on its own made an identifier negative. SKU-1003 read as -1003, deal
+# D-1007 as -1007, invoice INV-4501 as -4501, and the range "1200-1500" as 1200
+# and -1500. Task E4 on 2026-08-17 is what it cost: the summary cited SKU-1003,
+# the workbook held that id as a plain 1003, and the check reported a figure
+# missing that the file was carrying all along. The agent is handed those as a
+# real gap - the same shape as the SharePoint GUID incident on 2026-08-10, where
+# two fragments of a download link were treated as absent figures and sent it
+# rebuilding the workbook to put them in a revenue table.
+#
+# The lookbehind also drops digits welded to a word, "Q3" and "FY2026", which
+# were matched and then discarded by the filters below anyway.
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])-?\d[\d,]*(?:\.\d+)?")
 
 # A bare integer under this is nearly always a count, an ordinal, a step number
 # or a month — "3 regions", "top 5", "Q3". Requiring a decimal point or real
@@ -1901,10 +1914,10 @@ _RANKING_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "2026-03" is a cohort, not two numbers, and _NUMBER_RE reads it as 2026 and
-# -03. Left in, the label alone pushes a sentence over the enumeration limit
-# below and the real claim is never tested — which is precisely the sentence
-# this check exists for.
+# "2026-03" is a cohort, not two numbers. _NUMBER_RE no longer reads the month
+# as negative, but it still reads two figures where there is one label, and left
+# in, that alone pushes a sentence over the enumeration limit below so the real
+# claim is never tested — which is precisely the sentence this check exists for.
 _DATELIKE_RE = re.compile(r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b")
 
 # A row whose label says it summarises the others. Its value beats every
