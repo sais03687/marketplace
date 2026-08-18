@@ -119,3 +119,10 @@ benchmark/*
 !benchmark/find_sent.mjs
 !benchmark/gate_count.sh
 !benchmark/send_wave.mjs
+
+# A fork of is-a.dev/register, a separate project with its own remote, nested
+# here by accident. It was recorded as a gitlink with no .gitmodules entry, so
+# every checkout warned "No url found for submodule path" and git submodule
+# commands failed. Its contents are untouched on disk; this repository just
+# stops claiming to track them.
+register/

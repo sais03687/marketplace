@@ -1,5 +1,15 @@
 # Agent Upload — Agentstore Marketplace
 #
+# A TEMPLATE, to copy into your own agent repository as
+# .github/workflows/upload-agent.yml — not a workflow of this repository.
+#
+# It lived in .github/workflows/ here, where GitHub ran it on every push to
+# main and it failed in seven seconds: `working-directory: agents/hiring-
+# coordinator` names a directory this repository does not have, so bash could
+# not be started and the step died before running a command. Every commit
+# carried a red X for a workflow that was never meant to run here, which is
+# how a team learns to stop reading CI.
+#
 # Zips your agent directory and uploads it to the marketplace on every push to main.
 #
 # Required secrets (set in your repo → Settings → Secrets → Actions):
@@ -26,7 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: agents/hiring-coordinator
+        # ── change this to your agent's directory ──
+        working-directory: agents/your-agent
     steps:
       - uses: actions/checkout@v4
 
