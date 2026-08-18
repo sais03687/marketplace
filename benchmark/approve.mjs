@@ -1,3 +1,4 @@
+import fs from "node:fs";
 // Approve a pending request the way a buyer does — through the link in the
 // notification email.
 //
@@ -22,6 +23,11 @@ function arg(name, fallback = null) {
 const CONTAINS = (arg("contains", "") || "").toLowerCase();
 const DECISION = arg("decision", "approve");
 const TIMEOUT = Number(arg("timeout", 600)) * 1000;
+// Approvals stay in the mailbox after they are resolved, so a loop finds the
+// same one every pass and posts it again. Harmless - the token stops working
+// once the approval leaves PENDING - but it printed "resolved" five times for
+// one gate, which reads as five gates. Ids handled already are remembered here.
+const STATE = arg("state", "");
 const SINCE = new Date(arg("since", new Date(Date.now() - 3600e3).toISOString()));
 
 if (!["approve", "reject"].includes(DECISION)) {
@@ -50,7 +56,24 @@ async function token() {
 // and not a back door.
 const LINK = /https?:\/\/[^\s"'<>]*\/approve\/action\/([A-Za-z0-9_-]+)\/(approve|reject)\?t=([a-f0-9]+)/;
 
+function seen() {
+  if (!STATE) return new Set();
+  try {
+    return new Set(JSON.parse(fs.readFileSync(STATE, "utf8")));
+  } catch {
+    return new Set();
+  }
+}
+
+function remember(id) {
+  if (!STATE) return;
+  const all = seen();
+  all.add(id);
+  fs.writeFileSync(STATE, JSON.stringify([...all]));
+}
+
 async function findApproval(H) {
+  const done = seen();
   const u =
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(MAILBOX)}/messages` +
     `?$top=25&$select=id,subject,receivedDateTime,body,from` +
@@ -67,7 +90,9 @@ async function findApproval(H) {
     const hay = ((m.subject || "") + " " + (m.body?.content || "")).toLowerCase();
     if (CONTAINS && !hay.includes(CONTAINS)) continue;
     const hit = LINK.exec(m.body?.content || "");
-    if (hit) return { subject: m.subject, id: hit[1], base: hit[0].split("/approve/action/")[0], t: hit[3] };
+    if (hit && !done.has(hit[1])) {
+      return { subject: m.subject, id: hit[1], base: hit[0].split("/approve/action/")[0], t: hit[3] };
+    }
   }
   return null;
 }
@@ -80,6 +105,7 @@ for (;;) {
     const url = `${a.base}/api/approve-link/${a.id}/${DECISION}?t=${a.t}`;
     const r = await fetch(url, { method: "POST" });
     const body = await r.text();
+    remember(a.id);
     const ok = r.status === 200 && !/isn't valid|no longer|expired/i.test(body);
     console.log(`${DECISION}: ${a.subject}`);
     console.log(`  ${r.status} ${ok ? "resolved" : "REFUSED"}`);

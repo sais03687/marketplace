@@ -88,6 +88,7 @@ esac
 # manager a question, and then - having been told yes - asked again before the
 # upload. A single approval left it stuck at the second gate and the harness
 # reported nothing at all.
+SEEN=$(mktemp)
 echo
 echo "approving whatever comes up, until the reply lands..."
 (
@@ -97,14 +98,14 @@ echo "approving whatever comes up, until the reply lands..."
     # so neither carries the buyer's own subject line, and matching on it
     # skipped every gate. `--since` is the identifier that actually works:
     # one task at a time, and nothing before this run began.
-    node --env-file="$ENVFILE" "$BENCH/approve.mjs"          --since "$SINCE" --timeout 45 2>&1 | sed "s/^/  /"
+    node --env-file="$ENVFILE" "$BENCH/approve.mjs"          --since "$SINCE" --state "$SEEN" --timeout 45 2>&1 | sed "s/^/  /"
     sleep 5
   done
 ) &
 APPROVER=$!
 # However this run ends, the approver must not outlive it and start resolving
 # gates belonging to the next one.
-trap 'kill $APPROVER 2>/dev/null' EXIT
+trap 'kill $APPROVER 2>/dev/null; rm -f "$SEEN"' EXIT
 
 echo "waiting for the reply..."
 OUT=$(mktemp)
