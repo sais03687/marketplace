@@ -79,6 +79,14 @@ case "$WHEN" in
   *) echo "unknown --when: $WHEN" >&2; exit 2 ;;
 esac
 
+# Anything that queues for approval waits for a human, and a test that waits for
+# a human is not a test. This goes through the link in the notification email,
+# which is the buyer's own route and the one thing a database shortcut would
+# leave untested.
+echo
+echo "approving (if anything is queued)..."
+node --env-file="$ENVFILE" "$BENCH/approve.mjs"      --contains "$MATCH" --since "$SINCE" --timeout 600 ||   echo "  nothing queued, or it resolved itself - carrying on"
+
 echo
 echo "waiting for the reply..."
 OUT=$(mktemp)
