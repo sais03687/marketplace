@@ -49,10 +49,16 @@ for (const id of ids) {
     continue;
   }
 
+  // A task may name its own recipients. Without this every task is addressed
+  // straight to the agent, and the one case worth testing - the agent copied on
+  // an instruction meant for somebody else - could not be expressed at all.
+  const toList = e.to ? [].concat(e.to) : [TO];
+  const ccList = e.cc ? [].concat(e.cc) : [];
   const message = {
     subject: e.subject,
     body: { contentType: "Text", content: e.body },
-    toRecipients: [{ emailAddress: { address: TO } }],
+    toRecipients: toList.map((a) => ({ emailAddress: { address: a } })),
+    ...(ccList.length ? { ccRecipients: ccList.map((a) => ({ emailAddress: { address: a } })) } : {}),
   };
   const att = attachmentsOf(e);
   if (att.length) {
@@ -73,7 +79,7 @@ for (const id of ids) {
     }
   );
   if (r.status === 202) {
-    console.log(`${id}: sent (${att.length} attachment${att.length === 1 ? "" : "s"}) [${e._file}]`);
+    console.log(`${id}: sent to ${toList.join(", ")}${ccList.length ? " cc " + ccList.join(", ") : ""} (${att.length} attachment${att.length === 1 ? "" : "s"}) [${e._file}]`);
   } else {
     console.log(`${id}: FAILED ${r.status} ${(await r.text()).slice(0, 200)}`);
     failed++;
