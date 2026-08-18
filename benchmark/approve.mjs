@@ -59,7 +59,13 @@ async function findApproval(H) {
   for (const m of j.value || []) {
     if (new Date(m.receivedDateTime) < SINCE) continue;
     if (!/^Action needed:/i.test(m.subject || "")) continue;
-    if (CONTAINS && !(m.subject || "").toLowerCase().includes(CONTAINS)) continue;
+    // The approval email's subject is a fixed shape - "Action needed: <agent>
+    // needs approval for decision_request" - and never carries the task's own
+    // subject, so matching on subject alone found nothing and every run that
+    // raised a question sat unapproved until the harness gave up. The task is
+    // named in the body instead, in the draft and the context.
+    const hay = ((m.subject || "") + " " + (m.body?.content || "")).toLowerCase();
+    if (CONTAINS && !hay.includes(CONTAINS)) continue;
     const hit = LINK.exec(m.body?.content || "");
     if (hit) return { subject: m.subject, id: hit[1], base: hit[0].split("/approve/action/")[0], t: hit[3] };
   }
