@@ -2612,32 +2612,16 @@ async def finalize(state: AgentState) -> AgentState:
             )
             print(f"[agent] Delivering with the failure detail: {detail[:80]}", flush=True)
 
-    # Point at the notebook, when there is one and the reply quotes figures.
+    # The pointer to the notebook used to be added here, on the strength of the
+    # run having called the sandbox. That is a proxy for "a notebook is attached"
+    # rather than the fact, and on 2026-08-18 they came apart: task F3 built its
+    # workbook, the container was redeployed before the reply was composed, and
+    # the buyer was told the workbook and the notebook were attached when the
+    # message carried neither.
     #
-    # The platform already attaches the code that produced them — every run that
-    # touches the sandbox travels with working.ipynb — and nobody opens an
-    # attachment they were not told about. This is the only defence the platform
-    # has against a wrong number, and it is a weak one: it does not catch the
-    # error, it makes the error findable. On 2026-08-14 a run reported a fee of
-    # 48 where the answer was 0.12 and every check passed it, because the prose
-    # and the file agreed with each other. Both were wrong, and the derivation
-    # was sitting in the notebook the whole time.
-    #
-    # Said by the platform rather than asked of the model, because it is a fact
-    # about what was attached rather than a judgement, and the model has already
-    # been asked for the assumption in words.
-    if (
-        result_text.strip()
-        and _summary_figures_present(result_text)
-        and any("python-sandbox" in str(a) for a in state.actions_taken)
-        and "ipynb" not in result_text
-    ):
-        result_text = (
-            f"{result_text.rstrip()}\n\n"
-            "The working is attached as working.ipynb — every step I ran, in "
-            "order, with its output. If a figure looks wrong, that file will "
-            "show you where it came from."
-        )
+    # The platform adds it now, at the point where the attachment list exists —
+    # `note_the_notebook` in the adapter. A claim about what is in the message
+    # belongs to whatever builds the message.
 
     # Measured arithmetic drift with no budget left to correct it. Said plainly
     # and first among the caveats, because a wrong figure is worse than a

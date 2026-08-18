@@ -160,6 +160,27 @@ RESOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 PENDING_RESUMES_DIR = DATA_DIR / "pending_resumes"
 PENDING_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 
+# The files a run produced, and which run they belong to.
+#
+# These lived only in `_SANDBOX_FILES` and `_RUN_FILES`, both plain dicts in this
+# process, so a restart lost every handle for every run in flight — while the
+# graph state itself, checkpointed to this same volume, survived. The same
+# half-persisted shape the pending-resume directory above was written to fix.
+#
+# Task F3 on 2026-08-18 is what it costs. It built its workbook at 02:53, the
+# container was redeployed at 03:10, and the reply it composed at 03:15 told the
+# buyer "the Excel workbook is attached" with nothing attached — because the
+# sentence is decided by whether the run used the sandbox, and the attachment
+# list is read from a registry that had been wiped. Five uploads in the same
+# window were refused with "not a file id the platform is holding".
+#
+# Bytes in one file, the name beside it, so a partial write cannot produce an
+# entry whose contents belong to something else.
+SANDBOX_FILES_DIR = DATA_DIR / "sandbox_files"
+SANDBOX_FILES_DIR.mkdir(parents=True, exist_ok=True)
+RUN_FILES_DIR = DATA_DIR / "run_files"
+RUN_FILES_DIR.mkdir(parents=True, exist_ok=True)
+
 # Files that arrived attached to inbound mail. The poller fetches them from Graph
 # and puts them on the webhook payload; before this existed nothing read them, so
 # they were fetched, sent over the wire and dropped. The agent, told about a CSV it
@@ -373,11 +394,16 @@ def _evict_to_fit(registry: dict, count_limit: int, byte_limit: int) -> None:
     progress just asked for, and dropping it would fail the work being done now
     to protect work that is already finished.
     """
+    # Evicting from memory drops the copy on disk too. Leaving it would let the
+    # directory grow without bound and would let a restore resurrect a file the
+    # ceilings had already rejected.
     while len(registry) > count_limit:
+        _forget_sandbox_file(next(iter(registry)))
         registry.pop(next(iter(registry)))
     total = sum(len(e.get("bytes") or b"") for e in registry.values())
     while total > byte_limit and len(registry) > 1:
         oldest = next(iter(registry))
+        _forget_sandbox_file(oldest)
         total -= len(registry.pop(oldest).get("bytes") or b"")
 
 # A handle costs a few tokens whatever the file weighs, so this ceiling is about
@@ -437,6 +463,83 @@ _current_run: contextvars.ContextVar[str] = contextvars.ContextVar(
 # run suspended for approval resumes in a different task.
 _RUN_STEPS: dict[str, list[dict]] = {}
 _RUN_STEPS_LIMIT = 40  # steps per run; a rebuild loop cannot grow without bound
+
+
+def _safe_handle(handle: str) -> str:
+    """A handle as a filename. Handles are `sandbox:<hex>`; nothing else is kept."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", handle or "")
+
+
+def _persist_sandbox_file(handle: str, name: str, raw: bytes) -> None:
+    """Put a produced file where a restart cannot take it."""
+    try:
+        stem = SANDBOX_FILES_DIR / _safe_handle(handle)
+        stem.with_suffix(".bin").write_bytes(raw)
+        # Name written second: a crash between the two leaves bytes with no
+        # index entry, which is ignored on load. The reverse would leave an
+        # entry pointing at nothing.
+        # The handle is written, not derived from the filename: `_safe_handle`
+        # is lossy by design, and reconstructing "sandbox:abc" from "sandbox_abc"
+        # only works while nothing else in a handle is replaced.
+        stem.with_suffix(".json").write_text(
+            json.dumps({"handle": handle, "name": name}), encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[adapter] could not persist {handle}: {e}", flush=True)
+
+
+def _forget_sandbox_file(handle: str) -> None:
+    for suffix in (".bin", ".json"):
+        try:
+            (SANDBOX_FILES_DIR / _safe_handle(handle)).with_suffix(suffix).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _persist_run_files(thread_id: str) -> None:
+    if not thread_id:
+        return
+    try:
+        (RUN_FILES_DIR / (_safe_handle(thread_id) + ".json")).write_text(
+            json.dumps(_RUN_FILES.get(thread_id, [])), encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"[adapter] could not persist run files for {thread_id[:24]}: {e}", flush=True)
+
+
+def _restore_files_from_disk() -> None:
+    """Reload produced files and their run membership after a restart.
+
+    Runs at import. A run suspended for approval already survives a restart —
+    its graph is checkpointed to this same volume — and until this existed the
+    files it had produced did not, so it resumed able to describe a workbook it
+    could no longer attach or upload.
+    """
+    restored = 0
+    for meta in SANDBOX_FILES_DIR.glob("*.json"):
+        try:
+            blob = meta.with_suffix(".bin")
+            if not blob.exists():
+                continue
+            info = json.loads(meta.read_text(encoding="utf-8"))
+            handle = info.get("handle")
+            if not handle:
+                continue
+            _SANDBOX_FILES[handle] = {"name": info.get("name", "output"), "bytes": blob.read_bytes()}
+            restored += 1
+        except Exception as e:
+            print(f"[adapter] could not restore {meta.name}: {e}", flush=True)
+
+    for idx in RUN_FILES_DIR.glob("*.json"):
+        try:
+            handles = json.loads(idx.read_text(encoding="utf-8"))
+            if isinstance(handles, list):
+                _RUN_FILES[idx.stem] = [h for h in handles if h in _SANDBOX_FILES]
+        except Exception:
+            pass
+
+    if restored:
+        print(f"[adapter] restored {restored} produced file(s) from disk", flush=True)
 
 
 def begin_run(thread_id: str) -> None:
@@ -644,7 +747,9 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
             continue
 
         file_id = f"sandbox:{uuid.uuid4().hex[:12]}"
-        _SANDBOX_FILES[file_id] = {"name": f.get("name", "output"), "bytes": raw}
+        name = f.get("name", "output")
+        _SANDBOX_FILES[file_id] = {"name": name, "bytes": raw}
+        _persist_sandbox_file(file_id, name, raw)
         _evict_to_fit(_SANDBOX_FILES, _SANDBOX_FILE_LIMIT, _INBOUND_BYTES_LIMIT)
 
         run_files = current_run_files()
@@ -652,6 +757,7 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
             run_files.append(file_id)
             while len(run_files) > _SANDBOX_FILE_LIMIT:
                 run_files.pop(0)
+            _persist_run_files(_current_run.get(""))
 
         f["file_id"] = file_id
         f["size_bytes"] = len(raw)
@@ -1224,6 +1330,36 @@ def _unresolved_handle_error(unresolved: list[str]) -> dict:
             )
         )
     }
+
+
+_NOTEBOOK_NOTE = (
+    "The working is attached as working.ipynb — every step I ran, in order, with "
+    "its output. If a figure looks wrong, that file will show you where it came "
+    "from."
+)
+
+
+def note_the_notebook(text: str, attachments: list[dict] | None) -> str:
+    """Add the pointer to the notebook, but only when it is really going.
+
+    The agent used to add this itself, on the strength of having called the
+    sandbox at some point in the run. That is a proxy for the fact, not the
+    fact, and on 2026-08-18 the two came apart: task F3 built its workbook at
+    02:53, the container was redeployed at 03:10, and the reply it composed at
+    03:15 told the buyer the workbook and the notebook were attached when the
+    message carried neither. The registry had been wiped; "did this run use the
+    sandbox" was still true.
+
+    Said here because this is where the attachment list exists. A claim about
+    what is in the message belongs to whatever builds the message.
+    """
+    body = (text or "").rstrip()
+    if not body or "ipynb" in body:
+        return text
+    if not any(str(a.get("name", "")).endswith(".ipynb") for a in attachments or []):
+        return text
+    return body + "\n\n" + _NOTEBOOK_NOTE
+
 
 
 def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
@@ -2151,6 +2287,11 @@ def _write_mcp_tools_doc() -> None:
     except Exception as e:
         print(f"[mcp] Failed to write MCP_TOOLS.md: {e}", flush=True)
 
+
+# Reload what the last process produced, before anything can be asked for it.
+# A run suspended for approval survives a restart because its graph is
+# checkpointed; until this call existed, the files it had produced did not.
+_restore_files_from_disk()
 
 app = FastAPI(title=f"{AGENT_NAME} Adapter", version="1.0.0")
 
@@ -4598,7 +4739,10 @@ async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> Non
             await send_email(
                 to=teams_recipient,
                 subject=result.get("subject", ""),
-                text=result.get("text", reply_text),
+                text=note_the_notebook(
+                    result.get("text", reply_text),
+                    run_attachments(subject=result.get("subject", "")),
+                ),
                 thread_id=result.get("thread_id"),
                 # Reached from Teams, but delivered as mail: the chat path hands
                 # files back on the response and this one has no such channel, so
@@ -4653,11 +4797,16 @@ async def _deliver_email_result(
                 flush=True,
             )
 
+        # Decided from `_att`, which is the list actually going out. This is the
+        # path F3 was delivered on when it announced a workbook and a notebook
+        # that the message did not carry.
+        _text = note_the_notebook(result.get("text", reply_text), _att)
+
         try:
             if action == "reply_email" and ctx.get("message_id"):
                 await reply_email(
                     message_id=ctx["message_id"],
-                    text=result.get("text", reply_text),
+                    text=_text,
                     fallback_to=recipient,
                     fallback_subject=ctx.get("subject", ""),
                     fallback_thread_id=result.get("thread_id") or ctx.get("thread_id"),
@@ -4667,7 +4816,7 @@ async def _deliver_email_result(
                 await send_email(
                     to=recipient,
                     subject=result.get("subject", ctx.get("subject", "")),
-                    text=result.get("text", reply_text),
+                    text=_text,
                     thread_id=result.get("thread_id") or ctx.get("thread_id"),
                     attachments=_att,
                 )
@@ -4710,17 +4859,18 @@ async def _deliver_email_result(
         requester = _extract_email(ctx.get("sender", ""))
         if requester and reply_text.strip():
             try:
+                _outcome_att = run_attachments(
+                    request=ctx.get("original_message", "") or reply_text,
+                    subject=ctx.get("subject", ""),
+                ) or None
                 await reply_email(
                     message_id=ctx.get("message_id", ""),
-                    text=reply_text,
+                    text=note_the_notebook(reply_text, _outcome_att),
                     fallback_to=requester,
                     fallback_subject=ctx.get("subject", ""),
                     fallback_thread_id=ctx.get("thread_id"),
                     # Whatever the run built before the gate travels with it.
-                    attachments=run_attachments(
-                        request=ctx.get("original_message", "") or reply_text,
-                        subject=ctx.get("subject", ""),
-                    ) or None,
+                    attachments=_outcome_att,
                 )
                 print(f"[adapter] Post-resume: told {requester} the outcome", flush=True)
             except Exception as e:
@@ -5768,6 +5918,7 @@ async def _handle_message(message: str, context: dict):
                 request=context.get("original_message", "") or message,
                 subject=context.get("subject", ""),
             ) or None
+            reply_text = note_the_notebook(reply_text, _att)
             if _att:
                 print(
                     f"[adapter] Attaching {len(_att)} file(s) to email: "
@@ -5884,18 +6035,19 @@ async def _handle_message(message: str, context: dict):
                         pre_approved=pre_approved,
                     )
                     if may_send and _check_and_increment("emails"):
+                        _retry_att = run_attachments(
+                            request=context.get("original_message", "") or send_text,
+                            subject=context.get("subject", ""),
+                        ) or None
                         await reply_email(
                             message_id=retry_result.get("message_id") or context.get("message_id", ""),
-                            text=send_text,
+                            text=note_the_notebook(send_text, _retry_att),
                             fallback_to=_extract_email(recipient),
                             fallback_subject=context.get("subject", ""),
                             fallback_thread_id=retry_thread,
                             # A retry is still the buyer's answer, and the run it
                             # retried may already have built the file.
-                            attachments=run_attachments(
-                                request=context.get("original_message", "") or send_text,
-                                subject=context.get("subject", ""),
-                            ) or None,
+                            attachments=_retry_att,
                         )
                         print(f"[adapter] Sent retry reply to {_extract_email(recipient)}", flush=True)
                     # Return either way. The agent wrote a real reply, so the

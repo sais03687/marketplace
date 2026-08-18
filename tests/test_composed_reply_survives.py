@@ -480,16 +480,28 @@ def test_every_platform_hand_back_is_filtered_from_buyer_facing_text():
 
 # ── the only defence against a number nobody can check ─────────────────────
 
-def test_a_reply_with_figures_points_at_the_working():
-    # The platform already attaches the code that produced them, and nobody
-    # opens an attachment they were not told about. This does not catch a wrong
-    # number — it makes one findable, which is the most the platform can do.
+def test_the_agent_no_longer_promises_the_working_itself():
+    """Moved to the platform on 2026-08-18, and the move is the point.
+
+    The agent added this line whenever the run had touched the sandbox, which is
+    a proxy for "a notebook is attached" rather than the fact. Task F3 built its
+    workbook, the container was redeployed before the reply was composed, and the
+    buyer was told the notebook was attached when the message carried nothing:
+    the proxy was still true and the attachment list had been wiped.
+
+    It is added by `note_the_notebook` in the adapter now, from the list actually
+    going out — see tests/test_files_survive_restart.py. The coverage did not
+    move because a reply with figures should still point at the working; only
+    what decides it did.
+    """
     result = _finalize(_State(
         final={"action": "reply_email", "text": "Total revenue was 457250.00."},
         actions=["MCP python-sandbox/execute_python"],
         results=['{"returncode": 0, "stdout": "457250"}'],
     ))
-    assert "working.ipynb" in result["text"]
+    assert "working.ipynb" not in result["text"], (
+        "the agent is asserting an attachment it cannot see"
+    )
 
 
 def test_a_reply_with_no_figures_is_left_alone():
