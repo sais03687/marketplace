@@ -41,12 +41,18 @@ async function token() {
   return j.access_token;
 }
 
+const chr34 = String.fromCharCode(34);
+
 const strip = (html) =>
   (html || "")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, chr34)
     .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    // Last, or an entity spelled &amp;quot; would be decoded twice.
+    .replace(/&amp;/g, "&")
     .replace(/[ \t]+/g, " ")
     .trim();
 

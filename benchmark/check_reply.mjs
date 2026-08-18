@@ -23,6 +23,28 @@ if (/\b(attached|enclosed|attachment)\b/i.test(body) && !r.attachments.length) {
   fails.push("the reply says a file is attached and none is");
 }
 
+// An interruption notice is a distinct outcome, not a broken delivery. The run
+// did not finish, and the reply says so plainly, so the rules below about
+// pointing at a produced file do not apply: it is not claiming to deliver
+// anything.
+//
+// The sentence matched here is a platform constant, authored in adapter.py and
+// pinned by tests/test_interrupted_runs.py, not a guess at how a model might
+// phrase something. tests/test_reply_checker.py asserts that this exact string
+// is still in the adapter, so the two cannot drift apart silently.
+const NO_RESULT = "have not sent you a result";
+if (body.toLowerCase().includes(NO_RESULT)) {
+  console.log();
+  console.log("attachments :", r.attachments.join(", ") || "NONE");
+  console.log("files       :", before, "->", after);
+  console.log();
+  console.log(body);
+  console.log();
+  console.log("INCOMPLETE - the run was interrupted and said so.");
+  console.log("Not a delivery failure: the buyer was told, rather than left waiting.");
+  process.exit(2);
+}
+
 // Produced a file and gave no pointer to it at all — neither attachment nor
 // link. This is what the thread-key bug looked like from outside: every figure
 // right, the workbook nowhere.

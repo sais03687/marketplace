@@ -97,5 +97,8 @@ if [ $? -ne 0 ]; then echo "no reply arrived"; rm -f "$OUT"; exit 1; fi
 AFTER=$(count_files)
 node "$BENCH/check_reply.mjs" "$OUT" "$AFTER" "$BEFORE"
 RC=$?
+# 2 is "interrupted and said so" — the run did not finish, but the buyer was not
+# left waiting. Distinct from 1, which is a delivery that contradicts itself.
+[ $RC -eq 2 ] && echo "(exit 2: incomplete, not broken)"
 rm -f "$OUT"
 exit $RC

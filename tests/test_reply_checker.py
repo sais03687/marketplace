@@ -97,3 +97,55 @@ def test_the_word_attached_inside_a_larger_word_is_not_a_claim(tmp_path):
     rc, out = run(tmp_path, "Two files were left unattached upstream. "
                             "See https://x.sharepoint.com/a.xlsx", [])
     assert rc == 0, out
+
+
+# ── the interruption notice, and the seam it sits on ───────────────────────
+
+def test_an_interruption_notice_is_incomplete_not_broken(tmp_path):
+    """The run did not finish, and said so. That is not a delivery failure.
+
+    Without this the harness reported FAIL on the very outcome the interrupted-
+    run fix exists to produce: a file had been built, the reply pointed at
+    nothing, and the checker could not tell an honest "I could not finish" from
+    a workbook silently lost.
+    """
+    rc, out = run(
+        tmp_path,
+        'I was working on "Q3 utilisation" when I was restarted, and I could '
+        "not finish it. I have not sent you a result, so nothing you have "
+        "received from me covers this.",
+        [],
+        after=6, before=5,
+    )
+    assert rc == 2, out
+    assert "INCOMPLETE" in out
+
+
+def test_the_checker_and_the_adapter_have_not_drifted():
+    """The sentence the checker keys on must be one the platform really sends.
+
+    It is a constant we author, not a guess at model wording — but a constant in
+    two languages, in two files, is a pair that drifts. Reword the notice in
+    adapter.py and this fails, rather than the harness quietly reclassifying
+    every interrupted run as a broken delivery.
+    """
+    import io
+    from pathlib import Path
+    checker = io.open(CHECKER, encoding="utf-8").read()
+    phrase = checker.split('const NO_RESULT = "')[1].split('"')[0]
+
+    adapter_src = io.open(
+        Path(__file__).resolve().parents[1]
+        / "apps" / "provisioning-service" / "src" / "templates" / "runtime" / "adapter.py",
+        encoding="utf-8",
+    ).read()
+    assert phrase in adapter_src, (
+        f"the checker looks for {phrase!r}, which the adapter no longer says"
+    )
+
+
+def test_a_lost_workbook_is_still_a_failure(tmp_path):
+    # The half that must keep firing: silence about a produced file, with no
+    # admission of not finishing, is the original bug.
+    rc, out = run(tmp_path, "Team utilisation was 82.5%.", [], after=6, before=5)
+    assert rc == 1, out
