@@ -13,6 +13,10 @@ on:
       - "apps/provisioning-service/src/templates/runtime/**"
       - "apps/provisioning-service/src/jobs/outlook-poller.mjs"
       - "tests/**"
+      # tests/test_reply_checker.py runs benchmark/check_reply.mjs itself, so a
+      # change to the harness could break a test without triggering the job that
+      # would catch it.
+      - "benchmark/**"
       - ".github/workflows/runtime-tests.yml"
   pull_request:
     paths:
@@ -20,6 +24,7 @@ on:
       - "apps/provisioning-service/src/templates/runtime/**"
       - "apps/provisioning-service/src/jobs/outlook-poller.mjs"
       - "tests/**"
+      - "benchmark/**"
   workflow_dispatch:
 
 jobs:
