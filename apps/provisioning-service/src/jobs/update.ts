@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { getContainerPort, restartContainer } from "../clients/docker.js";
+import { probeAgent, waitUntilIdle, waitUntilHealthy } from "./update-helpers.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 function collectFiles(dir: string): Record<string, string> {
@@ -44,6 +45,31 @@ export async function updateJob(deploymentId: string): Promise<void> {
   const port = getCustomAgentPort(deploymentId)
     ?? (deployment.containerName ? await getContainerPort(deployment.containerName) : undefined);
   if (!port) throw new Error(`No running agent found for ${deploymentId}`);
+
+  // ── What is running right now, before anything replaces it ──────────────────
+  //
+  // Not deployment.agentVersion: vet-decision sets that to the new version
+  // before queueing this job, so by now the row describes an intention rather
+  // than a fact. Only the agent knows what is on its disk, and a rollback has
+  // to go back to that.
+  const previousVersion = (await probeAgent(port)).ok
+    ? await (async () => {
+        try {
+          const res = await fetch(`http://localhost:${port}/internal/health`);
+          const body: any = await res.json();
+          return typeof body.version === "string" ? body.version : null;
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+
+  if (!previousVersion) {
+    // Not fatal — a deployment provisioned before the agent recorded its
+    // version has nothing to report yet. Worth saying, because it is the
+    // difference between a recoverable bad release and an unrecoverable one.
+    console.warn(`[update] ${deploymentId} does not report a running version — a failed update cannot be rolled back`);
+  }
 
   // ── Fetch the package files for the new version ─────────────────────────────
   let files: Record<string, string> = {};
@@ -95,57 +121,132 @@ export async function updateJob(deploymentId: string): Promise<void> {
   // the old code. Every update before this one was silent for exactly that
   // reason — files landed, the job logged success, and the agent carried on as
   // it was.
-  //
-  // A run in flight is cancelled by this. Since 2026-08-18 that is recorded and
-  // the buyer is told their request was interrupted rather than being left
-  // waiting, which is the honest outcome but still an outcome — a quieter
-  // moment is better, and waiting for one is worth doing next.
   if (!deployment.containerName) {
     throw new Error(`Deployment ${deploymentId} has no container name — cannot restart`);
   }
 
-  console.log(`[update] Restarting ${deployment.containerName} to load v${deployment.agentVersion}`);
+  // Wait for a moment when nobody is owed anything. A restart cancels whatever
+  // is running; since 2026-08-18 the buyer is told their request was
+  // interrupted rather than left waiting, so this is not a silent loss — but it
+  // is still a request they have to send again, and it is usually avoidable by
+  // waiting a minute.
+  //
+  // Bounded, and it proceeds anyway when the wait runs out: an agent that is
+  // always busy would postpone its own update forever, and a stuck run would
+  // postpone it permanently. Interrupting is a known cost; never updating is an
+  // unbounded one.
+  const quiet = await waitUntilIdle(port);
+  console.log(
+    quiet
+      ? `[update] Agent idle — restarting ${deployment.containerName} for v${deployment.agentVersion}`
+      : `[update] Agent still busy after waiting — restarting anyway for v${deployment.agentVersion}`,
+  );
+
   await restartContainer(deployment.containerName);
 
-  // ── Confirm it came back ────────────────────────────────────────────────────
+  // ── Confirm it came back, and put the old version back if it did not ────────
   //
-  // A restart that does not come up leaves the buyer with a dead agent and the
-  // database claiming an updated one. Better to fail the job loudly: the
-  // failure is visible in the provisioning log and the version is known to be
-  // suspect, rather than being discovered by whoever emails it next.
-  let healthy = false;
-  for (let i = 0; i < 30 && !healthy; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-    try {
-      const probe = await fetch(`http://localhost:${port}/internal/health`);
-      healthy = probe.ok;
-    } catch {
-      /* not up yet */
-    }
-  }
-
-  if (!healthy) {
+  // A restart that does not come up leaves the buyer with a dead agent under a
+  // database claiming an updated one. Failing the job loudly is better than
+  // that, but not as good as undoing it: the buyer's agent was working a minute
+  // ago and there is no reason for them to carry the cost of a bad release.
+  if (await waitUntilHealthy(port)) {
     await prisma.provisioningLog.create({
       data: {
         deploymentId,
-        step: "update_restart",
-        status: "failed",
+        step: "update_complete",
+        status: "succeeded",
         attempt: 1,
-        message: `v${deployment.agentVersion} did not become healthy within 60s of restart`,
+        message:
+          `Updated to v${deployment.agentVersion} — ${Object.keys(files).length} file(s) pushed` +
+          (quiet ? "" : " (restarted while busy)"),
       },
     });
-    throw new Error(`Agent did not come back after updating to v${deployment.agentVersion}`);
+    console.log(`[update] Deployment ${deploymentId} updated to v${deployment.agentVersion}`);
+    return;
   }
+
+  console.error(
+    `[update] v${deployment.agentVersion} did not come up for ${deploymentId} — rolling back to v${previousVersion ?? "unknown"}`,
+  );
+
+  const rolledBack = previousVersion
+    ? await pushVersion(deploymentId, deployment.agent.id, previousVersion, port, deployment.containerName)
+    : false;
 
   await prisma.provisioningLog.create({
     data: {
       deploymentId,
-      step: "update_complete",
-      status: "succeeded",
+      step: "update_rollback",
+      status: rolledBack ? "succeeded" : "failed",
       attempt: 1,
-      message: `Updated to v${deployment.agentVersion} — ${Object.keys(files).length} file(s) pushed`,
+      message: rolledBack
+        ? `v${deployment.agentVersion} did not become healthy; restored v${previousVersion}`
+        : `v${deployment.agentVersion} did not become healthy and could not be rolled back` +
+          (previousVersion ? ` to v${previousVersion}` : " — the running version was unknown"),
     },
   });
 
-  console.log(`[update] Deployment ${deploymentId} updated to v${deployment.agentVersion}`);
+  // The database was moved to the new version before this job ran. Put it back,
+  // or it will claim a version the agent has never successfully run.
+  if (rolledBack && previousVersion) {
+    await prisma.deployment.update({
+      where: { id: deploymentId },
+      data: { agentVersion: previousVersion },
+    });
+  }
+
+  throw new Error(
+    `Agent did not come back after updating to v${deployment.agentVersion}` +
+      (rolledBack ? ` — rolled back to v${previousVersion}` : " — ROLLBACK FAILED, agent is down"),
+  );
+}
+
+/**
+ * Put a specific version's files on a running agent and restart it.
+ *
+ * Used for rollback. Returns whether the agent came back healthy, rather than
+ * throwing: the caller is already handling one failure and needs to record
+ * what happened to the recovery, not be interrupted by it.
+ */
+async function pushVersion(
+  deploymentId: string,
+  agentId: string,
+  version: string,
+  port: number,
+  containerName: string,
+): Promise<boolean> {
+  const target = await prisma.agentVersion.findFirst({
+    where: { agentId, version },
+    select: { storagePath: true },
+  });
+  if (!target?.storagePath || !isBlobStoragePath(target.storagePath)) {
+    console.error(`[update] No package stored for v${version} — cannot roll back`);
+    return false;
+  }
+
+  let dir: string | null = null;
+  try {
+    dir = await downloadBlobPackage(target.storagePath);
+    const res = await fetch(`http://localhost:${port}/internal/update-skills`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-deployment-token": config.approvalWebhookToken,
+      },
+      body: JSON.stringify({ files: collectFiles(dir), version }),
+    });
+    if (!res.ok) {
+      console.error(`[update] Rollback push failed: HTTP ${res.status}`);
+      return false;
+    }
+  } catch (err: any) {
+    console.error(`[update] Rollback push failed: ${err.message}`);
+    return false;
+  } finally {
+    if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch {} }
+  }
+
+  await restartContainer(containerName);
+  return waitUntilHealthy(port);
 }

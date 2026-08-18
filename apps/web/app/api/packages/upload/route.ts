@@ -139,6 +139,37 @@ export async function POST(request: Request) {
       return jsonError("Custom runtime packages must include agent.py", 400);
     }
 
+    // Files that belong to the buyer, not to the package.
+    //
+    // MEMORY.md is everything the agent has learned about the company that
+    // hired it; PRIVATE.md is their roster and internal details; memory/*.md is
+    // the rest of the same. All three live beside agent.py in the running
+    // agent, so a package carrying one would arrive on top of it.
+    //
+    // The runtime declines to write them, so nothing is lost either way — but a
+    // file that is silently ignored is worse than one that is refused. The
+    // creator ships it, vetting passes, and they are never told the thing they
+    // wrote does nothing. Refused here, where there is somebody to tell and a
+    // correct answer to point at.
+    const BUYER_OWNED = ["MEMORY.md", "PRIVATE.md"];
+    // At the package root, not by basename: the buyer's memory is MEMORY.md
+    // beside agent.py, while a creator's own skills/MEMORY.md is a different
+    // file and theirs to ship. Blocking that would be a false alarm.
+    const buyerOwned = Object.keys(zip.files).find((path) => {
+      if (zip.files[path].dir) return false;
+      return BUYER_OWNED.includes(path) || /^memory\/[^/]+$/.test(path);
+    });
+    if (buyerOwned) {
+      return jsonError(
+        `Package must not contain "${buyerOwned}" — memory belongs to the buyer who ` +
+          `hired the agent, and an update carrying one would arrive on top of what ` +
+          `they have accumulated. To give a new hire something to start from, put it ` +
+          `in onboarding/MEMORY_TEMPLATE.md instead: that seeds memory once, when the ` +
+          `agent is first deployed, and is never written over it again.`,
+        400,
+      );
+    }
+
     const RESERVED_FILES = [
       "adapter.py",
       "Dockerfile",

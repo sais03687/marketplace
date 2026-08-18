@@ -138,9 +138,12 @@ def test_the_job_restarts_the_container_after_pushing():
 
 
 def test_the_job_checks_the_agent_came_back():
+    # Anchored on the call, not on where "/internal/health" appears: the job
+    # now probes health *before* the push too, to learn which version it would
+    # be rolling back to, so the first occurrence of that string is no longer
+    # the one this test is about.
     src = io.open(UPDATE_TS, encoding="utf-8").read()
-    assert "/internal/health" in src
-    assert src.index("restartContainer(") < src.index("/internal/health")
+    assert src.index("restartContainer(deployment.containerName)") < src.index("waitUntilHealthy(port)")
     assert "did not become healthy" in src, (
         "a restart that never comes up leaves a dead agent and a database "
         "claiming an updated one"
@@ -228,8 +231,14 @@ def test_the_creator_s_own_files_are_still_replaced(tmp_path, monkeypatch):
 def test_a_file_merely_named_like_memory_is_not_protected(tmp_path, monkeypatch):
     # "MEMORY.md" exactly, not anything containing the word — otherwise a
     # creator's own memory-handling module becomes unupdatable.
-    call({"memory_tools.py": b64("new\n"), "skills/MEMORY_FORMAT.md": b64("new\n")},
+    # skills/MEMORY.md is the creator's own file, not the buyer's, and theirs
+    # to update. The first guard matched on basename and would have blocked
+    # it; a guard that raises false alarms is one people work around.
+    call({"memory_tools.py": b64("new\n"),
+          "skills/MEMORY.md": b64("new\n"),
+          "skills/MEMORY_FORMAT.md": b64("new\n")},
          tmp_path, monkeypatch)
+    assert (tmp_path / "skills" / "MEMORY.md").read_text(encoding="utf-8") == "new\n"
     assert (tmp_path / "memory_tools.py").read_text(encoding="utf-8") == "new\n"
     assert (tmp_path / "skills" / "MEMORY_FORMAT.md").read_text(encoding="utf-8") == "new\n"
 
@@ -258,3 +267,67 @@ def test_private_notes_are_protected_even_though_that_endpoint_omits_them():
     src = io.open(Path(adapter.__file__), encoding="utf-8").read()
     assert "PRIVATE.md" in src
     assert "PRIVATE.md" in adapter._BUYER_OWNED
+
+
+# ── the version that is actually running ───────────────────────────────────
+#
+# Deployment.agentVersion is what the database intends: vet-decision sets it to
+# the new version before queueing the job, so after a failed update the row
+# describes a version the agent has never run. A rollback needs the other
+# number, and only the agent can say it.
+
+def test_the_agent_records_the_version_it_was_given(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(adapter, "WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(adapter, "RUNNING_VERSION_FILE", tmp_path / "running_version.txt")
+    monkeypatch.setattr(adapter, "_require_internal_auth", lambda r: None)
+    payload = adapter.UpdateSkillsPayload(files={"agent.py": b64("x")}, version="1.4.0")
+    asyncio.run(adapter.update_skills(payload, request=None))
+    assert adapter._running_version() == "1.4.0"
+
+
+def test_nothing_written_means_nothing_recorded(tmp_path, monkeypatch):
+    """A version recorded for files that never landed sends a rollback astray."""
+    import asyncio
+    monkeypatch.setattr(adapter, "WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(adapter, "RUNNING_VERSION_FILE", tmp_path / "running_version.txt")
+    monkeypatch.setattr(adapter, "_require_internal_auth", lambda r: None)
+    (tmp_path / "MEMORY.md").write_text("kept", encoding="utf-8")
+    payload = adapter.UpdateSkillsPayload(files={"MEMORY.md": b64("no")}, version="9.9.9")
+    asyncio.run(adapter.update_skills(payload, request=None))
+    assert adapter._running_version() is None
+
+
+def test_an_agent_that_has_never_been_updated_reports_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapter, "RUNNING_VERSION_FILE", tmp_path / "absent.txt")
+    assert adapter._running_version() is None
+
+
+def test_the_version_is_kept_on_the_volume_that_survives_a_restart():
+    # Written under DATA_DIR, not into the workspace: the workspace is what an
+    # update replaces, and this has to outlive exactly that.
+    src = io.open(Path(adapter.__file__), encoding="utf-8").read()
+    assert "RUNNING_VERSION_FILE = DATA_DIR /" in src
+
+
+# ── how busy the agent is ──────────────────────────────────────────────────
+
+def test_health_reports_work_in_flight(tmp_path, monkeypatch):
+    import asyncio
+    monkeypatch.setattr(adapter, "IN_FLIGHT_DIR", tmp_path)
+    monkeypatch.setattr(adapter, "_check_llm_health", _ok)
+    assert asyncio.run(adapter.health())["busy"] == 0
+    (tmp_path / "a.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "b.json").write_text("{}", encoding="utf-8")
+    assert asyncio.run(adapter.health())["busy"] == 2
+
+
+def test_an_unreadable_journal_is_not_reported_as_idle(monkeypatch):
+    # Claiming idle here restarts on top of live work, which is the one thing
+    # the count exists to prevent.
+    monkeypatch.setattr(adapter, "IN_FLIGHT_DIR", Path("/does/not/exist/at/all"))
+    assert adapter._in_flight_count() >= 1
+
+
+async def _ok():
+    return True

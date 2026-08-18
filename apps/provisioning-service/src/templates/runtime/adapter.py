@@ -4481,7 +4481,39 @@ async def _check_llm_health() -> bool:
 @app.get("/internal/health")
 async def health():
     llm_ok = await _check_llm_health()
-    return {"ok": True, "llm": llm_ok, "deploymentId": DEPLOYMENT_ID}
+    return {
+        "ok": True,
+        "llm": llm_ok,
+        "deploymentId": DEPLOYMENT_ID,
+        # What the agent is in the middle of. An update restarts this process,
+        # which cancels whatever is running; the buyer is told their request was
+        # interrupted, which is honest but is still a request they have to send
+        # again. `busy` lets the update wait for a moment when nobody is owed
+        # anything instead of picking one at random.
+        #
+        # Read from the in-flight directory rather than a counter, because a
+        # counter in this process would reset on the restart it exists to time.
+        "busy": _in_flight_count(),
+        # What is on disk, which is not always what the database intends.
+        "version": _running_version(),
+    }
+
+
+def _in_flight_count() -> int:
+    """Runs begun and not yet finished. Zero means nobody is waiting.
+
+    A missing directory is not zero. Globbing one returns an empty list rather
+    than raising, so a volume that failed to mount would have read as a
+    perfectly idle agent and invited a restart straight through live work.
+    Anything other than a directory we can read reports one run outstanding,
+    because "I cannot tell" has to be the cautious answer here.
+    """
+    try:
+        if not IN_FLIGHT_DIR.is_dir():
+            return 1
+        return len(list(IN_FLIGHT_DIR.glob("*.json")))
+    except Exception:
+        return 1
 
 
 @app.get("/internal/skills")
@@ -4554,10 +4586,43 @@ _BUYER_OWNED_DIRS = {"memory"}
 
 
 def _is_buyer_owned(target: Path, root: Path) -> bool:
+    """Exactly the buyer's files, and nothing that merely resembles them.
+
+    Matched at the workspace root, not by basename. The buyer's memory is
+    /agent/creator/MEMORY.md; a creator's own skills/MEMORY.md is a different
+    file and theirs to update. A guard broad enough to block that would be a
+    false alarm, and a false alarm teaches people to work around the guard.
+    """
     rel = target.relative_to(root) if target != root else Path("")
-    if rel.name in _BUYER_OWNED:
+    if len(rel.parts) == 1 and rel.name in _BUYER_OWNED:
         return True
     return bool(rel.parts) and rel.parts[0] in _BUYER_OWNED_DIRS
+
+
+# The version whose files are on disk right now.
+#
+# Deployment.agentVersion is what the database intends, and vet-decision sets it
+# before the update is attempted - so after a failed update the row claims a
+# version the agent has never run. Rolling back needs the other number, and only
+# the agent can say it. On the data volume, so it survives the restart it exists
+# to describe.
+RUNNING_VERSION_FILE = DATA_DIR / "running_version.txt"
+
+
+def _running_version() -> str | None:
+    try:
+        return RUNNING_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        return None
+
+
+def _record_running_version(version: str | None) -> None:
+    if not version:
+        return
+    try:
+        RUNNING_VERSION_FILE.write_text(version, encoding="utf-8")
+    except Exception as e:
+        print(f"[adapter] could not record running version: {e}", flush=True)
 
 
 class UpdateSkillsPayload(BaseModel):
@@ -4565,6 +4630,9 @@ class UpdateSkillsPayload(BaseModel):
     # package carries binary as readily as source, and update.ts has always sent
     # it that way.
     files: dict[str, str]
+    # update.ts has always sent this and the model never declared it, so pydantic
+    # dropped it. It is what makes a rollback possible.
+    version: str | None = None
 
 
 @app.post("/internal/update-skills")
@@ -4620,7 +4688,16 @@ async def update_skills(body: UpdateSkillsPayload, request: Request):
             + ", ".join(protected[:6]),
             flush=True,
         )
-    print(f"[adapter] update-skills wrote {len(written)} file(s)", flush=True)
+    # After the writes, never before: a version recorded for files that failed
+    # to land would send a rollback to the wrong place.
+    if written:
+        _record_running_version(body.version)
+
+    print(
+        f"[adapter] update-skills wrote {len(written)} file(s)"
+        + (f" for v{body.version}" if body.version else ""),
+        flush=True,
+    )
     return {"ok": True, "written": written, "declined": protected}
 
 
