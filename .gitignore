@@ -116,4 +116,5 @@ benchmark/*
 !benchmark/send_task.mjs
 !benchmark/tasks.mjs
 !benchmark/approve.mjs
+!benchmark/find_sent.mjs
 !benchmark/send_wave.mjs
