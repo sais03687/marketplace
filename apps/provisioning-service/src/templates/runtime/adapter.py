@@ -1878,15 +1878,29 @@ _SUMMARY_SHEET_RE = re.compile(
     r"^\s*(?:[\w &/-]{0,30}?\s)?(summary|key figures?|headline|overview|totals?)\s*$", re.I
 )
 
-# A headline word sitting next to a figure. `total` is here and `totaling` is
-# not, which the word boundary already handles: D04 wrote "totaling $41,200"
-# about one customer and meant nothing top-line by it.
-_HEADLINE_RE = re.compile(
-    r"\b(primary|overall|net|grand total|in total|altogether|total)\b"
-    r"[^.\n]{0,40}?"
-    r"(?P<num>[$£€]?\s?-?\d[\d,]*(?:\.\d+)?)",
-    re.I,
-)
+# The headline is the first figure the reply states. There is no word list.
+#
+# There was one - primary, overall, net, total - and it caught the wording D01
+# happened to use and missed the same error rephrased. Measured on 2026-08-17
+# against thirteen ways of stating a wrong headline it fired on five, and the
+# ones it missed are the ordinary ones: "the gap is 2,050", "the difference is
+# 2,050", "we are over by 2,050".
+#
+# Widening the list was not available. D01's *correct* reply says "invoiced for
+# $12,050, a difference of $450" about one row, so adding "difference" would
+# have flagged a right answer - and a caveat on correct work is worse than no
+# check, because it teaches the reader to skip caveats.
+#
+# Position works where vocabulary did not, and not by luck: the prompt tells the
+# agent to lead with the figure from the Summary sheet. So this is not a guess
+# about how people write. It checks whether the agent did what it was told, and
+# the structure being checked is one the platform imposes.
+#
+# Measured against every real reply collected that day, the morning's rule for
+# comparison:
+#
+#     word list      caught 2 of 3 wrong,  0 false alarms in 4 right
+#     first figure   caught 3 of 3 wrong,  0 false alarms in 4 right
 
 
 def _summary_sheet_values(parsed: dict) -> list[Decimal]:
@@ -1938,25 +1952,22 @@ def _headline_conflicts(summary_text: str, values: list[Decimal]) -> list[dict]:
     # two summary sheets, and the first live fire read back "155300, 151450,
     # 3850, 155300, 151450, 3850" — which reads like two different sets.
     values = list(dict.fromkeys(values))
-    out: list[dict] = []
-    seen: set[Decimal] = set()
-    for m in _HEADLINE_RE.finditer(summary_text or ""):
-        # `[\d,]*` is greedy enough to swallow the comma that ends a clause, so
-        # the first live fire reported the claim as "148,850," — trailing
-        # punctuation is never part of a figure.
-        raw = m.group("num").strip().lstrip("$£€").strip().rstrip(".,")
-        val = _normalise_number(raw)
-        if val is None or val in seen:
-            continue
-        if _figure_present(val, raw, values) or _same_but_for_percent(val, values):
-            continue
-        seen.add(val)
-        out.append({
-            "word": m.group(1).lower(),
-            "claimed": raw,
-            "summary_holds": [str(v) for v in values[:6]],
-        })
-    return out
+    # `_summary_figures` already drops what is not a claim: years, digits inside
+    # a URL, and anything too small to be a reported quantity. What survives, in
+    # the order it was written, is what the reply asserts - and the first of
+    # them is the one the reader takes away.
+    stated = _summary_figures(summary_text or "")
+    if not stated:
+        return []
+
+    raw, val = stated[0]
+    if _figure_present(val, raw, values) or _same_but_for_percent(val, values):
+        return []
+
+    return [{
+        "claimed": raw,
+        "summary_holds": [str(v) for v in values[:6]],
+    }]
 
 
 async def check_headline_against_summary(
@@ -1969,7 +1980,7 @@ async def check_headline_against_summary(
     """
     if file_ids is None:
         file_ids = list(current_run_files())
-    if not summary_text or not file_ids or not _HEADLINE_RE.search(summary_text):
+    if not summary_text or not file_ids or not _summary_figures(summary_text):
         return []
 
     values: list[Decimal] = []

@@ -64,7 +64,6 @@ def test_the_headline_d01_led_with_is_caught():
     conflicts = adapter._headline_conflicts(D01_REPLY, _values(D01_PARSED))
     assert conflicts, "450 was called the primary difference; the summary says 3850"
     assert conflicts[0]["claimed"] == "450"
-    assert conflicts[0]["word"] == "primary"
 
 
 def test_the_hand_back_names_what_the_summary_holds():
@@ -93,27 +92,39 @@ def test_leading_from_the_summary_passes():
 
 # ── it must not fire on the replies that were fine ─────────────────────────
 
-def test_a_per_customer_breakdown_is_not_a_headline_claim():
-    # D02 listed four customers and never called any of them a total. Flagging
-    # those would cost a round trip on every itemised reply there is.
+def test_the_reply_that_opens_on_a_wrong_breakdown_is_caught():
+    # Written first as a must-not-fire case, on the assumption D02's reply was
+    # fine. It was not: Acme was understated by 1,305 because a blank `total`
+    # cell was summed rather than computed, and the workbook agreed with the
+    # email because both came from the same dropped row. The word-list rule
+    # stayed silent here; opening on a figure the summary does not hold is
+    # exactly the signal that was available.
     d02 = (
         "Here's a summary of July revenue by customer: Acme Corp: $6,525.00 "
         "Globex Industries: $4,480.00 Initech LLC: $3,982.50 Umbrella Co: $2,730.00"
     )
     summary = {"sheets": {"Summary": [["Total July Revenue", 17717.5]]}}
-    assert adapter._headline_conflicts(d02, _values(summary)) == []
+    assert adapter._headline_conflicts(d02, _values(summary))
 
 
-def test_totaling_one_customer_is_not_a_top_line_word():
-    # D04: "totaling $41,200" is about Fabrikam, not about the report. The word
-    # boundary is doing this work and the test pins it, because loosening the
-    # pattern to `total\w*` would break a correct reply.
+def test_a_correct_reply_opening_on_a_summary_figure_is_left_alone():
+    # D04's real reply, against its real sheet. It opens on 41,200 - Fabrikam's
+    # outstanding total - which is a figure the AR Aging Summary sheet holds, so
+    # there is no disagreement to report.
+    #
+    # The fixture matters: an earlier version of this test summarised that sheet
+    # down to a single total and then asserted the check stayed quiet, which it
+    # only did because the rule was looking for a word rather than a number.
     d04 = (
         "Fabrikam Inc is the customer we should be chasing hardest. They have "
         "the highest amount of overdue invoices, totaling $41,200, with $18,900 "
         "of that being over 90 days past due."
     )
-    summary = {"sheets": {"Summary": [["Total Outstanding", 130450]]}}
+    summary = {"sheets": {"AR Aging Summary": [
+        ["customer", "Total Outstanding"],
+        ["Fabrikam Inc", 41200], ["Blue Yonder", 31200],
+        ["Northwind Traders", 19800], ["Adventure Works", 21500],
+    ]}}
     assert adapter._headline_conflicts(d04, _values(summary)) == []
 
 

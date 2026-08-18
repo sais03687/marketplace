@@ -2015,8 +2015,8 @@ def _render_headline_conflicts(conflicts: list, limit: int = 3) -> str:
     for c in conflicts[:limit]:
         holds = ", ".join(c.get("summary_holds", [])) or "nothing readable"
         parts.append(
-            f"you call {c.get('claimed')} the {c.get('word')}, and the summary "
-            f"sheet holds {holds}"
+            f"your reply opens with {c.get('claimed')}, and the summary sheet "
+            f"holds {holds}"
         )
     more = len(conflicts) - limit
     return "; ".join(parts) + (f" (and {more} more)" if more > 0 else "")
@@ -2662,11 +2662,11 @@ async def finalize(state: AgentState) -> AgentState:
         holds = ", ".join(c.get("summary_holds", [])) or "different figures"
         result_text = (
             f"{result_text.rstrip()}\n\n---\n"
-            f"Before you rely on the figure above: I lead with {c.get('claimed')} "
-            f"as the {c.get('word')}, and the Summary sheet of the workbook I am "
-            f"attaching holds {holds}. Those disagree and I could not settle which "
-            "is right, so please open the workbook before quoting the number in "
-            "this message."
+            f"Before you rely on the figure above: the first number in this "
+            f"message is {c.get('claimed')}, and the Summary sheet of the workbook "
+            f"I am attaching holds {holds}. Those disagree and I could not settle "
+            "which is right, so please open the workbook before quoting the number "
+            "in this message."
         )
         print(
             f"[agent] Delivering with a headline note "
