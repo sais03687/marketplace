@@ -160,6 +160,24 @@ RESOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 PENDING_RESUMES_DIR = DATA_DIR / "pending_resumes"
 PENDING_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 
+# A run that was interrupted while working, rather than paused at an approval.
+#
+# The directory above covers a run suspended at an interrupt: the approval comes
+# back later and drives it onward. A run killed while it was actually working has
+# no pointer anywhere, and until this existed nothing knew it had ever started.
+# The buyer got silence, which is the worst outcome this system produces - a
+# wrong answer gets corrected, a vanished request is never even chased.
+#
+# Found on 2026-08-18 by benchmark/chaos.sh on its first unattended run. F3 built
+# its workbook at 14:43:38, the container was restarted at 14:44:03, and the task
+# simply ceased: files restored, graph checkpointed, nothing to drive it. Every
+# deploy does the same to whatever is mid-flight.
+IN_FLIGHT_DIR = DATA_DIR / "in_flight"
+IN_FLIGHT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Past this, the buyer has moved on and a notice is noise rather than news.
+_IN_FLIGHT_MAX_AGE_S = float(os.environ.get("IN_FLIGHT_MAX_AGE_S", 24 * 3600))
+
 # The files a run produced, and which run they belong to.
 #
 # These lived only in `_SANDBOX_FILES` and `_RUN_FILES`, both plain dicts in this
@@ -536,6 +554,109 @@ def _persist_run_files(thread_id: str) -> None:
         )
     except Exception as e:
         print(f"[adapter] could not persist run files for {thread_id[:24]}: {e}", flush=True)
+
+
+def _note_in_flight(context: dict) -> None:
+    """Record that a run began, so that its disappearance is noticeable."""
+    key = context.get("session_key") or ""
+    if not key:
+        return
+    try:
+        # The key is written, not inferred from the filename, for the reason
+        # spelled out on _persist_run_files: `_safe_handle` is lossy.
+        (IN_FLIGHT_DIR / (_file_stem(key) + ".json")).write_text(
+            json.dumps({
+                "session_key": key,
+                "message_id": context.get("message_id", ""),
+                "thread_id": context.get("thread_id"),
+                "sender": context.get("sender", ""),
+                "subject": context.get("subject", ""),
+                "started_at": time.time(),
+            }),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[adapter] could not note in-flight run {key}: {e}", flush=True)
+
+
+def _clear_in_flight(session_key: str) -> None:
+    """The run ended on its own terms - finished, failed, or paused for approval.
+
+    Paused counts as ended here. A run waiting at an approval is recoverable
+    through PENDING_RESUMES_DIR, and telling the buyer it was interrupted while
+    it sits waiting for that same buyer would be false.
+    """
+    if not session_key:
+        return
+    try:
+        (IN_FLIGHT_DIR / (_file_stem(session_key) + ".json")).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+async def _report_interrupted_runs() -> None:
+    """Tell anyone whose request died with the previous process."""
+    entries = []
+    for path in IN_FLIGHT_DIR.glob("*.json"):
+        try:
+            entries.append(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+        # Removed before anything is sent, never after. If notifying were to
+        # crash the process, an entry that outlived the attempt would notify
+        # again on the next start and crash again - a restart loop that never
+        # clears itself, on the path whose whole job is recovering from crashes.
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    for info in entries:
+        subject = info.get("subject") or "your request"
+        who = _extract_email(info.get("sender", ""))
+        age = time.time() - float(info.get("started_at") or 0)
+        if not who:
+            print(f"[adapter] interrupted run has no usable sender: {subject}", flush=True)
+            continue
+        if age > _IN_FLIGHT_MAX_AGE_S:
+            print(
+                f"[adapter] interrupted run is {age / 3600:.1f}h old, not reporting: {subject}",
+                flush=True,
+            )
+            continue
+        if not _check_and_increment("emails"):
+            print("[adapter] interruption notice suppressed by the email budget", flush=True)
+            continue
+        try:
+            # notice: a constant. The run produced no verified result, and
+            # whatever it had built mid-flight has not been checked against
+            # anything. It says only what is certainly true.
+            await reply_email(
+                message_id=info.get("message_id", ""),
+                text="\n".join([
+                    "Hi,",
+                    "",
+                    f'I was working on "{subject}" when I was restarted, and I '
+                    "could not finish it. I have not sent you a result, so "
+                    "nothing you have received from me covers this.",
+                    "",
+                    "Please send the request again and I will start it fresh.",
+                    "",
+                    "Best,",
+                    AGENT_NAME,
+                ]),
+                fallback_to=who,
+                fallback_subject=subject,
+                fallback_thread_id=info.get("thread_id"),
+            )
+            print(f"[adapter] told {who} their run was interrupted: {subject}", flush=True)
+        except Exception as e:
+            # Loud, because this is the case where a request really does vanish.
+            print(
+                f"[adapter] COULD NOT REPORT AN INTERRUPTED RUN to {who} ({e}) - "
+                f"they will never learn about: {subject}",
+                flush=True,
+            )
 
 
 def _restore_files_from_disk() -> None:
@@ -2429,6 +2550,13 @@ async def _startup():
     """Discover MCP tools from sidecars and write dynamic tool docs."""
     await _discover_mcp_tools()
     _write_mcp_tools_doc()
+    # Anyone whose run died with the last process is still waiting. Last, so a
+    # failure here cannot stop the agent from coming up: a missed notice is bad,
+    # an agent that will not start is worse.
+    try:
+        await _report_interrupted_runs()
+    except Exception as e:
+        print(f"[adapter] could not report interrupted runs: {e}", flush=True)
 
 
 # ─── Google SA email (informational context only) ────────────────────────────
@@ -5719,6 +5847,9 @@ async def receive_teams_message(request: Request):
 async def _handle_message(message: str, context: dict):
     """Process a message through the LangGraph agent and act on the result."""
     print(f"[adapter] _handle_message called with session_key={context.get('session_key', '')}", flush=True)
+    # First, before even the allowlist load: from here on, if this process dies
+    # the entry left behind is the only evidence the request ever arrived.
+    _note_in_flight(context)
     # Pick up any Settings change before the approval policy consults the manager
     # address. Cached for 60s, so this is free on all but the first message in a
     # burst, and it is the one point every inbound message passes through.
@@ -6286,6 +6417,12 @@ async def _handle_message(message: str, context: dict):
         # The text is a constant: no model output, no workspace data, and it
         # goes only to whoever wrote in.
         await _notify_send_failed(context, e)
+
+    finally:
+        # Finished, failed, or paused at an approval - all three are the run
+        # ending on its own terms. The only way past this line without clearing
+        # is the process dying, which is the case the entry exists to catch.
+        _clear_in_flight(context.get("session_key", ""))
 
 
 async def _notify_send_failed(context: dict, exc: Exception) -> None:
