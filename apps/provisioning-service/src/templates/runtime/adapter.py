@@ -345,6 +345,10 @@ async def _discover_mcp_tools() -> None:
 # So the bytes stay here and the model gets a handle. It decides *what* to
 # upload; the platform moves it.
 _SANDBOX_FILES: dict[str, dict] = {}
+# Names only, kept after the bytes are evicted. A handle that is recorded
+# for a run but no longer resolves is a file the buyer was promised and will
+# not get, and without this there is no way to say which one.
+_SANDBOX_FILE_NAMES: dict[str, str] = {}
 _SANDBOX_FILE_LIMIT = 32  # per process; oldest evicted, these are single-run artefacts
 
 # The same idea in reverse, for files that arrive rather than leave.
@@ -749,6 +753,7 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
         file_id = f"sandbox:{uuid.uuid4().hex[:12]}"
         name = f.get("name", "output")
         _SANDBOX_FILES[file_id] = {"name": name, "bytes": raw}
+        _SANDBOX_FILE_NAMES[file_id] = name
         _persist_sandbox_file(file_id, name, raw)
         _evict_to_fit(_SANDBOX_FILES, _SANDBOX_FILE_LIMIT, _INBOUND_BYTES_LIMIT)
 
@@ -1387,13 +1392,29 @@ def note_unattached_files(text: str, attachments: list[dict] | None) -> str:
     is left alone: `run_attachments` legitimately filters — inbound files are
     not deliverables, and a rebuilt workbook replaces its earlier copy.
     """
-    if attachments:
-        return text
-    produced = [
+    # A handle this run recorded that no longer resolves is a lost file, and it
+    # is lost whether or not anything else was attached.
+    #
+    # The first version only fired when *nothing* was attached, on the grounds
+    # that run_attachments filters legitimately — inbound files are not
+    # deliverables, a rebuilt workbook replaces its earlier copy. Testing a
+    # different shape showed that reasoning was too loose: a run that produced
+    # three charts and lost two to the size ceiling attached one, and the reply
+    # went out saying "the chart is below" with no mention of the other two.
+    #
+    # Filtering and losing are distinguishable without reading anything.
+    # Filtering drops a name from the outgoing list; eviction removes the handle
+    # from the registry altogether. Only the second is a broken promise.
+    lost = [
+        _SANDBOX_FILE_NAMES.get(h, "a file")
+        for h in current_run_files()
+        if h not in _SANDBOX_FILES
+    ]
+    produced = lost or ([
         _SANDBOX_FILES[h]["name"]
         for h in current_run_files()
         if h in _SANDBOX_FILES
-    ]
+    ] if not attachments else [])
     if not produced or not (text or "").strip():
         return text
 
@@ -1407,10 +1428,10 @@ def note_unattached_files(text: str, attachments: list[dict] | None) -> str:
     return (
         text.rstrip()
         + "\n\n---\n"
-        + "I could not attach the file this run produced ("
+        + "I could not attach everything this run produced ("
         + names
-        + "), so it is not in this message. The figures above are what the "
-        + "code computed. Ask me and I will send it again."
+        + " did not make it into this message). The figures above are what "
+        + "the code computed. Ask me and I will send it again."
     )
 
 

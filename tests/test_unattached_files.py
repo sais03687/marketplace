@@ -133,3 +133,59 @@ def test_no_delivery_path_calls_only_half_of_it():
     assert "note_the_notebook(" not in body and "note_unattached_files(" not in body, (
         "a send site that calls one check and not the other is how F3 happened"
     )
+
+
+# ── partial loss, found by testing a different shape ───────────────────────
+#
+# The rule above once fired only when *nothing* was attached, justified by
+# run_attachments filtering legitimately. A run that produced three charts and
+# lost two to the size ceiling attached one and said nothing about the others.
+#
+# Filtering and losing are distinguishable: filtering drops a name from the
+# outgoing list, eviction removes the handle from the registry. Only the second
+# is a promise broken.
+
+def _produced_then_lost(kept, lost):
+    for i, n in enumerate(kept):
+        h = f"sandbox:k{i}"
+        adapter._SANDBOX_FILES[h] = {"name": n, "bytes": b"x"}
+        adapter._SANDBOX_FILE_NAMES[h] = n
+        adapter._RUN_FILES["t"].append(h)
+    for i, n in enumerate(lost):
+        h = f"sandbox:l{i}"
+        adapter._SANDBOX_FILE_NAMES[h] = n      # name survives the eviction
+        adapter._RUN_FILES["t"].append(h)       # handle still recorded for the run
+
+
+def test_losing_two_of_three_charts_is_not_silent():
+    _produced_then_lost(kept=["q3_trend_2.png"], lost=["q3_trend_0.png", "q3_trend_1.png"])
+    out = adapter.note_unattached_files(
+        "Revenue rose 12% in Q3. The chart is below.", [{"name": "q3_trend_2.png"}]
+    )
+    assert "could not attach" in out
+    assert "q3_trend_0.png" in out and "q3_trend_1.png" in out
+
+
+def test_the_file_that_did_arrive_is_not_named_as_missing():
+    _produced_then_lost(kept=["kept.xlsx"], lost=["gone.png"])
+    out = adapter.note_unattached_files("Done.", [{"name": "kept.xlsx"}])
+    assert "gone.png" in out
+    assert "kept.xlsx" not in out.split("could not attach")[1]
+
+
+def test_legitimate_filtering_is_still_left_alone():
+    # Every handle resolves; run_attachments simply chose not to send one. That
+    # is filtering, not loss, and must not produce a caveat.
+    for i, n in enumerate(["a.xlsx", "b.xlsx"]):
+        h = f"sandbox:f{i}"
+        adapter._SANDBOX_FILES[h] = {"name": n, "bytes": b"x"}
+        adapter._SANDBOX_FILE_NAMES[h] = n
+        adapter._RUN_FILES["t"].append(h)
+    text = "Here is the workbook."
+    assert adapter.note_unattached_files(text, [{"name": "a.xlsx"}]) == text
+
+
+def test_a_lost_file_with_no_recorded_name_still_gets_reported():
+    adapter._RUN_FILES["t"].append("sandbox:unknown")
+    out = adapter.note_unattached_files("Done.", [{"name": "something.xlsx"}])
+    assert "could not attach" in out
