@@ -4926,6 +4926,11 @@ WAITING_ON_ANSWER_NOTICE = (
 )
 
 
+def email_thread_id_for_empty(result: dict, context: dict) -> str | None:
+    """Thread for the "nothing to send" notice, from wherever one exists."""
+    return result.get("thread_id") or context.get("thread_id")
+
+
 async def _handle_interrupt(
     result: dict,
     channel: str,
@@ -5839,6 +5844,54 @@ async def _handle_message(message: str, context: dict):
                 print(f"[adapter] Requiring approval ({policy_reason})", flush=True)
                 # External recipient — queue for approval with interrupt/resume
                 draft_text = result.get("text", "")
+
+                # An empty draft is not something a person can approve.
+                #
+                # Task F1 on 2026-08-18 queued one: a zero-length reply, with no
+                # subject either, sitting in the buyer's queue as though it were
+                # a decision they could make. Approving it would have sent an
+                # empty email; rejecting it says nothing about what went wrong.
+                # The run had lost its state to a restart and arrived here with
+                # nothing.
+                #
+                # finalize composes a partial-progress reply from whatever a run
+                # holds, so reaching this point empty means the run did not get
+                # that far. Say so to the requester rather than asking them to
+                # rule on a blank. Sent unapproved deliberately, on the same
+                # footing as the "not finished yet" notice: it carries no
+                # findings, no attachment and no claim — only that the work did
+                # not complete.
+                if not draft_text.strip():
+                    print(
+                        "[adapter] Refusing to queue an empty draft — telling the "
+                        "requester the run produced nothing",
+                        flush=True,
+                    )
+                    _requester = _extract_email(context.get("sender", ""))
+                    if _requester and _check_and_increment("emails"):
+                        try:
+                            # notice: the run produced nothing, so there is
+                            # nothing to attach. Attaching here would contradict
+                            # the message.
+                            await reply_email(
+                                message_id=context.get("message_id", ""),
+                                text=(
+                                    "This one did not complete — I have nothing to "
+                                    "send you.\n\n"
+                                    "Nothing was produced and no part "
+                                    "of it was written up, so there is no partial "
+                                    "result worth passing on. Send it again and it "
+                                    "will start from scratch; if it fails the same "
+                                    "way twice, the request is worth splitting into "
+                                    "smaller pieces."
+                                ),
+                                fallback_to=_requester,
+                                fallback_subject=context.get("subject", ""),
+                                fallback_thread_id=email_thread_id_for_empty(result, context),
+                            )
+                        except Exception as _e:
+                            print(f"[adapter] Could not report the empty run: {_e}", flush=True)
+                    return
                 email_thread_id = result.get("thread_id") or context.get("thread_id")
                 risk = result.get("risk_assessment") or {}
                 try:
