@@ -48,7 +48,7 @@ SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 printf 'task         : %s\nsubject      : %s\nrestart when : %s\nfiles now    : %s\n\n' \
        "$TASK" "$MATCH" "$WHEN" "$BEFORE"
 
-node --env-file="$ENVFILE" "$BENCH/send_wave.mjs" "$TASK" || exit 1
+node --env-file="$ENVFILE" "$BENCH/send_task.mjs" "$TASK" || exit 1
 
 case "$WHEN" in
   file)

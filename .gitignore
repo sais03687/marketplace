@@ -113,4 +113,6 @@ benchmark/*
 !benchmark/check_reply.mjs
 !benchmark/task_subject.mjs
 !benchmark/capture_fixture.mjs
+!benchmark/send_task.mjs
+!benchmark/tasks.mjs
 !benchmark/send_wave.mjs
