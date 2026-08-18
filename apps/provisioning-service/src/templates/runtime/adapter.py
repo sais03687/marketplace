@@ -1419,9 +1419,11 @@ def note_unattached_files(text: str, attachments: list[dict] | None) -> str:
         return text
 
     print(
-        "[adapter] Run produced "
+        "[adapter] "
         + ", ".join(produced)
-        + " but the reply is carrying no attachments — saying so",
+        + (" recorded by this run but no longer resolvable"
+           if lost else " produced but the reply is carrying nothing")
+        + " — saying so in the reply",
         flush=True,
     )
     names = ", ".join(dict.fromkeys(produced))
