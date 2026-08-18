@@ -6245,7 +6245,24 @@ async def _handle_message(message: str, context: dict):
                 request=context.get("original_message", "") or message,
                 subject=context.get("subject", ""),
             ) or None
-            reply_text = finalise_reply_text(reply_text, _att)
+            # Written back into `result`, because `result["text"]` is what both
+            # sends below actually read.
+            #
+            # This was `reply_text = finalise_reply_text(reply_text, _att)`,
+            # copied from _deliver_email_result where `reply_text` is a
+            # parameter. Here it is nothing: the read raised UnboundLocalError,
+            # and had it not, the finalised text went into a local that no send
+            # ever looked at - so the notebook note and the unattached-file
+            # caveat have never once reached a buyer down this path.
+            #
+            # It stayed hidden because a run that pauses at a graph interrupt
+            # resumes through _deliver_email_result and never reaches this line.
+            # Only a run that completes inside _handle_message does, and E4 on
+            # 2026-08-18 is the first that has: its approval was the adapter's
+            # own queue_for_approval, which returns here rather than resuming
+            # the graph. The buyer got "Something went wrong while I was working
+            # on your request" under a finished analysis and a built workbook.
+            result["text"] = finalise_reply_text(result.get("text", ""), _att)
             if _att:
                 print(
                     f"[adapter] Attaching {len(_att)} file(s) to email: "
