@@ -5,12 +5,16 @@ digit as a sign. So every identifier came out negative — SKU-1003 as -1003, de
 D-1007 as -1007, invoice INV-4501 as -4501 — and the range "1200-1500" read as
 1200 and -1500.
 
-Task E4 on 2026-08-17 is what it cost. The summary cited SKU-1003, the workbook
-held that id as a plain 1003, and `verify_deliverables` reported a figure absent
-that the file was carrying all along. The agent receives those as a real gap: on
-2026-08-10 two fragments of a SharePoint download GUID were handed over the same
-way, and it rebuilt and re-uploaded the workbook trying to fit them into a
-revenue table.
+Task E4 on 2026-08-17 is what it cost, by a route worth reading twice. The model
+wrote SKU‑1003 in its prose with a non-breaking hyphen and SKU-1003 in the table
+with an ascii one. The prose therefore read as a positive 1003, the workbook as
+-1003, and `verify_deliverables` announced to the buyer that "1003 appears in my
+summary above but not in the file" under a workbook that held it. Two characters
+that are indistinguishable on screen, disagreeing about the sign of one id.
+
+The agent receives those as a real gap: on 2026-08-10 two fragments of a
+SharePoint download GUID were handed over the same way, and it rebuilt and
+re-uploaded the workbook trying to fit them into a revenue table.
 
 The point of the check is to catch a figure the agent asserted and the file does
 not support. An identifier that does not appear is exactly that — a cited SKU
@@ -103,3 +107,46 @@ def test_a_cited_id_that_is_not_in_the_data_is_still_flagged():
 
 def test_a_figure_absent_from_the_file_is_still_flagged():
     assert missing("Total outstanding was 41,200.", NUMERIC_IDS) == ["41,200"]
+
+
+# ── E4 itself, from the reply that was actually delivered ──────────────────
+#
+# Captured from /root/bench/dump_eval/E4.body.txt, the reply sent on
+# 2026-08-17, verified by reading the character codes out of it rather than
+# retyping the text — the two hyphens below are indistinguishable on screen and
+# a transcription would have silently made them the same character, which is the
+# whole bug.
+#
+# The model wrote a non-breaking hyphen in its prose and an ascii one in the
+# table it built, so the summary read SKU-1003 as a positive 1003 and the
+# workbook read it as -1003. The two sides disagreed about the sign of one
+# identifier, and the buyer was told "1003 appears in my summary above but not
+# in the file — I could not reconcile them" under a workbook that held it.
+
+NON_BREAKING_HYPHEN = chr(0x2011)   # what the prose used
+ASCII_HYPHEN = chr(0x2D)            # what the workbook used
+
+
+def test_the_two_hyphens_really_are_different_characters():
+    # If these ever compare equal the case below proves nothing.
+    assert NON_BREAKING_HYPHEN != ASCII_HYPHEN
+
+
+def test_e4s_own_summary_and_workbook_agree():
+    summary = (
+        f"A negative on-hand quantity for SKU{NON_BREAKING_HYPHEN}1003 (Leeds) "
+        "was flagged as a data anomaly."
+    )
+    blob = (
+        f"sku\twarehouse\ton_hand\n"
+        f"SKU{ASCII_HYPHEN}1002\tLeeds\t15\n"
+        f"SKU{ASCII_HYPHEN}1003\tLeeds\t-12\n"
+    )
+    assert missing(summary, blob) == []
+
+
+def test_the_negative_quantity_in_that_same_row_is_still_negative():
+    # -12 is a real measurement in the row above, and forgiving the identifier
+    # must not forgive it too.
+    blob = f"sku\ton_hand\nSKU{ASCII_HYPHEN}1003\t-12\n"
+    assert adapter.Decimal("-12") in adapter._file_figures(blob)
