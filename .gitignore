@@ -102,3 +102,15 @@ benchmark/*
 # laptop's disk with no history — the one file in that directory that is
 # writing rather than data.
 !benchmark/HANDOVER.md
+
+# And except the harness itself, which is code and not a dump. Every test round
+# had been growing its own send_X/dump_X pair on the VPS, unversioned, so a fix
+# to one never reached the others and nothing accumulated between rounds. These
+# were committed once already and silently ignored, which would have left the
+# whole point of them — that the harness outlives the round — undone.
+!benchmark/chaos.sh
+!benchmark/await_reply.mjs
+!benchmark/check_reply.mjs
+!benchmark/task_subject.mjs
+!benchmark/capture_fixture.mjs
+!benchmark/send_wave.mjs
