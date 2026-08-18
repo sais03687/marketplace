@@ -1362,6 +1362,68 @@ def note_the_notebook(text: str, attachments: list[dict] | None) -> str:
 
 
 
+def note_unattached_files(text: str, attachments: list[dict] | None) -> str:
+    """Say so when the run produced files and the message is carrying none.
+
+    An invariant over the run's own state, not a reading of its prose. Task F3
+    on 2026-08-18 told the buyer "the Excel workbook containing these
+    calculations and the full data table is attached" and sent nothing: the
+    container had been redeployed and the registry it would have been gathered
+    from was gone.
+
+    Persisting the registry removed that cause, and `note_the_notebook` fixed
+    the platform's own half of the claim — but the sentence above is the model's,
+    written before it can know what will be attached, and no fix to either
+    touches it. A send failure, an eviction under the size ceiling or a file too
+    large to attach would produce the same lie from a different direction.
+
+    Deliberately not a check for the word "attached". That misfires on "the data
+    attached to your email" and misses "I've included the workbook", and a
+    vocabulary is exactly what could not be made to work for the headline check.
+    What is knowable without reading anything is that the run made files and the
+    message has none of them, and that is always worth saying.
+
+    Only the unambiguous case. A message carrying some of what the run produced
+    is left alone: `run_attachments` legitimately filters — inbound files are
+    not deliverables, and a rebuilt workbook replaces its earlier copy.
+    """
+    if attachments:
+        return text
+    produced = [
+        _SANDBOX_FILES[h]["name"]
+        for h in current_run_files()
+        if h in _SANDBOX_FILES
+    ]
+    if not produced or not (text or "").strip():
+        return text
+
+    print(
+        "[adapter] Run produced "
+        + ", ".join(produced)
+        + " but the reply is carrying no attachments — saying so",
+        flush=True,
+    )
+    names = ", ".join(dict.fromkeys(produced))
+    return (
+        text.rstrip()
+        + "\n\n---\n"
+        + "I could not attach the file this run produced ("
+        + names
+        + "), so it is not in this message. The figures above are what the "
+        + "code computed. Ask me and I will send it again."
+    )
+
+
+def finalise_reply_text(text: str, attachments: list[dict] | None) -> str:
+    """Everything the platform has to say about the message it is about to send.
+
+    One call per delivery path rather than two, because the two facts are
+    checked against the same list and a site that remembered one and forgot the
+    other would be back where F3 started.
+    """
+    return note_the_notebook(note_unattached_files(text, attachments), attachments)
+
+
 def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
     """Everything this run produced, ready to attach: its files, then the notebook.
 
@@ -4739,7 +4801,7 @@ async def _deliver_teams_result(reply_text: str, result: dict, ctx: dict) -> Non
             await send_email(
                 to=teams_recipient,
                 subject=result.get("subject", ""),
-                text=note_the_notebook(
+                text=finalise_reply_text(
                     result.get("text", reply_text),
                     run_attachments(subject=result.get("subject", "")),
                 ),
@@ -4800,7 +4862,7 @@ async def _deliver_email_result(
         # Decided from `_att`, which is the list actually going out. This is the
         # path F3 was delivered on when it announced a workbook and a notebook
         # that the message did not carry.
-        _text = note_the_notebook(result.get("text", reply_text), _att)
+        _text = finalise_reply_text(result.get("text", reply_text), _att)
 
         try:
             if action == "reply_email" and ctx.get("message_id"):
@@ -4865,7 +4927,7 @@ async def _deliver_email_result(
                 ) or None
                 await reply_email(
                     message_id=ctx.get("message_id", ""),
-                    text=note_the_notebook(reply_text, _outcome_att),
+                    text=finalise_reply_text(reply_text, _outcome_att),
                     fallback_to=requester,
                     fallback_subject=ctx.get("subject", ""),
                     fallback_thread_id=ctx.get("thread_id"),
@@ -5971,7 +6033,7 @@ async def _handle_message(message: str, context: dict):
                 request=context.get("original_message", "") or message,
                 subject=context.get("subject", ""),
             ) or None
-            reply_text = note_the_notebook(reply_text, _att)
+            reply_text = finalise_reply_text(reply_text, _att)
             if _att:
                 print(
                     f"[adapter] Attaching {len(_att)} file(s) to email: "
@@ -6094,7 +6156,7 @@ async def _handle_message(message: str, context: dict):
                         ) or None
                         await reply_email(
                             message_id=retry_result.get("message_id") or context.get("message_id", ""),
-                            text=note_the_notebook(send_text, _retry_att),
+                            text=finalise_reply_text(send_text, _retry_att),
                             fallback_to=_extract_email(recipient),
                             fallback_subject=context.get("subject", ""),
                             fallback_thread_id=retry_thread,
