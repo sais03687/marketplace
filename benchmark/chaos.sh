@@ -92,7 +92,12 @@ echo
 echo "approving whatever comes up, until the reply lands..."
 (
   for _ in $(seq 1 40); do
-    node --env-file="$ENVFILE" "$BENCH/approve.mjs"          --contains "$MATCH" --since "$SINCE" --timeout 45 2>&1 | sed "s/^/  /"
+    # No subject filter. The approval email's subject is a fixed string and its
+    # body describes the *action* - "may I share reorder_list.xlsx with ..." -
+    # so neither carries the buyer's own subject line, and matching on it
+    # skipped every gate. `--since` is the identifier that actually works:
+    # one task at a time, and nothing before this run began.
+    node --env-file="$ENVFILE" "$BENCH/approve.mjs"          --since "$SINCE" --timeout 45 2>&1 | sed "s/^/  /"
     sleep 5
   done
 ) &
