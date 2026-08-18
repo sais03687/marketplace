@@ -6,6 +6,7 @@ import { resolveModel } from "@/lib/model-resolver";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
 import { priceRejection } from "@/lib/agent-pricing";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 // ── Code scanning ─────────────────────────────────────────────────────────────
 
@@ -385,5 +386,38 @@ export async function POST(request: Request) {
   });
 
   console.log("[upload] agent:", result.agent.slug, "status:", result.agent.status);
+
+  // Start the review the creator was just told about.
+  //
+  // Publishing set vetStatus to PENDING and stopped. `enqueueVetPackage` existed
+  // in the provisioning service and nothing called it, so the only way to vet a
+  // package was for someone to POST /api/packages/:id/vet-sandbox by hand — and
+  // the wizard meanwhile said "Your agent is under review", which was not true
+  // of anything. On 2026-08-17 the record showed no package had ever been
+  // vetted; the first one put through the pipeline by hand passed.
+  //
+  // Failure here is logged and swallowed on purpose. The package is uploaded and
+  // the version row is written by this point; losing the queue should leave a
+  // package awaiting vetting, not lose the upload the creator just made. The
+  // manual route still works as the retry.
+  if (result.version.storagePath && result.agent.runtime === "CUSTOM") {
+    try {
+      const job = await getProvisioningQueue().add("vet_package", {
+        type: "vet_package",
+        versionId: result.version.id,
+      } as any);
+      await prisma.agentVersion.update({
+        where: { id: result.version.id },
+        data: {
+          vetNotes: "Queued for vetting sandbox...",
+          testResults: { status: "queued", queuedAt: new Date().toISOString() } as any,
+        },
+      });
+      console.log("[upload] vetting queued:", job.id, "for version", result.version.id);
+    } catch (e) {
+      console.error("[upload] could not queue vetting:", e);
+    }
+  }
+
   return jsonSuccess(result, 201);
 }
