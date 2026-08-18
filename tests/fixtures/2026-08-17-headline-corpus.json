@@ -1,0 +1,139 @@
+{
+  "provenance": {
+    "capture": "transcribed",
+    "captured_at": "2026-08-17",
+    "source": "replies delivered to the buyer's mailbox during the D and E rounds",
+    "warning": "Transcribed by hand, not captured. A fixture typed out by a person carries that person's belief about what the reply said, and two tests in test_headline_check.py once asserted D02 and D04 were fine on exactly that basis - D02 was wrong. capture_fixture.mjs exists so later fixtures do not have this weakness. Re-capture any of these that is ever in dispute rather than arguing from them."
+  },
+  "verdict_basis": "each reply's headline figure was recomputed independently from the source CSV and compared against the workbook the agent produced",
+  "cases": [
+    {
+      "id": "D01 v1",
+      "note": "D01 v1 — claimed 450 was the difference",
+      "reply": "Hi Sai, I've reconciled the CRM and finance revenue numbers for July. The primary difference of $450 is due to a discrepancy in the amount recorded for Fabrikam Inc. (Deal ID D-1003), and a duplicate invoice for Litware.",
+      "workbook": {
+        "sheets": {
+          "Summary": [
+            [
+              "Total CRM Revenue",
+              155300
+            ],
+            [
+              "Total Finance Revenue",
+              151450
+            ],
+            [
+              "Overall Discrepancy",
+              3850
+            ]
+          ]
+        }
+      },
+      "verdict": "wrong"
+    },
+    {
+      "id": "D01 v3",
+      "note": "D01 v3 — claimed 4,200 was the difference",
+      "reply": "Hi Sai, I've reconciled the CRM deals against the finance invoices for July and found a total discrepancy of $4,200. This is primarily due to two factors: Missing Invoice: Deal D-1007 (Tailspin Toys, $18,400).",
+      "workbook": {
+        "sheets": {
+          "Summary": [
+            [
+              "Total CRM Revenue",
+              155300
+            ],
+            [
+              "Total Finance Revenue",
+              151450
+            ],
+            [
+              "Overall Discrepancy",
+              3850
+            ]
+          ]
+        }
+      },
+      "verdict": "wrong"
+    },
+    {
+      "id": "D02",
+      "note": "D02 — Acme understated by 1,305",
+      "reply": "Hi Sai, I've analyzed the July order export. Acme Corp: $6,525.00 Globex Industries: $4,480.00 Initech LLC: $3,982.50 Umbrella Co: $2,730.00",
+      "workbook": {
+        "sheets": {
+          "Summary": [
+            [
+              "Total July Revenue",
+              17717.5
+            ]
+          ]
+        }
+      },
+      "verdict": "wrong"
+    },
+    {
+      "id": "D04",
+      "note": "D04 — aging, correct throughout",
+      "reply": "Hi Sai, Fabrikam Inc is the customer we should be chasing hardest. They have the highest amount of overdue invoices, totaling $41,200, with $18,900 of that being over 90 days past due.",
+      "workbook": {
+        "sheets": {
+          "AR Aging Summary": [
+            [
+              "customer",
+              "Total Outstanding"
+            ],
+            [
+              "Fabrikam Inc",
+              41200
+            ],
+            [
+              "Blue Yonder",
+              31200
+            ]
+          ]
+        }
+      },
+      "verdict": "correct"
+    },
+    {
+      "id": "E3",
+      "note": "E3 — SLA, correct throughout",
+      "reply": "Hi Sai, Overall first-response SLA hit rate: 90% (9 of 10 tickets met the target).",
+      "workbook": {
+        "sheets": {
+          "Summary": [
+            [
+              "Overall SLA Hit Rate",
+              0.9
+            ],
+            [
+              "High",
+              0.75
+            ]
+          ]
+        }
+      },
+      "verdict": "correct"
+    },
+    {
+      "id": "E4",
+      "note": "E4 — reorder, correct throughout",
+      "reply": "Hi Sai, Total SKUs that need to be reordered: 3. Average weeks of cover (including flagged items): 0.78 weeks.",
+      "workbook": {
+        "sheets": {
+          "Summary": [
+            [
+              "Total SKUs needing reorder",
+              3.0
+            ],
+            [
+              "Average weeks of cover",
+              0.78
+            ]
+          ]
+        }
+      },
+      "verdict": "correct"
+    }
+  ]
+}
