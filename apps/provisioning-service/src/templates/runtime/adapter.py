@@ -5850,6 +5850,8 @@ async def _handle_message(message: str, context: dict):
     # First, before even the allowlist load: from here on, if this process dies
     # the entry left behind is the only evidence the request ever arrived.
     _note_in_flight(context)
+    # Whether the run was cancelled rather than ending. See the finally below.
+    interrupted = False
     # Pick up any Settings change before the approval policy consults the manager
     # address. Cached for 60s, so this is free on all but the first message in a
     # burst, and it is the one point every inbound message passes through.
@@ -6404,6 +6406,22 @@ async def _handle_message(message: str, context: dict):
 
         # action == "none" → agent chose not to act (e.g., clarification stored)
 
+    except asyncio.CancelledError:
+        # This is the interruption itself, arriving as an exception. A graceful
+        # shutdown - every `docker restart`, every deploy - cancels the tasks
+        # still in flight, and `CancelledError` derives from BaseException, so it
+        # sails past the handler below and straight into the `finally`. Clearing
+        # there would erase the only record that the request was ever received,
+        # on the exact path the record exists for. Verified on 2026-08-18: the
+        # notice did not fire because the entry had already deleted itself.
+        interrupted = True
+        print(
+            "[adapter] run cancelled mid-work, keeping the in-flight record: "
+            f"{context.get('subject', '')}",
+            flush=True,
+        )
+        raise
+
     except Exception as e:
         print(f"[adapter] Error handling message: {e}", flush=True)
         traceback.print_exc()
@@ -6420,9 +6438,12 @@ async def _handle_message(message: str, context: dict):
 
     finally:
         # Finished, failed, or paused at an approval - all three are the run
-        # ending on its own terms. The only way past this line without clearing
-        # is the process dying, which is the case the entry exists to catch.
-        _clear_in_flight(context.get("session_key", ""))
+        # ending on its own terms, and a paused run is recoverable through
+        # PENDING_RESUMES_DIR. Cancellation is not an ending, and is the one case
+        # that must leave the record behind; a hard kill leaves it too, by
+        # never reaching this line at all.
+        if not interrupted:
+            _clear_in_flight(context.get("session_key", ""))
 
 
 async def _notify_send_failed(context: dict, exc: Exception) -> None:

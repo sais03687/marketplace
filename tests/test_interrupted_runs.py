@@ -199,3 +199,56 @@ def test_startup_reports_and_cannot_be_stopped_by_it():
     assert "except Exception" in startup, (
         "an agent that will not start is worse than a missed notice"
     )
+
+
+# ── cancellation, which is what a restart actually looks like ──────────────
+#
+# Every test above drives the helpers directly, and all fifteen passed while the
+# feature did not work: `docker restart` sends SIGTERM, uvicorn cancels the tasks
+# still in flight, and `CancelledError` - a BaseException, so invisible to
+# `except Exception` - went straight to the `finally`, which cleared the record.
+# The journal erased itself on the one path it exists for.
+#
+# Nothing short of cancelling a real task could have shown that, which is the
+# same lesson as test_lossy_keys.py in a different costume: the tests agreed with
+# each other and never crossed the boundary the bug lived on.
+
+def test_cancelling_a_run_keeps_the_record(flight, monkeypatch):
+    async def never_returns(*a, **k):
+        await asyncio.sleep(3600)
+
+    async def nothing(*a, **k):
+        return None
+
+    monkeypatch.setattr(adapter, "_load_allowlist", nothing)
+    monkeypatch.setattr(adapter, "_check_and_increment", lambda *a, **k: True)
+    monkeypatch.setattr(adapter, "run_agent", never_returns)
+
+    async def drive():
+        task = asyncio.create_task(adapter._handle_message("do the thing", dict(CONTEXT)))
+        for _ in range(200):                     # let it reach the hang
+            await asyncio.sleep(0.01)
+            if list(flight.glob("*.json")):
+                break
+        assert list(flight.glob("*.json")), "the run never recorded itself"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(drive())
+    assert list(flight.glob("*.json")), (
+        "cancellation cleared the record, so the buyer will never be told"
+    )
+
+
+def test_a_run_that_finishes_normally_still_clears(flight, monkeypatch):
+    """The other half. A guard that never clears is as broken as one that always
+    does — it would tell every buyer their completed work was interrupted."""
+    async def nothing(*a, **k):
+        return None
+
+    monkeypatch.setattr(adapter, "_load_allowlist", nothing)
+    monkeypatch.setattr(adapter, "_check_and_increment", lambda *a, **k: False)  # early return
+
+    asyncio.run(adapter._handle_message("do the thing", dict(CONTEXT)))
+    assert not list(flight.glob("*.json"))
