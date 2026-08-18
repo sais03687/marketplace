@@ -83,11 +83,24 @@ esac
 # a human is not a test. This goes through the link in the notification email,
 # which is the buyer's own route and the one thing a database shortcut would
 # leave untested.
+#
+# A loop, not one call: one task raises several gates in sequence. E4 asked the
+# manager a question, and then - having been told yes - asked again before the
+# upload. A single approval left it stuck at the second gate and the harness
+# reported nothing at all.
 echo
-echo "approving (if anything is queued)..."
-node --env-file="$ENVFILE" "$BENCH/approve.mjs"      --contains "$MATCH" --since "$SINCE" --timeout 600 ||   echo "  nothing queued, or it resolved itself - carrying on"
+echo "approving whatever comes up, until the reply lands..."
+(
+  for _ in $(seq 1 40); do
+    node --env-file="$ENVFILE" "$BENCH/approve.mjs"          --contains "$MATCH" --since "$SINCE" --timeout 45 2>&1 | sed "s/^/  /"
+    sleep 5
+  done
+) &
+APPROVER=$!
+# However this run ends, the approver must not outlive it and start resolving
+# gates belonging to the next one.
+trap 'kill $APPROVER 2>/dev/null' EXIT
 
-echo
 echo "waiting for the reply..."
 OUT=$(mktemp)
 node --env-file="$ENVFILE" "$BENCH/await_reply.mjs" \

@@ -55,7 +55,11 @@ def test_the_check_runs_before_the_interrupt_not_after():
         encoding="utf-8",
     ).read()
     guard = src.index('if action_type in ("drive_upload", "my_drive_upload"):')
-    block = src.index("BLOCKED action '{action_type}' — interrupting for approval")
+    # Anchored on the interrupt itself, not on the log line beside it. The
+    # earlier version spelled out the wording of a print, so rewording that
+    # print broke this test while the ordering it protects was untouched -
+    # the same fault as the filename assertions in test_files_survive_restart.
+    block = src.index("resolution = interrupt({", guard)
     assert guard < block, "the payload must be refused before anyone is asked about it"
 
 

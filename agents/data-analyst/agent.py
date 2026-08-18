@@ -1569,7 +1569,19 @@ async def execute_action(state: AgentState) -> AgentState:
         if _needs_manager_approval(
             action_type, _gate_params, state.context.get("approval_policy")
         ):
-            print(f"[agent] BLOCKED action '{action_type}' — interrupting for approval", flush=True)
+            # This line is reached twice per approval and cannot tell the two
+            # apart. LangGraph re-enters the node from the top on resume, and
+            # `interrupt()` only returns the resolution the second time it is
+            # called; `Command(resume=...)` carries no state update, so there is
+            # nothing here to distinguish "stopping" from "carrying on".
+            #
+            # It used to say "BLOCKED ... interrupting for approval" both times,
+            # which read as an approval loop in the log on 2026-08-18 - "Resuming
+            # ..." followed by "BLOCKED ..." 3ms later - and cost a wrong
+            # diagnosis until the next two lines showed it executing normally.
+            # So it no longer claims to be doing either. What actually happened
+            # is on the line after the interrupt, where it is known.
+            print(f"[agent] approval gate reached for '{action_type}'", flush=True)
             resolution = interrupt({
                 "action": action_type,
                 "params": params,
