@@ -128,7 +128,10 @@ def test_an_empty_update_is_harmless(tmp_path, monkeypatch):
 
 def test_the_job_restarts_the_container_after_pushing():
     src = io.open(UPDATE_TS, encoding="utf-8").read()
-    assert "restartContainer(deployment.containerName)" in src, (
+    # The resolved name, not the row's — see
+    # test_the_restart_does_not_trust_the_container_name_column. This asserted
+    # the buggy spelling until the live row turned out to hold a URL.
+    assert "await restartContainer(containerName);" in src, (
         "files written to disk are not imported by a process that already "
         "started; without a restart every update is silent"
     )
@@ -143,7 +146,7 @@ def test_the_job_checks_the_agent_came_back():
     # be rolling back to, so the first occurrence of that string is no longer
     # the one this test is about.
     src = io.open(UPDATE_TS, encoding="utf-8").read()
-    assert src.index("restartContainer(deployment.containerName)") < src.index("waitUntilHealthy(port)")
+    assert src.index("await restartContainer(containerName);") < src.index("waitUntilHealthy(port)")
     assert "did not become healthy" in src, (
         "a restart that never comes up leaves a dead agent and a database "
         "claiming an updated one"
@@ -331,3 +334,28 @@ def test_an_unreadable_journal_is_not_reported_as_idle(monkeypatch):
 
 async def _ok():
     return True
+
+
+# ── the container the agent is really in ───────────────────────────────────
+
+def test_the_restart_does_not_trust_the_container_name_column():
+    """`Deployment.containerName` holds a URL, not a container name.
+
+    On the live deployment it reads "http://127.0.0.1:32797". Passing that to
+    Docker looks for a container by that name and finds nothing, so the restart
+    — the whole point of the update — would have failed on every deployment.
+    Found by reading the row rather than the schema.
+    """
+    src = io.open(UPDATE_TS, encoding="utf-8").read()
+    assert "restartContainer(containerName)" in src
+    assert "restartContainer(deployment.containerName)" not in src
+    assert "customAgentContainerName(deploymentId)" in src
+
+
+def test_an_empty_package_does_not_cost_a_restart():
+    # A version with no package in blob storage sends an empty diff — the job
+    # has always logged that and carried on. Restarting to apply no change is
+    # pure cost to the buyer, including whatever run it cancels.
+    src = io.open(UPDATE_TS, encoding="utf-8").read()
+    skip = src.index("skipping the restart")
+    assert skip < src.index("await restartContainer(")

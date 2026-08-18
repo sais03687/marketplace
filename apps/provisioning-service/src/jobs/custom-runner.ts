@@ -361,15 +361,26 @@ export async function spawnCustomAgent(
 }
 
 /**
+ * The container this deployment actually runs in.
+ *
+ * Not `Deployment.containerName`, which holds a URL — "http://127.0.0.1:32797"
+ * for the live deployment — and would be passed straight to Docker by anything
+ * that trusted its name. The tracked entry first, then the deterministic name,
+ * which is the same fallback stopCustomAgent has always used.
+ */
+export function customAgentContainerName(deploymentId: string): string {
+  return customProcesses.get(deploymentId)?.containerName
+    ?? `custom-agent-${deploymentId.slice(0, 8)}`;
+}
+
+/**
  * Stop and remove a custom agent container + its poller process.
  */
 export async function stopCustomAgent(deploymentId: string): Promise<void> {
   // Always stop the poller — even if customProcesses map is empty (e.g. after a service restart)
   stopPoller(deploymentId);
 
-  const entry = customProcesses.get(deploymentId);
-  // Fall back to the deterministic container name if not tracked in memory
-  const containerName = entry?.containerName ?? `custom-agent-${deploymentId.slice(0, 8)}`;
+  const containerName = customAgentContainerName(deploymentId);
 
   // Stop and remove container
   try {

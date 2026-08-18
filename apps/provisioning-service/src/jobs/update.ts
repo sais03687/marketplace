@@ -4,6 +4,7 @@ import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { getContainerPort, restartContainer } from "../clients/docker.js";
 import { probeAgent, waitUntilIdle, waitUntilHealthy } from "./update-helpers.js";
+import { customAgentContainerName } from "./custom-runner.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 function collectFiles(dir: string): Record<string, string> {
@@ -121,8 +122,27 @@ export async function updateJob(deploymentId: string): Promise<void> {
   // the old code. Every update before this one was silent for exactly that
   // reason — files landed, the job logged success, and the agent carried on as
   // it was.
-  if (!deployment.containerName) {
-    throw new Error(`Deployment ${deploymentId} has no container name — cannot restart`);
+  // Resolved, not read from the row: Deployment.containerName holds a URL
+  // ("http://127.0.0.1:32797" on the live deployment), and handing that to
+  // Docker fails on a container that does not exist.
+  const containerName = customAgentContainerName(deploymentId);
+
+  // Nothing to load means nothing to restart for. An empty diff happens
+  // whenever a version has no package in blob storage — the job logs it and
+  // carries on — and restarting the agent to apply no change is pure cost to
+  // the buyer, including a cancelled run.
+  if (Object.keys(files).length === 0) {
+    console.warn(`[update] No files for v${deployment.agentVersion} — skipping the restart`);
+    await prisma.provisioningLog.create({
+      data: {
+        deploymentId,
+        step: "update_complete",
+        status: "succeeded",
+        attempt: 1,
+        message: `v${deployment.agentVersion}: no package files to apply, agent left running`,
+      },
+    });
+    return;
   }
 
   // Wait for a moment when nobody is owed anything. A restart cancels whatever
@@ -138,11 +158,11 @@ export async function updateJob(deploymentId: string): Promise<void> {
   const quiet = await waitUntilIdle(port);
   console.log(
     quiet
-      ? `[update] Agent idle — restarting ${deployment.containerName} for v${deployment.agentVersion}`
+      ? `[update] Agent idle — restarting ${containerName} for v${deployment.agentVersion}`
       : `[update] Agent still busy after waiting — restarting anyway for v${deployment.agentVersion}`,
   );
 
-  await restartContainer(deployment.containerName);
+  await restartContainer(containerName);
 
   // ── Confirm it came back, and put the old version back if it did not ────────
   //
@@ -171,7 +191,7 @@ export async function updateJob(deploymentId: string): Promise<void> {
   );
 
   const rolledBack = previousVersion
-    ? await pushVersion(deploymentId, deployment.agent.id, previousVersion, port, deployment.containerName)
+    ? await pushVersion(deploymentId, deployment.agent.id, previousVersion, port, containerName)
     : false;
 
   await prisma.provisioningLog.create({
