@@ -504,8 +504,19 @@ def _persist_run_files(thread_id: str) -> None:
     if not thread_id:
         return
     try:
+        # The thread id is written, not inferred from the filename. `_safe_handle`
+        # replaces the colons and the trailing "=" in an AgentMail thread key, so
+        # a restore that used the stem produced
+        #   email_hook_agentmail_AAQ...t8_
+        # where every lookup asks for
+        #   email:hook:agentmail:AAQ...t8=
+        # The files came back and no run could find its own. Verified on
+        # 2026-08-18 by restarting mid-run: the workbook was restored, the reply
+        # went out with nothing attached, and the mismatch was silent because a
+        # run with no files has nothing to be missing.
         (RUN_FILES_DIR / (_safe_handle(thread_id) + ".json")).write_text(
-            json.dumps(_RUN_FILES.get(thread_id, [])), encoding="utf-8"
+            json.dumps({"thread": thread_id, "handles": _RUN_FILES.get(thread_id, [])}),
+            encoding="utf-8",
         )
     except Exception as e:
         print(f"[adapter] could not persist run files for {thread_id[:24]}: {e}", flush=True)
@@ -534,16 +545,32 @@ def _restore_files_from_disk() -> None:
         except Exception as e:
             print(f"[adapter] could not restore {meta.name}: {e}", flush=True)
 
+    threads = 0
     for idx in RUN_FILES_DIR.glob("*.json"):
         try:
-            handles = json.loads(idx.read_text(encoding="utf-8"))
-            if isinstance(handles, list):
-                _RUN_FILES[idx.stem] = [h for h in handles if h in _SANDBOX_FILES]
+            info = json.loads(idx.read_text(encoding="utf-8"))
+            # A bare list is the older shape, written before the key was stored.
+            # It cannot be restored: the filename is sanitised and the real
+            # thread id is not recoverable from it. Dropped rather than restored
+            # under a key nothing will ever ask for.
+            if not isinstance(info, dict):
+                continue
+            thread = info.get("thread")
+            handles = info.get("handles")
+            if thread and isinstance(handles, list):
+                kept = [h for h in handles if h in _SANDBOX_FILES]
+                if kept:
+                    _RUN_FILES[thread] = kept
+                    threads += 1
         except Exception:
             pass
 
     if restored:
-        print(f"[adapter] restored {restored} produced file(s) from disk", flush=True)
+        print(
+            f"[adapter] restored {restored} produced file(s) across {threads} run(s) "
+            "from disk",
+            flush=True,
+        )
 
 
 def begin_run(thread_id: str) -> None:

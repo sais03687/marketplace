@@ -59,12 +59,15 @@ def test_a_run_gets_its_own_files_back_not_everyone_elses(tmp_path, monkeypatch)
     monkeypatch.setattr(adapter, "RUN_FILES_DIR", runs)
     adapter._persist_sandbox_file("sandbox:mine", "a.xlsx", b"a")
     adapter._persist_sandbox_file("sandbox:theirs", "b.xlsx", b"b")
-    (runs / "thread_one.json").write_text(json.dumps(["sandbox:mine"]))
+    # The index carries the real thread id; the filename is only a filename.
+    (runs / "thread_one.json").write_text(
+        json.dumps({"thread": "email:hook:thread_one", "handles": ["sandbox:mine"]})
+    )
 
     monkeypatch.setattr(adapter, "_SANDBOX_FILES", {})
     monkeypatch.setattr(adapter, "_RUN_FILES", {})
     adapter._restore_files_from_disk()
-    assert adapter._RUN_FILES["thread_one"] == ["sandbox:mine"]
+    assert adapter._RUN_FILES["email:hook:thread_one"] == ["sandbox:mine"]
 
 
 def test_bytes_with_no_index_entry_are_ignored(tmp_path, monkeypatch):
@@ -146,3 +149,62 @@ def test_the_agent_no_longer_claims_it_from_a_proxy():
     assert "The working is attached as working.ipynb" not in code, (
         "the agent asserted an attachment from 'did this run use the sandbox'"
     )
+
+
+# ── the run has to find its own files, not just the process ────────────────
+#
+# Found by restarting mid-run on 2026-08-18 rather than by unit test. The
+# workbook came back and the reply still went out with nothing attached: the
+# index was restored under the sanitised filename while every lookup asks for
+# the raw thread id. A run with no files has nothing to be missing, so the
+# caveat stayed silent too — the failure was invisible from both ends.
+
+REAL_THREAD = "email:hook:agentmail:AAQkADI1N2Y5MTE3LTE1MDctNGY0Yy1iYzQ5=" 
+
+
+def test_a_run_finds_its_files_again_under_its_real_thread_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapter, "SANDBOX_FILES_DIR", tmp_path)
+    runs = tmp_path / "runs"; runs.mkdir()
+    monkeypatch.setattr(adapter, "RUN_FILES_DIR", runs)
+    monkeypatch.setattr(adapter, "_SANDBOX_FILES", {})
+    monkeypatch.setattr(adapter, "_RUN_FILES", {REAL_THREAD: ["sandbox:w1"]})
+
+    adapter._persist_sandbox_file("sandbox:w1", "utilisation.xlsx", b"PK")
+    adapter._persist_run_files(REAL_THREAD)
+
+    monkeypatch.setattr(adapter, "_SANDBOX_FILES", {})
+    monkeypatch.setattr(adapter, "_RUN_FILES", {})
+    adapter._restore_files_from_disk()
+
+    assert REAL_THREAD in adapter._RUN_FILES, (
+        "restored under the sanitised filename; nothing looks the run up that way"
+    )
+    assert adapter._RUN_FILES[REAL_THREAD] == ["sandbox:w1"]
+
+
+def test_the_thread_id_survives_the_characters_the_filename_cannot(tmp_path, monkeypatch):
+    # Colons and a trailing "=" are ordinary in an AgentMail thread key and all
+    # of them are replaced on the way to a filename.
+    monkeypatch.setattr(adapter, "RUN_FILES_DIR", tmp_path)
+    monkeypatch.setattr(adapter, "_RUN_FILES", {REAL_THREAD: []})
+    adapter._persist_run_files(REAL_THREAD)
+    written = json.loads(next(tmp_path.glob("*.json")).read_text())
+    assert written["thread"] == REAL_THREAD
+    assert ":" in written["thread"] and written["thread"].endswith("=")
+
+
+def test_the_older_bare_list_shape_is_dropped_not_misfiled(tmp_path, monkeypatch):
+    # Written before the key was stored. The real thread id is not recoverable
+    # from a sanitised filename, so restoring it under the stem would put files
+    # in a bucket no run will ever ask for — worse than not restoring them.
+    monkeypatch.setattr(adapter, "SANDBOX_FILES_DIR", tmp_path)
+    runs = tmp_path / "runs"; runs.mkdir()
+    monkeypatch.setattr(adapter, "RUN_FILES_DIR", runs)
+    adapter._persist_sandbox_file("sandbox:old", "old.xlsx", b"x")
+    (runs / "email_hook_agentmail_legacy.json").write_text(json.dumps(["sandbox:old"]))
+
+    monkeypatch.setattr(adapter, "_SANDBOX_FILES", {})
+    monkeypatch.setattr(adapter, "_RUN_FILES", {})
+    adapter._restore_files_from_disk()
+    assert adapter._RUN_FILES == {}
+    assert "sandbox:old" in adapter._SANDBOX_FILES   # the bytes are still there
