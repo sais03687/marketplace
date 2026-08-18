@@ -191,7 +191,11 @@ def test_the_timeout_no_longer_writes_a_placeholder():
 
 
 def test_the_timeout_hands_finalize_an_empty_reply_to_compose_from():
-    handler = AGENT_SRC[AGENT_SRC.index("except asyncio.TimeoutError:"):][:1800]
+    # Widened from 1800: the handler grew a retry branch ahead of this, and a
+    # fixed window that clips the code under test reports a passing fix as
+    # broken. Sliced to the end of the handler instead.
+    start = AGENT_SRC.index("except asyncio.TimeoutError:")
+    handler = AGENT_SRC[start:AGENT_SRC.index("text = response.content", start)]
     assert '"text": ""' in handler, (
         "finalize decides what to say from what the run holds; a placeholder "
         "pre-empts that and there is no path back"

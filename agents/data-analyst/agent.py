@@ -19,6 +19,7 @@ Graph flow (ReAct loop):
 import os
 import re
 import json
+import time
 import asyncio
 import base64
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -71,7 +72,24 @@ if not _llm_api_key:
 #
 # A timeout is no longer a lost run — see the handler — but every one still
 # costs a step, and a run has twelve.
-_LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "120"))
+_LLM_TIMEOUT_S = float(os.environ.get("LLM_TIMEOUT_S", "240"))
+
+# And a ceiling on the whole run, which is the number that actually protects the
+# person waiting. The per-call limit above is generous because the tail is long;
+# twelve generous calls in a row is two hours, and nobody sends an email expecting
+# that. Whichever is hit first ends the run, and what the run has produced is
+# still composed into a reply.
+_RUN_DEADLINE_S = float(os.environ.get("LLM_RUN_DEADLINE_S", "600"))
+
+# How many slow calls a run may absorb before giving up on the step.
+#
+# A timeout used to end the run outright: the handler set completed and the graph
+# went straight to finalize, so one slow call killed a task that had eleven steps
+# left. Measured on 2026-08-17, identical requests to the same model returned in
+# 4.1s, 8.5s, 12.7s, 17.6s and 38.3s, and twice went past 120s. Against a spread
+# like that, retrying the call is almost always the right move and abandoning the
+# task is almost never.
+_MAX_TIMEOUTS = int(os.environ.get("LLM_MAX_TIMEOUTS", "2"))
 
 _llm_model = os.environ.get("LLM_MODEL")
 if not _llm_model:
@@ -436,6 +454,12 @@ class AgentState(BaseModel):
     # wrong turn or a retried tool call left nothing for the reply — the chart
     # request on 2026-08-03 used nine and finished with none.
     max_iterations: int = 12
+    # When the run began, and how many calls have timed out in it. Both exist so
+    # a slow provider costs a retry rather than the task: a timeout used to set
+    # completed and send the run straight to finalize, so one slow call ended a
+    # task with eleven steps still in hand.
+    started_at: float = Field(default_factory=time.monotonic)
+    timeouts: int = 0
 
     # Figures the composed reply asserts that the delivered file does not
     # contain, and how many times we have handed them back. Two attempts, because
@@ -1034,8 +1058,32 @@ async def reason_and_act(state: AgentState) -> AgentState:
         # decides what to say from what the run actually holds — the figures read
         # back out of the workbook if there are any, what broke if something did,
         # and only otherwise an admission that there is nothing.
+        state.timeouts += 1
+        elapsed = time.monotonic() - state.started_at
+        out_of_time = elapsed >= _RUN_DEADLINE_S
+        out_of_retries = state.timeouts > _MAX_TIMEOUTS
+
+        if not (out_of_time or out_of_retries):
+            # Try the same call again rather than ending the task. The spread on
+            # this provider is wide enough that the next attempt is usually fast:
+            # 4.1s, 8.5s, 12.7s, 17.6s, 38.3s on identical requests, and
+            # occasionally past the ceiling. Nothing is written to `analysis`, so
+            # the router sends the run back through reasoning with the same state
+            # it had — this costs wall-clock, not a step.
+            print(
+                f"[agent] LLM timed out after {_LLM_TIMEOUT_S}s "
+                f"({state.timeouts}/{_MAX_TIMEOUTS}, {elapsed:.0f}s into the run) "
+                "— retrying the same step",
+                flush=True,
+            )
+            state.context["_retry_after_timeout"] = True
+            state.analysis = {}
+            return state
+
         print(
-            f"[agent] LLM timed out after {_LLM_TIMEOUT_S}s — composing from what "
+            f"[agent] LLM timed out after {_LLM_TIMEOUT_S}s and "
+            + ("the run is past its deadline" if out_of_time else "has no retries left")
+            + f" ({elapsed:.0f}s, {state.timeouts} timeout(s)) — composing from what "
             "the run has produced rather than a placeholder",
             flush=True,
         )
@@ -1047,6 +1095,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
         }
         return state
 
+    state.context.pop("_retry_after_timeout", None)
     text = response.content if hasattr(response, "content") else str(response)
     print(f"[agent] LLM response (first 500 chars): {text[:500]}", flush=True)
 
@@ -1370,6 +1419,14 @@ def route_after_reasoning(state: AgentState) -> str:
     """
     if not isinstance(state.analysis, dict):
         return "verify_deliverables"
+
+    # A call that timed out and has retries left goes straight back, whatever
+    # else is true of the run. Falling through to the checks below only retries
+    # once `actions_taken` is non-empty, so a timeout on the first call — which
+    # is what ended the churn task on 2026-08-18 with nothing produced and an
+    # empty reply queued for approval — ended the run instead of retrying it.
+    if state.context.get("_retry_after_timeout"):
+        return "reason_and_act"
 
     if state.analysis.get("completed", False):
         # Completed, but did it actually write the answer?
