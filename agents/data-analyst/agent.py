@@ -653,9 +653,17 @@ REASONING_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
 {private_memory}
 
 **IMPORTANT**: The "When to Check With the Manager" and "Hard Boundaries" sections
-above are rules set by YOUR manager. You MUST follow them. If an action matches any
-of those conditions, use `request_decision` to check with the manager first. If it
-matches a hard boundary, do NOT do it under any circumstances.
+above are rules set by YOUR manager. You MUST follow them. If an action matches a
+hard boundary, do NOT do it under any circumstances.
+
+For everything else, the question is what the manager's answer would change. If it
+would change *what you do* — which figure is the right one, whether the scope is
+what they meant, how to read data that contradicts itself — use `request_decision`
+and wait for them. If it would only change *whether you are allowed*, do not ask:
+emit the action itself. The platform gates those actions on this same policy. It
+pauses you, asks the manager, and resumes you automatically once they answer.
+Asking first turns one decision into two requests, and the manager approves the
+same thing twice.
 
 ---
 
