@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
-import { getContainerPort } from "../clients/docker.js";
+import { getContainerPort, restartContainer } from "../clients/docker.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 
 function collectFiles(dir: string): Record<string, string> {
@@ -86,6 +86,55 @@ export async function updateJob(deploymentId: string): Promise<void> {
   // ── Cleanup temp dir ────────────────────────────────────────────────────────
   if (tmpDir) {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+
+  // ── Restart, so the process imports what was just written ───────────────────
+  //
+  // Writing agent.py to disk changes nothing on its own: the module was
+  // imported when the container started and the running process goes on using
+  // the old code. Every update before this one was silent for exactly that
+  // reason — files landed, the job logged success, and the agent carried on as
+  // it was.
+  //
+  // A run in flight is cancelled by this. Since 2026-08-18 that is recorded and
+  // the buyer is told their request was interrupted rather than being left
+  // waiting, which is the honest outcome but still an outcome — a quieter
+  // moment is better, and waiting for one is worth doing next.
+  if (!deployment.containerName) {
+    throw new Error(`Deployment ${deploymentId} has no container name — cannot restart`);
+  }
+
+  console.log(`[update] Restarting ${deployment.containerName} to load v${deployment.agentVersion}`);
+  await restartContainer(deployment.containerName);
+
+  // ── Confirm it came back ────────────────────────────────────────────────────
+  //
+  // A restart that does not come up leaves the buyer with a dead agent and the
+  // database claiming an updated one. Better to fail the job loudly: the
+  // failure is visible in the provisioning log and the version is known to be
+  // suspect, rather than being discovered by whoever emails it next.
+  let healthy = false;
+  for (let i = 0; i < 30 && !healthy; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const probe = await fetch(`http://localhost:${port}/internal/health`);
+      healthy = probe.ok;
+    } catch {
+      /* not up yet */
+    }
+  }
+
+  if (!healthy) {
+    await prisma.provisioningLog.create({
+      data: {
+        deploymentId,
+        step: "update_restart",
+        status: "failed",
+        attempt: 1,
+        message: `v${deployment.agentVersion} did not become healthy within 60s of restart`,
+      },
+    });
+    throw new Error(`Agent did not come back after updating to v${deployment.agentVersion}`);
   }
 
   await prisma.provisioningLog.create({

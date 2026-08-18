@@ -242,6 +242,20 @@ export async function startContainer(containerName: string): Promise<void> {
   }
 }
 
+/**
+ * Restart a container in place, keeping it the same container.
+ *
+ * Not `stopContainer` followed by `startContainer`: `stopContainer` *removes*
+ * the container, and a recreated agent loses its published port to the netgate
+ * and any files copied in since it was built. This is the one to reach for when
+ * new code has been written into a running agent and the process needs to
+ * import it.
+ */
+export async function restartContainer(containerName: string, timeoutSeconds = 10): Promise<void> {
+  const container = docker.getContainer(containerName);
+  await container.restart({ t: timeoutSeconds });
+}
+
 export async function inspectContainer(
   containerName: string,
 ): Promise<{ running: boolean; status: string }> {

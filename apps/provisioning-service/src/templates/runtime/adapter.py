@@ -4534,24 +4534,94 @@ async def memory(request: Request):
     return {"memory": files}
 
 
+# What an update may not touch.
+#
+# An update replaces the creator's package. It must not replace what the buyer
+# has accumulated while using it: MEMORY.md is everything the agent has learned
+# about this company, PRIVATE.md holds their team roster and internal details,
+# and memory/*.md is the rest of the same. All three sit in WORKSPACE_DIR beside
+# agent.py, so a package containing any of them would overwrite months of the
+# buyer's context with the creator's blank template.
+#
+# Today no package ships them and nothing would be lost. That is luck, not a
+# guarantee - MEMORY.md is an entirely natural file for a creator to include -
+# and the loss would be silent, discovered later as an agent that had forgotten
+# its own company.
+#
+# New functionality from here on, the same context as before.
+_BUYER_OWNED = {"MEMORY.md", "PRIVATE.md"}
+_BUYER_OWNED_DIRS = {"memory"}
+
+
+def _is_buyer_owned(target: Path, root: Path) -> bool:
+    rel = target.relative_to(root) if target != root else Path("")
+    if rel.name in _BUYER_OWNED:
+        return True
+    return bool(rel.parts) and rel.parts[0] in _BUYER_OWNED_DIRS
+
+
 class UpdateSkillsPayload(BaseModel):
-    files: dict[str, str]  # path -> content (relative to /agent/)
+    # path -> base64 of the file's bytes, relative to /agent/. Base64 because a
+    # package carries binary as readily as source, and update.ts has always sent
+    # it that way.
+    files: dict[str, str]
 
 
 @app.post("/internal/update-skills")
 async def update_skills(body: UpdateSkillsPayload, request: Request):
-    """Write skill/memory files to disk. Paths are relative to /agent/."""
+    """Replace the agent's package files. Paths are relative to /agent/.
+
+    This used to write what it was handed straight to disk with `write_text`,
+    while update.ts sent `readFileSync(f).toString("base64")`. Every file it
+    touched would have been replaced by its own base64 - agent.py included - so
+    the first deployment to auto-update would have been bricked by the update
+    meant to fix it. It never fired only because vetting could not pass until
+    2026-08-18, so no version was ever approved; `autoUpdate` defaults to true,
+    and the next approval would have reached every active deployment.
+
+    Decoded and written as bytes now, and refused as a whole rather than in
+    part: a half-applied package is a deployment running two versions at once,
+    which is worse than one that did not update.
+    """
     _require_internal_auth(request)
-    written = []
+
+    root = WORKSPACE_DIR.resolve()
+    protected: list[str] = []
+    decoded: list[tuple[Path, str, bytes]] = []
     for rel_path, content in body.files.items():
-        # Prevent path traversal
         target = (WORKSPACE_DIR / rel_path).resolve()
-        if not str(target).startswith(str(WORKSPACE_DIR.resolve())):
+        if not str(target).startswith(str(root)):
+            # Refused, not skipped. Skipping applied the rest of the package and
+            # reported success, so a path that climbed out of /agent left the
+            # agent silently running a mixture.
+            raise HTTPException(400, f"path escapes the workspace: {rel_path}")
+        if _is_buyer_owned(target, root):
+            # Declined rather than refused. A traversal or a corrupt file means
+            # the package is malformed and the whole update is rejected; a
+            # creator shipping a MEMORY.md template is doing something ordinary
+            # and their release should not fail for it. The file is simply not
+            # theirs to write, and the response says so.
+            protected.append(rel_path)
             continue
+        try:
+            decoded.append((target, rel_path, base64.b64decode(content, validate=True)))
+        except Exception as e:
+            raise HTTPException(400, f"{rel_path} is not valid base64: {e}")
+
+    written = []
+    for target, rel_path, raw in decoded:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_bytes(raw)
         written.append(rel_path)
-    return {"ok": True, "written": written}
+
+    if protected:
+        print(
+            f"[adapter] update-skills declined {len(protected)} buyer-owned file(s): "
+            + ", ".join(protected[:6]),
+            flush=True,
+        )
+    print(f"[adapter] update-skills wrote {len(written)} file(s)", flush=True)
+    return {"ok": True, "written": written, "declined": protected}
 
 
 class ApprovalPolicyPayload(BaseModel):
