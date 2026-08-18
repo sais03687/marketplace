@@ -77,7 +77,13 @@ def test_a_file_round_trips_on_the_handle_it_was_written_with(handle, tmp_path, 
 
 
 def test_two_keys_that_sanitise_alike_do_not_collide(tmp_path, monkeypatch):
-    """`a:b` and `a/b` both become `a_b`. One must not overwrite the other."""
+    """`a:b` and `a/b` both sanitise to `a_b`, and one overwrote the other.
+
+    The first version of this test allowed either outcome — both files, or one —
+    and passed on the branch where `first.xlsx` was silently gone. An assertion
+    broad enough to accept the bug is the same fault as a fixture too clean to
+    expose one, so it is narrowed here to the only acceptable result.
+    """
     monkeypatch.setattr(adapter, "SANDBOX_FILES_DIR", tmp_path)
     monkeypatch.setattr(adapter, "RUN_FILES_DIR", tmp_path / "runs")
     (tmp_path / "runs").mkdir()
@@ -87,11 +93,28 @@ def test_two_keys_that_sanitise_alike_do_not_collide(tmp_path, monkeypatch):
 
     monkeypatch.setattr(adapter, "_SANDBOX_FILES", {})
     adapter._restore_files_from_disk()
-    names = {e["name"] for e in adapter._SANDBOX_FILES.values()}
-    assert len(adapter._SANDBOX_FILES) == 1 or names == {"first.xlsx", "second.xlsx"}, (
-        "a collision that silently keeps one of two files is worse than either "
-        "outcome being chosen deliberately"
-    )
+    assert {e["name"] for e in adapter._SANDBOX_FILES.values()} == {"first.xlsx", "second.xlsx"}
+    assert adapter._SANDBOX_FILES["sandbox:a:b"]["bytes"] == b"one"
+
+
+def test_eviction_still_finds_a_file_written_under_the_old_name(tmp_path, monkeypatch):
+    """The volume already holds files named the old way.
+
+    Changing where a file is written without changing where it is deleted leaves
+    evicted files on disk, and the next restart restores what was forgotten.
+    """
+    monkeypatch.setattr(adapter, "SANDBOX_FILES_DIR", tmp_path)
+    monkeypatch.setattr(adapter, "RUN_FILES_DIR", tmp_path / "runs")
+    (tmp_path / "runs").mkdir()
+    legacy = tmp_path / adapter._safe_handle("sandbox:old")
+    legacy.with_suffix(".bin").write_bytes(b"stale")
+    legacy.with_suffix(".json").write_text('{"handle": "sandbox:old", "name": "stale.xlsx"}')
+
+    adapter._forget_sandbox_file("sandbox:old")
+
+    monkeypatch.setattr(adapter, "_SANDBOX_FILES", {})
+    adapter._restore_files_from_disk()
+    assert "sandbox:old" not in adapter._SANDBOX_FILES
 
 
 def test_no_restore_path_reads_its_key_from_a_filename():

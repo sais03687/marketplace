@@ -474,10 +474,22 @@ def _safe_handle(handle: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", handle or "")
 
 
+def _file_stem(key: str) -> str:
+    """A filename that is unique to the key, not merely derived from it.
+
+    `_safe_handle` maps many keys onto one name — `a:b` and `a/b` both become
+    `a_b` — so the second file written silently replaced the first and the first
+    was gone. Restoring is unaffected either way, since the key is read from
+    inside the file, but the bytes have to survive to be read. The suffix is a
+    digest of the raw key, so distinct keys cannot land on one name.
+    """
+    return _safe_handle(key) + "-" + hashlib.sha1((key or "").encode()).hexdigest()[:8]
+
+
 def _persist_sandbox_file(handle: str, name: str, raw: bytes) -> None:
     """Put a produced file where a restart cannot take it."""
     try:
-        stem = SANDBOX_FILES_DIR / _safe_handle(handle)
+        stem = SANDBOX_FILES_DIR / _file_stem(handle)
         stem.with_suffix(".bin").write_bytes(raw)
         # Name written second: a crash between the two leaves bytes with no
         # index entry, which is ignored on load. The reverse would leave an
@@ -493,11 +505,15 @@ def _persist_sandbox_file(handle: str, name: str, raw: bytes) -> None:
 
 
 def _forget_sandbox_file(handle: str) -> None:
-    for suffix in (".bin", ".json"):
-        try:
-            (SANDBOX_FILES_DIR / _safe_handle(handle)).with_suffix(suffix).unlink(missing_ok=True)
-        except Exception:
-            pass
+    # Both names: files written before `_file_stem` existed are still on the
+    # volume, and an eviction that missed them would bring a forgotten file back
+    # at the next restart.
+    for stem in (_file_stem(handle), _safe_handle(handle)):
+        for suffix in (".bin", ".json"):
+            try:
+                (SANDBOX_FILES_DIR / stem).with_suffix(suffix).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _persist_run_files(thread_id: str) -> None:
@@ -514,7 +530,7 @@ def _persist_run_files(thread_id: str) -> None:
         # 2026-08-18 by restarting mid-run: the workbook was restored, the reply
         # went out with nothing attached, and the mismatch was silent because a
         # run with no files has nothing to be missing.
-        (RUN_FILES_DIR / (_safe_handle(thread_id) + ".json")).write_text(
+        (RUN_FILES_DIR / (_file_stem(thread_id) + ".json")).write_text(
             json.dumps({"thread": thread_id, "handles": _RUN_FILES.get(thread_id, [])}),
             encoding="utf-8",
         )

@@ -23,11 +23,20 @@ import json
 import adapter
 
 
+# These two once spelled the derived filename out, and so broke when the
+# naming scheme changed to something collision-free while the behaviour they
+# exist to protect was untouched. A test that reconstructs a derived name is
+# asserting the derivation, which is not the promise. Both now find the file
+# the way the code does.
+
 def test_a_produced_file_is_written_to_disk(tmp_path, monkeypatch):
     monkeypatch.setattr(adapter, "SANDBOX_FILES_DIR", tmp_path)
     adapter._persist_sandbox_file("sandbox:abc123", "report.xlsx", b"PK\x03\x04data")
-    assert (tmp_path / "sandbox_abc123.bin").read_bytes() == b"PK\x03\x04data"
-    assert json.loads((tmp_path / "sandbox_abc123.json").read_text())["name"] == "report.xlsx"
+    blobs = list(tmp_path.glob("*.bin"))
+    metas = list(tmp_path.glob("*.json"))
+    assert len(blobs) == 1 and len(metas) == 1
+    assert blobs[0].read_bytes() == b"PK\x03\x04data"
+    assert json.loads(metas[0].read_text())["name"] == "report.xlsx"
 
 
 def test_the_handle_is_stored_rather_than_derived_from_the_filename(tmp_path, monkeypatch):
@@ -35,7 +44,8 @@ def test_the_handle_is_stored_rather_than_derived_from_the_filename(tmp_path, mo
     # only while nothing else in a handle is replaced.
     monkeypatch.setattr(adapter, "SANDBOX_FILES_DIR", tmp_path)
     adapter._persist_sandbox_file("sandbox:abc123", "report.xlsx", b"x")
-    assert json.loads((tmp_path / "sandbox_abc123.json").read_text())["handle"] == "sandbox:abc123"
+    meta, = tmp_path.glob("*.json")
+    assert json.loads(meta.read_text())["handle"] == "sandbox:abc123"
 
 
 def test_a_restart_gets_the_files_back(tmp_path, monkeypatch):
