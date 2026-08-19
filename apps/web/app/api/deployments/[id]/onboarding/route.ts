@@ -7,6 +7,7 @@ import {
 } from "@/lib/api-utils";
 import { mergeWithPlatformQuestions } from "@/lib/platform-questions";
 import { pushApprovalPolicy } from "@/lib/approval-policy";
+import { requireDeploymentToken } from "@/lib/deployment-token";
 
 export async function GET(
   request: Request,
@@ -14,13 +15,27 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const orgResult = await requireOrg();
-  if ("error" in orgResult) return orgResult.error;
-  const { company } = orgResult;
+  // Two kinds of caller: a person in the dashboard with a session, or the
+  // agent itself with its deployment token.
+  //
+  // The agent has to be able to read this, because it is the only one that
+  // can. The marketplace runs on Vercel and cannot reach a container, which
+  // is why the relay in POST below has never delivered anything, and why
+  // these answers have to be pulled by the agent rather than pushed to it.
+  const presentsToken = (request.headers.get("authorization") ?? "").startsWith("Bearer ");
 
-  const depResult = await requireDeploymentAccess(id, company.id);
-  if ("error" in depResult) return depResult.error;
-  const { deployment } = depResult;
+  let deployment;
+  if (presentsToken) {
+    const authed = await requireDeploymentToken(request, id);
+    if ("error" in authed) return authed.error;
+    deployment = authed.deployment;
+  } else {
+    const orgResult = await requireOrg();
+    if ("error" in orgResult) return orgResult.error;
+    const depResult = await requireDeploymentAccess(id, orgResult.company.id);
+    if ("error" in depResult) return depResult.error;
+    deployment = depResult.deployment;
+  }
 
   // Get questions from agent (include runtime so we can skip platform
   // question injection for runtimes that don't support them).

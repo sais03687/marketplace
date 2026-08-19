@@ -659,6 +659,102 @@ async def _report_interrupted_runs() -> None:
             )
 
 
+# What the buyer told us during setup, kept where the agent will actually read it.
+#
+# The hire wizard asks who the team are, what data they work with, who receives
+# reports and what the agent must never do. Those answers were stored in the
+# database and relayed to the agent as one message saying "store the key
+# information in your memory for future reference" - an instruction it has no
+# way to carry out, because there is no memory-write action. On 2026-08-19 a
+# fresh hire reported "I have completed the onboarding process, including
+# updating my memory with the manager's responses" having taken five inbox_list
+# calls and one send_email. MEMORY.md was the creator's template, byte for byte,
+# and stayed that way.
+#
+# Pulled, not pushed: the marketplace runs on Vercel and cannot reach a
+# container, which is why the relay never arrived. Outbound works, so the agent
+# fetches its own answers - the same direction approvals already sync in.
+#
+# Written between markers so everything else in MEMORY.md survives, including
+# anything a future memory-write action puts there.
+# How often to re-read them. Long, because an answer changes rarely and the
+# agent is not the only thing the marketplace is serving.
+_SETUP_SYNC_INTERVAL_S = float(os.environ.get("SETUP_SYNC_INTERVAL_S", 600))
+SETUP_BLOCK_START = "<!-- setup-answers:start -->"
+SETUP_BLOCK_END = "<!-- setup-answers:end -->"
+
+
+def _render_setup_answers(answers: dict) -> str:
+    lines = [SETUP_BLOCK_START, "", "## What your manager told me during setup", ""]
+    for question, answer in answers.items():
+        text = str(answer or "").strip()
+        if not text:
+            continue
+        lines.append(f"**{str(question).strip()}**")
+        lines.append("")
+        lines.append(text)
+        lines.append("")
+    lines.append(SETUP_BLOCK_END)
+    return chr(10).join(lines)
+
+
+def _write_setup_answers(answers: dict) -> bool:
+    """Upsert the setup block into MEMORY.md. True if the file changed."""
+    path = WORKSPACE_DIR / "MEMORY.md"
+    try:
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception as e:
+        print(f"[adapter] could not read MEMORY.md: {e}", flush=True)
+        return False
+
+    block = _render_setup_answers(answers)
+    if SETUP_BLOCK_START in current and SETUP_BLOCK_END in current:
+        head = current[: current.index(SETUP_BLOCK_START)]
+        tail = current[current.index(SETUP_BLOCK_END) + len(SETUP_BLOCK_END):]
+        updated = head + block + tail
+    else:
+        updated = current.rstrip() + chr(10) + chr(10) + block + chr(10)
+
+    if updated == current:
+        return False
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except Exception as e:
+        print(f"[adapter] could not write MEMORY.md: {e}", flush=True)
+        return False
+    return True
+
+
+async def _sync_setup_answers() -> None:
+    """Fetch this deployment's setup answers and fold them into memory.
+
+    Runs at startup and on a timer, so an answer edited in the dashboard reaches
+    the agent without anyone having to reach into the container.
+    """
+    if not MARKETPLACE_URL or not DEPLOYMENT_ID:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"{MARKETPLACE_URL}/api/deployments/{DEPLOYMENT_ID}/onboarding",
+                headers={"Authorization": f"Bearer {APPROVAL_TOKEN}"},
+            )
+        if resp.status_code != 200:
+            print(f"[adapter] setup answers: HTTP {resp.status_code}", flush=True)
+            return
+        payload = resp.json()
+        answers = (payload.get("data") or payload).get("onboardingData") or {}
+        if not isinstance(answers, dict) or not answers:
+            return
+        if _write_setup_answers(answers):
+            print(
+                f"[adapter] setup answers written into MEMORY.md ({len(answers)} answer(s))",
+                flush=True,
+            )
+    except Exception as e:
+        print(f"[adapter] could not sync setup answers: {e}", flush=True)
+
+
 def _restore_files_from_disk() -> None:
     """Reload produced files and their run membership after a restart.
 
@@ -2570,6 +2666,17 @@ async def _startup():
         await _report_interrupted_runs()
     except Exception as e:
         print(f"[adapter] could not report interrupted runs: {e}", flush=True)
+
+    # The buyer's setup answers, folded into memory. On a timer as well as at
+    # startup, so editing an answer in the dashboard reaches the agent without
+    # anyone reaching into the container - which nothing outside this host can
+    # do anyway.
+    async def _setup_answer_loop() -> None:
+        while True:
+            await _sync_setup_answers()
+            await asyncio.sleep(_SETUP_SYNC_INTERVAL_S)
+
+    asyncio.create_task(_setup_answer_loop())
 
 
 # ─── Google SA email (informational context only) ────────────────────────────
