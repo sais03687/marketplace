@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { requireDeploymentToken } from "@/lib/deployment-token";
 import { jsonSuccess, jsonError, parseSearchParams } from "@/lib/api-utils";
 import {
   embedTexts,
@@ -38,12 +39,13 @@ export async function GET(request: NextRequest) {
   const { data: params } = parsed;
 
   // Validate deployment exists
-  const deployment = await prisma.deployment.findUnique({
-    where: { id: params.deploymentId },
-  });
-  if (!deployment) {
-    return jsonError("Deployment not found", 404);
-  }
+  // Authenticated as the deployment it claims to be, not merely naming
+  // one. This checked existence only, so an unauthenticated caller could
+  // act as any active deployment - and what AgentMind does with that is
+  // hand it to every other company's agent.
+  const authed = await requireDeploymentToken(request, params.deploymentId);
+  if ("error" in authed) return authed.error;
+  const { deployment } = authed;
 
   // Reciprocity: only contributing deployments can search
   const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;

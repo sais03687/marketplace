@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { requireDeploymentToken } from "@/lib/deployment-token";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { z } from "zod";
 
@@ -35,25 +36,15 @@ export async function POST(
 ) {
   const { id: deploymentId } = await params;
 
-  // Auth: validate approvalWebhookToken
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader?.startsWith("Bearer ")) {
-    return jsonError("Missing authorization", 401);
-  }
-  const token = authHeader.slice(7);
-
-  const deployment = await prisma.deployment.findUnique({
-    where: { id: deploymentId },
-    select: { id: true, approvalWebhookToken: true, status: true },
-  });
-
-  if (!deployment) {
-    return jsonError("Deployment not found", 404);
-  }
-
-  if (deployment.approvalWebhookToken !== token) {
-    return jsonError("Invalid token", 403);
-  }
+  // Auth: the deployment's own token, compared in constant time.
+  //
+  // This did the same check with `!==`, which leaks a secret's prefix through
+  // timing one byte at a time — while approval-link.ts next door has always
+  // used timingSafeEqual for exactly that reason. Shared with the AgentMind
+  // routes now, so there is one comparison to get right.
+  const authed = await requireDeploymentToken(request, deploymentId);
+  if ("error" in authed) return authed.error;
+  const { deployment } = authed;
 
   if (deployment.status === "FIRED" || deployment.status === "PAUSED") {
     return jsonError("Deployment is not active", 409);

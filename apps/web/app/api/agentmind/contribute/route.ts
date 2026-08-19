@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { requireDeploymentToken } from "@/lib/deployment-token";
 import { jsonError, jsonSuccess } from "@/lib/api-utils";
 import { runGuardrails, contributionInputSchema } from "@/lib/agentmind/guardrails";
 import { z } from "zod";
@@ -38,12 +39,13 @@ export async function POST(request: Request) {
   const { deploymentId, type, title, content, context, tags } = parsed.data;
 
   // Validate deployment exists and is active
-  const deployment = await prisma.deployment.findUnique({
-    where: { id: deploymentId },
-  });
-  if (!deployment) {
-    return jsonError("Deployment not found", 404);
-  }
+  // Authenticated as the deployment it claims to be, not merely naming
+  // one. This checked existence only, so an unauthenticated caller could
+  // act as any active deployment - and what AgentMind does with that is
+  // hand it to every other company's agent.
+  const authed = await requireDeploymentToken(request, deploymentId);
+  if ("error" in authed) return authed.error;
+  const { deployment } = authed;
 
   // AgentMind opt-out check
   const ac = (deployment.autonomyConfig ?? {}) as Record<string, unknown>;
