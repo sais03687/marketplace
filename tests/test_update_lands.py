@@ -361,19 +361,26 @@ def test_an_empty_package_does_not_cost_a_restart():
     assert skip < src.index("await restartContainer(")
 
 
-def test_the_port_lookup_uses_the_real_container_name_too():
-    """The same URL, one line further up, and this one was fatal.
+def test_the_port_comes_from_the_gateway_not_the_agent_container():
+    """The agent container publishes no port; its netgate holds it.
 
-    getCustomAgentPort reads an in-memory registry that is empty after every
-    service restart, so the fallback ran — getContainerPort(the URL). Dockerode
-    builds its request path from that string, it re-parsed into a DNS lookup for
-    a host called "containers", and the EAI_AGAIN took the whole provisioning
-    service down, mail pollers included. The agent was never touched.
+    Which is why Deployment.containerName stores a URL - it is the gateway
+    address, deliberately. Reading it as a container name and handing it to
+    dockerode re-parsed into a DNS lookup for a host called "containers", and
+    the EAI_AGAIN took the whole provisioning service down, pollers included.
+
+    Replacing it with the agent's own container name resolved nothing either,
+    because that container has no binding to find. Both mistakes came from
+    assuming the schema instead of looking at a row and a running container.
     """
     src = io.open(UPDATE_TS, encoding="utf-8").read()
-    assert "getContainerPort(deployment.containerName)" not in src
-    assert "getContainerPort(containerName)" in src
-    assert src.index("customAgentContainerName(deploymentId)") < src.index("getContainerPort(")
+    assert "agentGatewayPort(deploymentId, deployment.containerName)" in src
+    assert "getContainerPort(" not in src
+
+    docker = io.open(DOCKER_TS, encoding="utf-8").read()
+    body = docker[docker.index("export async function agentGatewayPort"):][:1200]
+    assert "new URL(storedUrl).port" in body, "the stored gateway URL is the fallback"
+    assert "netgate-" in body, "and the netgate is the ground truth behind it"
 
 
 def test_the_helper_refuses_a_url_rather_than_resolving_one():

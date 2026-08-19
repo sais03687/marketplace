@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
-import { getContainerPort, restartContainer } from "../clients/docker.js";
+import { agentGatewayPort, restartContainer } from "../clients/docker.js";
 import { probeAgent, waitUntilIdle, waitUntilHealthy } from "./update-helpers.js";
 import { customAgentContainerName } from "./custom-runner.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
@@ -43,15 +43,24 @@ export async function updateJob(deploymentId: string): Promise<void> {
 
   // ── Resolve port ────────────────────────────────────────────────────────────
   //
-  // The fallback used to read Deployment.containerName, which holds a URL -
-  // "http://127.0.0.1:32797" on the live deployment. Dockerode builds a request
-  // path out of whatever it is given, and that one re-parsed into a DNS lookup
-  // for a host called "containers", which threw EAI_AGAIN and took the whole
-  // provisioning service down with it, pollers included. Reached whenever the
-  // in-memory registry is empty, which it is after every service restart.
+  // The agent container publishes no port. It sits on an internal network and
+  // its netgate holds the published one, which is why Deployment.containerName
+  // stores a gateway URL rather than a name.
+  //
+  // This read that URL and handed it to getContainerPort. Dockerode builds a
+  // request path from whatever string it is given, that one re-parsed into a
+  // DNS lookup for a host called "containers", and the EAI_AGAIN took the whole
+  // provisioning service down, pollers included. Reached whenever the in-memory
+  // registry is empty, which it is after every service restart.
+  //
+  // Then I replaced it with the agent's own container name, which resolves
+  // nothing: that container has no binding to find. agentGatewayPort asks the
+  // three things that actually know, in the order they can be trusted.
   const { getCustomAgentPort } = await import("./custom-runner.js");
   const containerName = customAgentContainerName(deploymentId);
-  const port = getCustomAgentPort(deploymentId) ?? (await getContainerPort(containerName));
+  const port =
+    getCustomAgentPort(deploymentId)
+    ?? (await agentGatewayPort(deploymentId, deployment.containerName));
   if (!port) throw new Error(`No running agent found for ${deploymentId}`);
 
   // ── What is running right now, before anything replaces it ──────────────────

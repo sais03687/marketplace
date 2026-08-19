@@ -261,6 +261,39 @@ export async function startContainer(containerName: string): Promise<void> {
  * new code has been written into a running agent and the process needs to
  * import it.
  */
+/**
+ * The host port an agent is reachable on.
+ *
+ * Not a port on the agent's own container: that publishes nothing at all. It
+ * sits on an internal network and its netgate holds the published port, which
+ * is why Deployment.containerName stores a gateway URL rather than a name.
+ *
+ * Three sources, in the order they can be trusted. The in-memory registry knows
+ * it while the service has been up; the stored URL knows it across restarts;
+ * the netgate itself is the ground truth when the row is missing or stale.
+ */
+export async function agentGatewayPort(
+  deploymentId: string,
+  storedUrl: string | null | undefined,
+): Promise<number | undefined> {
+  if (storedUrl) {
+    try {
+      const port = Number(new URL(storedUrl).port);
+      if (port > 0) return port;
+    } catch {
+      /* not a URL after all — fall through to the netgate */
+    }
+  }
+  try {
+    const info = await docker.getContainer(`netgate-${deploymentId.slice(0, 8)}`).inspect();
+    const bindings = info.NetworkSettings.Ports["4000/tcp"];
+    if (bindings?.length) return parseInt(bindings[0].HostPort, 10);
+  } catch {
+    /* no netgate to ask */
+  }
+  return undefined;
+}
+
 export async function restartContainer(containerName: string, timeoutSeconds = 10): Promise<void> {
   const container = docker.getContainer(containerName);
   await container.restart({ t: timeoutSeconds });
