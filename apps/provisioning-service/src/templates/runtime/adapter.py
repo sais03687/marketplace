@@ -3109,6 +3109,22 @@ async def wait_for_resolution(approval_id: str, timeout_s: int = int(os.environ.
 
 # ─── AgentMind Helpers ───────────────────────────────────────────────────────
 
+def _agentmind_auth() -> dict[str, str]:
+    """Prove which deployment is speaking.
+
+    These endpoints took a deploymentId in the request and checked only that it
+    existed and was ACTIVE, so anyone on the internet could contribute a lesson
+    as somebody else's agent - and contributions auto-approve by default and are
+    served to every deployment of that agent, across every company. Verified
+    unauthenticated from outside on 2026-08-18.
+
+    The same per-deployment token /approvals/auto-complete already uses. The
+    routes accept it before they require it, so the two deploys can happen in
+    either order without AgentMind going quiet in between.
+    """
+    return {"Authorization": f"Bearer {APPROVAL_TOKEN}"}
+
+
 async def contribute_knowledge(
     contribution_type: str,
     title: str,
@@ -3120,6 +3136,7 @@ async def contribute_knowledge(
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{MARKETPLACE_URL}/api/agentmind/contribute",
+            headers=_agentmind_auth(),
             json={
                 "deploymentId": DEPLOYMENT_ID,
                 "type": contribution_type,
@@ -3150,6 +3167,7 @@ async def search_knowledge(
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(
             f"{MARKETPLACE_URL}/api/agentmind/search",
+            headers=_agentmind_auth(),
             params=params,
         )
         resp.raise_for_status()
@@ -3180,6 +3198,7 @@ async def report_usage(contribution_ids: list[str], outcome: str | None = None) 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             f"{MARKETPLACE_URL}/api/agentmind/use",
+            headers=_agentmind_auth(),
             json=payload,
         )
         resp.raise_for_status()

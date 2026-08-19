@@ -172,7 +172,14 @@ async function searchAgentMind(query) {
   try {
     const q = encodeURIComponent(query.slice(0, 200));
     const url = `${MARKETPLACE_URL}/api/agentmind/search?agentId=${AGENT_ID}&deploymentId=${DEPLOYMENT_ID}&q=${q}&limit=5`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    // Proves which deployment is asking. These endpoints checked only that
+    // the deploymentId existed, so anyone could search or contribute as
+    // somebody else's agent - and AgentMind is shared across every
+    // deployment of an agent, in every company.
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${APPROVAL_TOKEN}` },
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) return { text: "", ids: [] };
     const data = await res.json();
     const entries = data.contributions || data.data || (Array.isArray(data) ? data : []);
@@ -203,7 +210,10 @@ async function markAgentMindUsed(contributionIds) {
   try {
     await fetch(`${MARKETPLACE_URL}/api/agentmind/use`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${APPROVAL_TOKEN}`,
+      },
       body: JSON.stringify({ deploymentId: DEPLOYMENT_ID, contributionIds }),
       signal: AbortSignal.timeout(5000),
     });
