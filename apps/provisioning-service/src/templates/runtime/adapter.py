@@ -684,13 +684,25 @@ SETUP_BLOCK_START = "<!-- setup-answers:start -->"
 SETUP_BLOCK_END = "<!-- setup-answers:end -->"
 
 
-def _render_setup_answers(answers: dict) -> str:
+def _render_setup_answers(answers: dict, questions: list | None = None) -> str:
+    """The answers, under the questions they were given for.
+
+    Keyed by question id in the payload - `team_roster`, `hard_boundaries` -
+    which is legible but not what was asked. "Is there anything I should never
+    do?" tells the agent what the answer beneath it governs; `hard_boundaries`
+    makes it guess. The same response carries the question text, so use it.
+    """
+    labels = {}
+    for q in questions or []:
+        if isinstance(q, dict) and q.get("id"):
+            labels[q["id"]] = str(q.get("question") or "").strip()
+
     lines = [SETUP_BLOCK_START, "", "## What your manager told me during setup", ""]
-    for question, answer in answers.items():
+    for key, answer in answers.items():
         text = str(answer or "").strip()
         if not text:
             continue
-        lines.append(f"**{str(question).strip()}**")
+        lines.append(f"**{labels.get(key) or str(key).strip()}**")
         lines.append("")
         lines.append(text)
         lines.append("")
@@ -698,7 +710,7 @@ def _render_setup_answers(answers: dict) -> str:
     return chr(10).join(lines)
 
 
-def _write_setup_answers(answers: dict) -> bool:
+def _write_setup_answers(answers: dict, questions: list | None = None) -> bool:
     """Upsert the setup block into MEMORY.md. True if the file changed."""
     path = WORKSPACE_DIR / "MEMORY.md"
     try:
@@ -707,7 +719,7 @@ def _write_setup_answers(answers: dict) -> bool:
         print(f"[adapter] could not read MEMORY.md: {e}", flush=True)
         return False
 
-    block = _render_setup_answers(answers)
+    block = _render_setup_answers(answers, questions)
     if SETUP_BLOCK_START in current and SETUP_BLOCK_END in current:
         head = current[: current.index(SETUP_BLOCK_START)]
         tail = current[current.index(SETUP_BLOCK_END) + len(SETUP_BLOCK_END):]
@@ -746,7 +758,7 @@ async def _sync_setup_answers() -> None:
         answers = (payload.get("data") or payload).get("onboardingData") or {}
         if not isinstance(answers, dict) or not answers:
             return
-        if _write_setup_answers(answers):
+        if _write_setup_answers(answers, (payload.get("data") or payload).get("questions")):
             print(
                 f"[adapter] setup answers written into MEMORY.md ({len(answers)} answer(s))",
                 flush=True,

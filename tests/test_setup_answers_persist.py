@@ -145,3 +145,35 @@ def test_it_runs_at_startup_and_on_a_timer():
 def test_the_interval_is_configurable():
     src = io.open(Path(adapter.__file__), encoding="utf-8").read()
     assert 'os.environ.get("SETUP_SYNC_INTERVAL_S"' in src
+
+
+# ── under the question that was actually asked ─────────────────────────────
+
+QUESTIONS = [
+    {"id": "team_roster", "question": "Who are the team members you work with?"},
+    {"id": "hard_boundaries", "question": "Is there anything I should never do?"},
+]
+
+
+def test_the_real_question_is_used_as_the_heading(workspace):
+    """`hard_boundaries` makes the agent guess what the answer governs.
+
+    The payload keys answers by question id, and the same response carries the
+    text that was actually put to the buyer. "Is there anything I should never
+    do?" says what the sentence beneath it is for.
+    """
+    adapter._write_setup_answers(
+        {"hard_boundaries": "Never email clients directly."}, QUESTIONS
+    )
+    text = memory(workspace)
+    assert "Is there anything I should never do?" in text
+    assert "**hard_boundaries**" not in text
+
+
+def test_an_answer_with_no_matching_question_still_appears(workspace):
+    # A question removed from the package leaves its answer behind. Falling back
+    # to the id keeps it readable rather than dropping what the buyer said.
+    adapter._write_setup_answers({"retired_question": "Still true."}, QUESTIONS)
+    text = memory(workspace)
+    assert "Still true." in text
+    assert "retired_question" in text
