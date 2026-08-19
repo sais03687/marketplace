@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { ApprovalCard } from "@/components/marketplace/approval-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search } from "lucide-react";
+import { Search, ChevronDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface Approval {
   id: string;
@@ -212,6 +213,44 @@ export default function ApprovalsPage() {
     );
   });
 
+  // Grouped by the agent that raised them.
+  //
+  // With one agent the list was unambiguous. With two it was not: two
+  // `data-analysis` rows, minutes apart, and nothing on either saying whose.
+  // The only way to tell was the sign-off the model happened to put in the
+  // draft — and "Approve All" sat above them, offering to send both agents'
+  // mail without ever naming either.
+  //
+  // Keyed on deploymentId rather than the name, because two agents can be given
+  // the same name and the whole point is telling them apart.
+  // The flat pending order the keyboard still walks. Grouping changes how
+  // approvals are drawn, not the sequence j/k moves through.
+  const pendingOrder = useMemo(
+    () => filteredApprovals.filter((a) => a.status === "PENDING"),
+    [filteredApprovals],
+  );
+
+  const groups = useMemo(() => {
+    const byDeployment = new Map<string, { key: string; name: string; approvals: Approval[] }>();
+    for (const a of filteredApprovals) {
+      const key = a.deploymentId;
+      if (!byDeployment.has(key)) {
+        byDeployment.set(key, { key, name: a.deployment?.agentName ?? "Unnamed agent", approvals: [] });
+      }
+      byDeployment.get(key)!.approvals.push(a);
+    }
+    return [...byDeployment.values()].sort((x, y) => x.name.localeCompare(y.name));
+  }, [filteredApprovals]);
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
   const pendingCount = approvals.filter((a) => a.status === "PENDING").length;
   const resolvedCount = approvals.filter((a) => a.status !== "PENDING").length;
 
@@ -299,23 +338,59 @@ export default function ApprovalsPage() {
           </p>
         </div>
       ) : (
-        <div className="mt-6 space-y-3">
-          {filteredApprovals.map((approval, i) => (
-            <ApprovalCard
-              key={approval.id}
-              approval={approval}
-              isFocused={
-                i ===
-                filteredApprovals
-                  .filter((a) => a.status === "PENDING")
-                  .indexOf(approval) &&
-                i === focusIndex
-              }
-              onResolve={(id, action, data) =>
-                handleResolve(id, action, approval.deploymentId, data)
-              }
-            />
-          ))}
+        <div className="mt-6 space-y-4">
+          {groups.map((group) => {
+            const pendingHere = group.approvals.filter((a) => a.status === "PENDING").length;
+            const isCollapsed = collapsed.has(group.key);
+            return (
+              <div key={group.key} className="overflow-hidden rounded-lg border">
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  aria-expanded={!isCollapsed}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-muted/50"
+                >
+                  <span className="flex items-center gap-2">
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                        isCollapsed && "-rotate-90",
+                      )}
+                    />
+                    <span className="font-medium">{group.name}</span>
+                    {pendingHere > 0 && (
+                      <span className="inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-xs font-semibold text-white">
+                        {pendingHere}
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-sm text-muted-foreground">
+                    {pendingHere === 0
+                      ? "nothing pending"
+                      : `${pendingHere} awaiting you`}
+                  </span>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="space-y-3 border-t bg-muted/20 p-3">
+                    {group.approvals.map((approval) => (
+                      <ApprovalCard
+                        key={approval.id}
+                        approval={approval}
+                        isFocused={
+                          approval.status === "PENDING" &&
+                          pendingOrder[focusIndex]?.id === approval.id
+                        }
+                        onResolve={(id, action, data) =>
+                          handleResolve(id, action, approval.deploymentId, data)
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
