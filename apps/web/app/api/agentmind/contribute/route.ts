@@ -87,6 +87,7 @@ export async function POST(request: Request) {
 
   // Run guardrails
   const guardrailResult = runGuardrails({ title, content, type, tags, context });
+  const safeContext = guardrailResult.sanitizedContext;
   if (!guardrailResult.passed) {
     return jsonError(
       guardrailResult.rejectionReason || "Content rejected by guardrails",
@@ -179,7 +180,10 @@ export async function POST(request: Request) {
       title,
       content: guardrailResult.sanitizedContent,
       rawContent: content,
-      context: context || null,
+      // The scrubbed context, not the one that arrived. It carried the run's
+      // own preamble - the requester's address, their subject line, their
+      // thread id - into a commons every company reads.
+      context: safeContext || null,
       tags,
       sanitizationLog: guardrailResult.log,
       status: initialStatus,

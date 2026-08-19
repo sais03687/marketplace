@@ -5,6 +5,7 @@ import { z } from "zod";
 export interface SanitizationResult {
   passed: boolean;
   sanitizedContent: string;
+  sanitizedContext?: string;
   log: { stage: string; action: string; details?: string }[];
   rejectionReason?: string;
 }
@@ -53,6 +54,15 @@ const PII_PATTERNS: { name: string; regex: RegExp; replacement: string }[] = [
     name: "email",
     regex: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g,
     replacement: "[EMAIL]",
+  },
+  {
+    // A Microsoft conversation id identifies somebody else's email thread and
+    // teaches nothing. It travelled in the `context` field to every company
+    // running this agent, and until 2026-08-19 a thread id plus a deployment id
+    // was enough to read that thread's pending drafts unauthenticated.
+    name: "thread_id",
+    regex: /Thread ID:\s*\S+/gi,
+    replacement: "[THREAD]",
   },
   {
     name: "ssn",
@@ -280,9 +290,32 @@ export function runGuardrails(input: {
   const entropyResult = filterEntropy(piiResult.sanitized);
   allLogs.push(...entropyResult.log);
 
+  // The context, through the same two stages.
+  //
+  // It was taken in, never scrubbed, and stored as given. `context` is where
+  // the run's own preamble lands — "Request: New email from Sai Suram
+  // <sai@...> Subject: What do we need to reorder? Thread ID: AAQk..." — and
+  // AgentMind serves approved contributions to every deployment of an agent
+  // across every company. On 2026-08-19, 22 of 23 approved contributions
+  // carried a real manager's address, their internal subject lines and their
+  // Microsoft thread ids, published to other tenants.
+  //
+  // The scrubber always knew how to catch an email. Nothing pointed it here.
+  let sanitizedContext: string | undefined;
+  if (input.context) {
+    const ctxPii = scrubPii(input.context);
+    const ctxEntropy = filterEntropy(ctxPii.sanitized);
+    sanitizedContext = ctxEntropy.sanitized;
+    allLogs.push(
+      ...ctxPii.log.map((l) => ({ ...l, stage: `context_${l.stage}` })),
+      ...ctxEntropy.log.map((l) => ({ ...l, stage: `context_${l.stage}` })),
+    );
+  }
+
   return {
     passed: true,
     sanitizedContent: entropyResult.sanitized,
+    sanitizedContext,
     log: allLogs,
   };
 }
