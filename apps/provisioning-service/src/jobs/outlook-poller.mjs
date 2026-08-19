@@ -230,7 +230,15 @@ async function getPendingApprovals(threadId) {
   if (!DEPLOYMENT_ID || !threadId) return "";
   try {
     const url = `${MARKETPLACE_URL}/api/deployments/${DEPLOYMENT_ID}/approvals?status=PENDING&threadId=${encodeURIComponent(threadId)}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    // This path was deliberately unauthenticated so the poller could use it,
+    // and an approval carries the draft - the text the agent is about to
+    // send. Anyone with a deployment id and a thread id could read that from
+    // the internet, and both are ordinary: one comes from a dashboard URL,
+    // the other from an email header.
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${APPROVAL_TOKEN}` },
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) return "";
     const data = await res.json();
     const approvals = data.data || data || [];

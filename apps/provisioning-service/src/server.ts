@@ -1511,10 +1511,15 @@ export function startProxyServer() {
     if (req.method === "GET" && fileMatch) {
       const file = _tempFiles.get(fileMatch[1]!);
       if (!file) return send(res, 404, { error: "File not found or expired" });
+      // `public` let any intermediary keep a copy of a chart drawn from the
+      // buyer's data. The URL is an unguessable one-hour capability, which is
+      // the right shape for something Teams has to fetch without being able to
+      // authenticate — but a cached copy outlives the capability and answers to
+      // nobody. Teams fetches it once; public caching bought nothing.
       res.writeHead(200, {
         "Content-Type": file.contentType,
         "Content-Length": file.data.length,
-        "Cache-Control": "public, max-age=3600",
+        "Cache-Control": "private, no-store",
       });
       res.end(file.data);
       return;
