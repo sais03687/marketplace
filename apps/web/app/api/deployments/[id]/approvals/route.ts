@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { requireDeploymentToken } from "@/lib/deployment-token";
 import { jsonSuccess, jsonError, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
 import { sendNotificationEmail, buildApprovalNotificationEmail } from "@/lib/email";
 import { approvalActionUrl } from "@/lib/approval-link";
@@ -12,14 +13,17 @@ export async function GET(
   const threadId = url.searchParams.get("threadId");
   const statusFilter = url.searchParams.get("status");
 
-  // Internal poller path: no auth, only returns PENDING approvals for a specific threadId
+  // Internal poller path: the deployment's own token, not a person's session.
+  //
+  // This branch had no auth at all, on the reasoning that it returns only
+  // PENDING approvals for one thread. But an approval carries the draft, which
+  // is the text the agent is about to send, and neither identifier gating it is
+  // a secret: a deployment id appears in dashboard URLs and a thread id in every
+  // email header on the thread. Read from outside the network on 2026-08-18, it
+  // returned a workbook's name, what was in it, and who it was for.
   if (threadId && statusFilter === "PENDING") {
-    const deployment = await prisma.deployment.findUnique({
-      where: { id },
-    });
-    if (!deployment) {
-      return jsonError("Deployment not found", 404);
-    }
+    const authed = await requireDeploymentToken(request, id);
+    if ("error" in authed) return authed.error;
 
     const approvals = await prisma.approval.findMany({
       where: {

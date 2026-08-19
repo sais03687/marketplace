@@ -91,3 +91,45 @@ def test_an_unknown_deployment_and_a_wrong_token_are_not_distinguishable():
     # The 404 is returned before any token comparison, so the two paths cannot be
     # told apart by timing either.
     assert src.index("Deployment not found") < src.index("tokensMatch(")
+
+
+# ── the poller path on the approvals route ─────────────────────────────────
+
+def test_the_internal_approvals_branch_authenticates():
+    """It returned a draft to anyone who asked.
+
+    /api/deployments/:id/approvals had a branch with no auth at all, so the
+    poller could use it: threadId plus status=PENDING. An approval carries the
+    draft — the text the agent is about to send. Read from outside the network on
+    2026-08-18 it gave up a workbook's name, what was in it, and who it was for.
+
+    Neither identifier gating it is a secret. A deployment id is in dashboard
+    URLs; a thread id is in every email header on the thread.
+    """
+    src = io.open(
+        WEB / "app" / "api" / "deployments" / "[id]" / "approvals" / "route.ts",
+        encoding="utf-8",
+    ).read()
+    branch = src[src.index('if (threadId && statusFilter === "PENDING")'):][:900]
+    assert "requireDeploymentToken(request, id)" in branch
+    assert branch.index("requireDeploymentToken") < branch.index("prisma.approval"), (
+        "the draft must not be read before the caller is identified"
+    )
+
+
+def test_temp_files_are_not_cached_by_intermediaries():
+    """The URL is a capability; a cached copy is not.
+
+    /api/files/:uuid is an unguessable one-hour URL, which is the right shape for
+    something Teams must fetch without being able to authenticate. Serving it
+    `Cache-Control: public` let any intermediary keep a copy of a chart drawn
+    from the buyer's data — outliving the capability and answering to nobody.
+    """
+    src = io.open(
+        Path(__file__).resolve().parents[1]
+        / "apps" / "provisioning-service" / "src" / "server.ts",
+        encoding="utf-8",
+    ).read()
+    served = src[src.index("_tempFiles.get("):][:700]
+    assert '"Cache-Control": "private, no-store"' in served
+    assert "public, max-age" not in served
