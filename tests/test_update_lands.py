@@ -359,3 +359,27 @@ def test_an_empty_package_does_not_cost_a_restart():
     src = io.open(UPDATE_TS, encoding="utf-8").read()
     skip = src.index("skipping the restart")
     assert skip < src.index("await restartContainer(")
+
+
+def test_the_port_lookup_uses_the_real_container_name_too():
+    """The same URL, one line further up, and this one was fatal.
+
+    getCustomAgentPort reads an in-memory registry that is empty after every
+    service restart, so the fallback ran — getContainerPort(the URL). Dockerode
+    builds its request path from that string, it re-parsed into a DNS lookup for
+    a host called "containers", and the EAI_AGAIN took the whole provisioning
+    service down, mail pollers included. The agent was never touched.
+    """
+    src = io.open(UPDATE_TS, encoding="utf-8").read()
+    assert "getContainerPort(deployment.containerName)" not in src
+    assert "getContainerPort(containerName)" in src
+    assert src.index("customAgentContainerName(deploymentId)") < src.index("getContainerPort(")
+
+
+def test_the_helper_refuses_a_url_rather_than_resolving_one():
+    # So the next caller to make this mistake gets a sentence instead of a DNS
+    # failure thrown from inside an HTTP client.
+    docker = io.open(DOCKER_TS, encoding="utf-8").read()
+    body = docker[docker.index("export async function getContainerPort"):][:900]
+    assert "is a URL, not a container name" in body
+    assert body.index("is a URL") < body.index("docker.getContainer(")

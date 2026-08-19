@@ -42,9 +42,16 @@ export async function updateJob(deploymentId: string): Promise<void> {
   console.log(`[update] Starting update for deployment ${deploymentId} → v${deployment.agentVersion}`);
 
   // ── Resolve port ────────────────────────────────────────────────────────────
+  //
+  // The fallback used to read Deployment.containerName, which holds a URL -
+  // "http://127.0.0.1:32797" on the live deployment. Dockerode builds a request
+  // path out of whatever it is given, and that one re-parsed into a DNS lookup
+  // for a host called "containers", which threw EAI_AGAIN and took the whole
+  // provisioning service down with it, pollers included. Reached whenever the
+  // in-memory registry is empty, which it is after every service restart.
   const { getCustomAgentPort } = await import("./custom-runner.js");
-  const port = getCustomAgentPort(deploymentId)
-    ?? (deployment.containerName ? await getContainerPort(deployment.containerName) : undefined);
+  const containerName = customAgentContainerName(deploymentId);
+  const port = getCustomAgentPort(deploymentId) ?? (await getContainerPort(containerName));
   if (!port) throw new Error(`No running agent found for ${deploymentId}`);
 
   // ── What is running right now, before anything replaces it ──────────────────
@@ -122,11 +129,6 @@ export async function updateJob(deploymentId: string): Promise<void> {
   // the old code. Every update before this one was silent for exactly that
   // reason — files landed, the job logged success, and the agent carried on as
   // it was.
-  // Resolved, not read from the row: Deployment.containerName holds a URL
-  // ("http://127.0.0.1:32797" on the live deployment), and handing that to
-  // Docker fails on a container that does not exist.
-  const containerName = customAgentContainerName(deploymentId);
-
   // Nothing to load means nothing to restart for. An empty diff happens
   // whenever a version has no package in blob storage — the job logs it and
   // carries on — and restarting the agent to apply no change is pure cost to

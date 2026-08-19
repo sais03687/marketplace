@@ -214,6 +214,16 @@ function envToArray(env: ContainerEnv): string[] {
 }
 
 export async function getContainerPort(containerName: string): Promise<number> {
+  // Dockerode builds its request path from this string, so a URL here re-parses
+  // into a DNS lookup for a host called "containers" and throws EAI_AGAIN from
+  // inside the HTTP layer - far from the mistake, and fatal to whatever is
+  // running. Deployment.containerName holds a URL on real rows, so this is not
+  // hypothetical; it took the provisioning service down on 2026-08-18.
+  if (/^[a-z]+:\/\//i.test(containerName) || containerName.includes("/")) {
+    throw new Error(
+      `"${containerName}" is a URL, not a container name — use customAgentContainerName(deploymentId)`,
+    );
+  }
   const container = docker.getContainer(containerName);
   const info = await container.inspect();
   const portBindings = info.NetworkSettings.Ports["4000/tcp"];
