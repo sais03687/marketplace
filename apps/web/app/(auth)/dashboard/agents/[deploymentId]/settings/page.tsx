@@ -543,9 +543,18 @@ export default function SettingsPage() {
               className="h-4 w-4 rounded border-input"
             />
             <div>
-              <p className="text-sm font-medium">Auto-update skills</p>
+              {/* "skills" was accurate while the update did nothing. Since
+                  2026-08-18 it replaces the creator's whole package, including
+                  the agent's own code, and restarts the agent to load it — so
+                  the label has to say that. A buyer left the old toggle on
+                  expecting new skills, not a new agent. */}
+              <p className="text-sm font-medium">Auto-update this agent</p>
               <p className="text-xs text-muted-foreground">
-                Automatically apply skill updates from the creator.
+                Apply new versions from the creator as they are approved. The
+                agent restarts to load them, which takes a few seconds; anything
+                it is working on at that moment is interrupted and the person
+                who asked is told. Everything it has learned about your company
+                is kept.
               </p>
             </div>
           </label>
