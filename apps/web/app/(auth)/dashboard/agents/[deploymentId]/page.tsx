@@ -334,8 +334,20 @@ export default function AgentOverviewPage({
       )}
 
       {/* Action buttons */}
-      {!isFired && !isOnboarding && (
+      {/*
+        Shown during onboarding too, for the fire action alone.
+        A buyer who hired by mistake had no way out of this screen: it offers
+        "Activate Agent" and nothing else, so cancelling meant activating first
+        — which sends an introduction email to their team. The only escape from
+        a mis-hire was to announce it. The API could always do this; the
+        dashboard could not.
+
+        Pause stays hidden, because pausing something that has not started is
+        not a thing to offer.
+      */}
+      {!isFired && (
         <div className="flex items-center gap-2 flex-wrap border-t pt-4">
+          {!isOnboarding && (
           <Button
             variant="outline"
             onClick={() => (isPaused ? handlePauseResume() : setConfirmPause(true))}
@@ -350,6 +362,7 @@ export default function AgentOverviewPage({
             )}
             {isPaused ? "Resume" : "Pause"}
           </Button>
+          )}
 
           <Button
             variant="ghost"
@@ -369,7 +382,8 @@ export default function AgentOverviewPage({
               onClick={() => setConfirmFire(true)}
             >
               <UserX className="mr-1 h-4 w-4" />
-              Fire agent
+              {/* "Fire" is a strange word for someone who never started. */}
+              {isOnboarding ? "Cancel hire" : "Fire agent"}
             </Button>
           </div>
         </div>
