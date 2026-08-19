@@ -16,7 +16,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import JSZip from "jszip";
-import { VALID_RUNTIMES } from "@marketplace/agent-package-schema";
+import { VALID_RUNTIMES, validateManifest } from "@marketplace/agent-package-schema";
 
 interface ManifestData {
   name: string;
@@ -152,6 +152,19 @@ export default function PublishPage() {
         const text = await manifestFile.async("string");
         const parsed = JSON.parse(text) as ManifestData;
         setManifest(parsed);
+
+        // The same check the upload endpoint runs, here where the creator can
+        // still fix it. Without this the only signal that a manifest is
+        // incomplete was the review step rendering it and crashing, so the one
+        // message naming the missing field was destroyed by the failure it
+        // described.
+        for (const err of validateManifest(parsed as unknown as Record<string, unknown>)) {
+          results.push({
+            file: `marketplace.json → ${err.field}`,
+            valid: false,
+            message: err.message,
+          });
+        }
         setTaglineOverride(parsed.tagline);
         setDescriptionOverride(parsed.description);
         setPriceOverride(String(parsed.pricePerMonth / 100));
@@ -328,7 +341,11 @@ export default function PublishPage() {
                     {manifestRuntime}
                   </span>
                   <span className="text-muted-foreground">Capabilities</span>
-                  <span>{manifest.capabilities.length} defined</span>
+                  {/* Optional-chained deliberately: a manifest missing this
+                      crashed the whole review step with "Cannot read properties
+                      of undefined", which is a white screen where a creator
+                      needed a sentence. */}
+                  <span>{manifest.capabilities?.length ?? 0} defined</span>
                 </div>
               </CardContent>
             </Card>
