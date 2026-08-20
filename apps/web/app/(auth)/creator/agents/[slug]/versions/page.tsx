@@ -6,9 +6,22 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Upload, ArrowLeft, Trash2 } from "lucide-react";
+import { Loader2, Upload, ArrowLeft, Trash2, ChevronDown, Check, X, MinusCircle } from "lucide-react";
 import Link from "next/link";
 import { formatDate } from "@/lib/utils";
+
+interface VetStep {
+  name: string;
+  status: "pass" | "fail" | "skip" | string;
+  detail?: string;
+  logLines?: string[];
+}
+
+interface VetReport {
+  status?: string;
+  runAt?: string;
+  steps?: VetStep[];
+}
 
 interface AgentVersion {
   id: string;
@@ -17,6 +30,21 @@ interface AgentVersion {
   changelog: string | null;
   publishedAt: string | null;
   createdAt: string;
+  // The vetting run's own record. The API has always returned it - it is the
+  // same object the platform writes during the sandbox run - and the page threw
+  // it away, so a creator saw only PASSED/FAILED and never which probe failed or
+  // why. Safe to show: the vet container is given only noop secrets
+  // (LLM_API_KEY=vet-noop) and an ephemeral random hooks token, so its build and
+  // runtime logs contain nothing platform-sensitive, and this endpoint already
+  // 403s anyone who is not the owning creator.
+  testResults?: VetReport | null;
+  vetNotes?: string | null;
+}
+
+function StepIcon({ status }: { status: string }) {
+  if (status === "pass") return <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />;
+  if (status === "fail") return <X className="h-3.5 w-3.5 text-red-600 shrink-0" />;
+  return <MinusCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />;
 }
 
 export default function VersionsPage({
@@ -35,6 +63,7 @@ export default function VersionsPage({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [openReport, setOpenReport] = useState<string | null>(null);
 
   const fetchVersions = useCallback(async () => {
     try {
@@ -270,6 +299,57 @@ export default function VersionsPage({
                   )}
                 </div>
               </CardContent>
+
+              {/* The vetting report the platform already recorded for this
+                  version. A creator used to see only PASSED/FAILED; the steps,
+                  their detail, and the build/probe logs were computed and
+                  discarded. */}
+              {v.testResults?.steps && v.testResults.steps.length > 0 && (
+                <div className="border-t">
+                  <button
+                    type="button"
+                    onClick={() => setOpenReport(openReport === v.id ? null : v.id)}
+                    aria-expanded={openReport === v.id}
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-muted-foreground hover:bg-muted/50"
+                  >
+                    <ChevronDown
+                      className={
+                        "h-4 w-4 transition-transform " +
+                        (openReport === v.id ? "" : "-rotate-90")
+                      }
+                    />
+                    Vetting report
+                    <span className="text-xs">
+                      ({v.testResults.steps.filter((st) => st.status === "pass").length}/
+                      {v.testResults.steps.length} passed)
+                    </span>
+                  </button>
+
+                  {openReport === v.id && (
+                    <div className="space-y-2 border-t bg-muted/20 px-4 py-3">
+                      {v.vetNotes && (
+                        <p className="text-sm text-muted-foreground">{v.vetNotes}</p>
+                      )}
+                      {v.testResults.steps.map((st, i) => (
+                        <div key={i} className="text-sm">
+                          <div className="flex items-center gap-2">
+                            <StepIcon status={st.status} />
+                            <span className="font-medium">{st.name}</span>
+                            {st.detail && (
+                              <span className="text-muted-foreground">— {st.detail}</span>
+                            )}
+                          </div>
+                          {st.logLines && st.logLines.length > 0 && (
+                            <pre className="mt-1 ml-5 max-h-48 overflow-auto rounded bg-black/80 p-2 text-xs text-gray-100">
+                              {st.logLines.join(String.fromCharCode(10))}
+                            </pre>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </Card>
           ))
         )}
