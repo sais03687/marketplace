@@ -1,3 +1,208 @@
+# Marketplace agent — handover (as of 2026-08-20)
+
+Everything below the older line `# Marketplace agent — handover (as of
+2026-08-16, end of session)` is earlier history, kept because the reasoning in
+it is still sound. This top section supersedes it for anything that changed.
+
+## Where it stands right now
+
+One agent is live: **Data Analyst Two**, deployment `cmsmc95dp0003l704az3d9btj`,
+on the platform Microsoft tenant (`0809747e-…`), container
+`custom-agent-cmsmc95d`. Healthy; mailbox
+`data-analyst-acme-corp-az3d9btj@agents.agentstore.it.com`.
+
+All test agents from the 18th–20th are fired and cleaned up. Microsoft seats:
+platform `2/3`, one free. **747 tests pass.** Everything committed and deployed
+to `main`.
+
+Two loose ends for the human, neither urgent:
+
+- The **Microsoft 365 Business Basic trial** on tenant
+  `agentstoretesttwo.onmicrosoft.com` (`daa24a93-…`) auto-converts to paid —
+  cancel it at admin.microsoft.com. This is the only real charge from any of
+  this; the $59 hires were Stripe **test mode** (`cs_test_…`).
+- `new_data_analyst@agents.agentstore.it.com` is a stray unlicensed account from
+  the first seat experiment. Harmless; delete whenever.
+
+## What these two days changed
+
+### Reliability (the agent must not lose or misreport work)
+- Produced files survive a container restart. Two bugs: a lossy filename key,
+  and a collision where two ids sanitised to one name and one file overwrote the
+  other. Fix: `_file_stem` = sanitised name + digest of the raw key; the key is
+  read from inside the file, never derived from the filename.
+- A run interrupted mid-work (every deploy does this) now tells the buyer it was
+  interrupted rather than vanishing. The journal that records this erased itself
+  on the one path it exists for: `CancelledError` derives from `BaseException`,
+  sailed past `except Exception` into the `finally` that cleared the record.
+- The headline the model states is checked against the workbook Summary sheet,
+  position-based, no word list.
+- A composed reply is never discarded three lines from the send (`action=none`
+  coercion on all delivery paths).
+
+### The update path (creator ships a new version → live agents get it)
+- It was **armed and broken**: `update.ts` base64-encodes files, the adapter
+  wrote them to disk *without decoding*, so the first auto-update would have
+  replaced `agent.py` with its own base64. Never fired only because vetting
+  could not pass until the 18th. Now decodes, restarts to load, health-checks,
+  and **rolls back** to the previous version if the new one does not come up.
+- Waits for the agent to be idle before restarting, bounded so a stuck run
+  cannot postpone it forever.
+- `MEMORY.md`, `PRIVATE.md`, `memory/*.md` are refused from an update package and
+  at upload — they are the buyer's, and an update carrying one would overwrite
+  months of context. Upload error points creators to
+  `onboarding/MEMORY_TEMPLATE.md`.
+
+### Onboarding answers now persist to memory
+- The hire wizard answers (team roster, data sources, hard boundaries) were
+  relayed as one message saying "store this in your memory" — which the agent
+  **cannot do**; there is no memory-write action. They were lost. Now the agent
+  **pulls** its answers from `/api/deployments/:id/onboarding` (Vercel cannot
+  reach a container, so it must be a pull) and folds them into `MEMORY.md`
+  between markers, on startup and on a timer, replacing on edit. Retroactively
+  recovered Data Analyst Two's original answers.
+
+### Security / cross-tenant isolation — the important one
+- **AgentMind commons leaked cross-tenant.** `runGuardrails` scrubbed only
+  `content`, not `context` — and `context` held the raw run preamble (requester
+  address, subject line, Microsoft thread id). Approved contributions are served
+  to every deployment of an agent in every company. 22 of 23 approved rows
+  carried a real address. Fixed: context goes through the same scrub; thread ids
+  redacted outright; **28 existing rows scrubbed in place**.
+- **Unauthenticated cross-tenant write:** `/api/agentmind/{contribute,search,
+  use,vote}` took a `deploymentId` in the body and checked only that it existed.
+  An unauthenticated POST from off-network reached the handler. Now each requires
+  the deployment token (`requireDeploymentToken`, constant-time).
+- **Unauthenticated read of pending drafts:** the poller branch of
+  `/api/deployments/:id/approvals` had no auth; an approval carries the draft.
+  Now requires the deployment token.
+- `/approvals/auto-complete` compared its token with `!==` (timing leak) — moved
+  onto the constant-time helper. The comparison lives in
+  `apps/web/lib/constant-time.ts`, importless, so it is tested rather than only
+  read.
+- **Cross-tenant token minting: verified safe by code read.** Each agent token
+  is `HMAC(secret, its-own-deployment-id)`; `/internal/microsoft-token` computes
+  the expected token from the *requested* id, so agent A cannot forge
+  `HMAC(secret, "B")` without the platform secret, which containers do not hold.
+  Two caveats, both flagged in the code: the token still lives inside creator
+  code (fine for a trusted first-party agent, must be removed before untrusted
+  third-party ones), and the whole endpoint sits behind an upstream Hetzner
+  firewall rule that exists in no repo.
+
+### Buyer-tenant provisioning — proven end to end on a real second tenant
+First hire ever against a genuinely separate Microsoft tenant exposed three
+bugs, all fixed and re-verified:
+
+1. Admin consent takes minutes to propagate; the hire ran seconds later, hit a
+   transient 403, and the catch **fell back to a platform mailbox** while
+   `buyerMicrosoftTenantId` still pointed at the buyer tenant. Result: a billed,
+   healthy-looking agent that 404'd on every poll and could never receive mail.
+   Now **any** buyer-tenant failure fails the hire loudly; the fallback survives
+   only for platform-mode hires.
+2. Retry window was ~14s against something that takes minutes → 8 attempts
+   (~4 min).
+3. Teardown deleted the identity from the wrong tenant → stranded a licence
+   seat. Now reads `mailboxLocation` and deletes from where the mailbox is.
+
+Verified with a real reconciliation task: correct figures and directions,
+uploaded to the *buyer's* SharePoint (`agentstoretesttwo.sharepoint.com`),
+replied to the requester. Provisioning, inbound, work, approval, SharePoint,
+outbound, and clean teardown all confirmed.
+
+### UX / dashboard
+- Approvals are **grouped by agent** (collapsible, per-agent pending count,
+  keyed on deploymentId so two same-named agents stay distinct). Before, two
+  agents' approvals were indistinguishable and "Approve All" sent both without
+  naming either.
+- A hire that has not started can now be **cancelled** from the UI ("Cancel
+  hire"). Before, the only escape from a mis-hire was to activate it — which
+  emails the buyer's team.
+- Publish page no longer white-screens on a manifest missing `capabilities`; it
+  runs `validateManifest` at file-select and shows the errors.
+- Memory tab **hidden** (not deleted): it always showed "Container unreachable"
+  because Vercel cannot reach the provisioning service on port 3003 (closed at
+  the cloud firewall). Restore it by giving Memory the polling treatment
+  approvals already have.
+- `onboardingDurationDays` removed entirely — a required manifest field nothing
+  read, shown as a hardcoded "3-day onboarding".
+
+## Operational facts that bite (verified 2026-08-20)
+
+- **Agent code deploy:** `bash hotdeploy.sh` on the VPS. It git-fetches, docker
+  cp's `agent.py`, `microsoft_tools.py`, `AGENTS.md`, `TOOLS.md`, `adapter.py`
+  into `custom-agent-cmsmc95d`, clears pycache, restarts. It touches **one**
+  container; for multiple agents, `docker cp` to each by name.
+- **Provisioning-service deploy:** it runs `src/index.ts` directly via `tsx`
+  under pm2 (no build step). Deploy =
+  `git checkout origin/main -- apps/provisioning-service/` then
+  `pm2 restart marketplace-provisioning`. A plain restart keeps the env; do NOT
+  start fresh from ecosystem without sourcing `.env.prod` (the pm2 env trap).
+- **Web app:** Vercel, auto-deploys on push to `main`.
+- **Two-deploy ordering for auth changes:** when both a caller and a route change
+  (e.g. adding a required token), deploy the **caller sending it first**, then
+  the route requiring it — or the integration goes dark in between. Skipping this
+  once caused a 401 race on the 19th.
+- **Never `git pull` on the VPS.** `git fetch origin main && git checkout
+  origin/main -- <paths>`.
+- **Commit identity:** `Sai Suram <sai.suram07@gmail.com>`, no `Co-Authored-By`.
+- **SSH:** `-i ~/.ssh/hetzner root@5.161.125.216`.
+- **A brand-new Microsoft tenant's mailbox takes 5–15 min to warm up** — `502
+  UnknownError` on list-messages until then, which is NOT the `404
+  ErrorInvalidUser` that means wrong tenant. Its outbound mail to another org may
+  be slow or land in Junk until it has sending reputation.
+- **Node one-off scripts on the VPS** must run where `node_modules` resolves
+  (e.g. from `apps/provisioning-service/`) or use the repo's helpers. Prisma
+  scripts: `node --env-file=.env.prod`. Prisma client is 6.19.2 — don't invoke a
+  7.x CLI.
+
+## Testing
+
+- **747 tests**, `python -m pytest tests/ -q`, from repo root. `conftest.py`
+  stubs the container secrets and langchain so the adapter imports locally.
+- Node-side logic (poller, update helpers, token compare, commons scrub, reply
+  checker) runs from Python via `subprocess` + `node --experimental-strip-types`,
+  so the tests exercise the shipped code, not a retelling.
+- **The benchmark harness is committed** (was gitignored, silently). Reusable
+  pieces in `benchmark/`: `chaos.sh` (send a task, restart the container mid-run,
+  approve, judge), `send_task.mjs` + `tasks.mjs` (one sender, one lookup across
+  all `emails*.json`), `await_reply.mjs`, `approve.mjs`, `check_reply.mjs`,
+  `find_sent.mjs`, `capture_fixture.mjs`. Tasks live in `/root/bench/emails*.json`
+  on the VPS.
+
+## Testing method, learned the hard way this session
+
+- A fixture must not be a **fixed point** of the transform under test. Six
+  persistence tests were green while the feature was broken because the fixture
+  `thread_one` survived `_safe_handle` unchanged. `tests/test_lossy_keys.py`
+  enforces that every key is one the sanitiser actually rewrites.
+- Assert on the **original** key, never the derived one — both sides round-trip
+  through the same helper otherwise and agree with each other, not with reality.
+- Cross a **real boundary** (restart the container, hit the network). The serious
+  bugs of these two days were invisible to in-process unit tests.
+- A fixture carries the belief of whoever wrote it. `test_fixture_provenance.py`
+  requires each to declare how it was obtained; `capture_fixture.mjs` takes
+  replies straight from the mailbox so later ones are not transcribed.
+
+## What is still open (none blocking the single live agent)
+
+- **Second-org via Clerk** (two marketplace orgs, one tenant) — not run. Lower
+  value than the two-tenant test that *was* done; the 18 deployment routes all
+  scope on `companyId` via a helper returning 404, audited statically.
+- **Container hardening:** agent containers run as **root, full capabilities,
+  writable rootfs**. No docker socket mounted; namespace-isolated; egress
+  allowlisted by the netgate. Cheap to add `CapDrop: [ALL]`, a non-root user,
+  `ReadonlyRootfs` — worth doing before untrusted third-party agents.
+- **Raw Graph token in creator code** — the real fix is removing it from the
+  container; tracked in the code comment.
+- **Memory tab / provisioning-service reachability** — poll like approvals do.
+- **`E4 verify_deliverables`** and a few UI copy nits: "Data location" never
+  names the tenant on Confirm; the licence-preview warning during Connect reads
+  alarmingly for a harmless propagation delay.
+- **Creator feedback (Plan 1)** — buyers leave reviews, creators never see them.
+  Agreed, never built.
+
+---
+
 # Marketplace agent — handover (as of 2026-08-16, end of session)
 
 ## Correction: the approvals UI already shows the draft
