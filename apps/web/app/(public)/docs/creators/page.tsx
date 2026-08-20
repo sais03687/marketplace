@@ -411,7 +411,6 @@ async def run_agent(
   ],
   "requiredTools": ["email", "calendar", "sharepoint"],
   "requiredIntegrations": ["microsoft365"],
-  "onboardingDurationDays": 3,
   "autonomyDefaults": {
     "email_external": "queue_if_stakes_gt_5",
     "email_internal": "auto_execute"
@@ -434,7 +433,6 @@ async def run_agent(
           ["capabilities", "array", "Yes", "List of { name, description } objects. Shown as feature bullets on the listing."],
           ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, calendar, sharepoint, excel, teams, etc."],
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
-          ["onboardingDurationDays", "integer", "Yes", "Expected days before the agent is fully operational. Sets buyer expectations."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
         ]}
       />

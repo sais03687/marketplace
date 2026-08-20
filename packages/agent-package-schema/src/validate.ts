@@ -128,11 +128,6 @@ export function validateManifest(m: unknown): ValidationError[] {
     }
   }
 
-  // Onboarding duration
-  if (typeof manifest.onboardingDurationDays !== "number" || manifest.onboardingDurationDays < 0) {
-    errors.push({ field: "onboardingDurationDays", message: "onboardingDurationDays must be a non-negative number" });
-  }
-
   // Autonomy defaults
   if (!manifest.autonomyDefaults || typeof manifest.autonomyDefaults !== "object") {
     errors.push({ field: "autonomyDefaults", message: "autonomyDefaults is required" });

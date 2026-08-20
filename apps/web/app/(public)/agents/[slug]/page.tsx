@@ -4,7 +4,7 @@ import { CapabilityBadge } from "@/components/marketplace/capability-badge";
 import { HireButton } from "@/components/hire/hire-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Star, Users, Shield, Clock, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle } from "lucide-react";
+import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle } from "lucide-react";
 import { formatPrice } from "@/lib/utils";
 import Link from "next/link";
 
@@ -252,10 +252,6 @@ export default async function AgentListingPage({
                 </div>
 
                 <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4" />
-                    3-day onboarding
-                  </div>
                   <div className="flex items-center gap-2">
                     <Users className="h-4 w-4" />
                     {agent._count.deployments} companies use this agent

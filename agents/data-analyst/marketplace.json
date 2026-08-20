@@ -23,7 +23,6 @@
   ],
   "requiredTools": ["email_read", "email_reply", "email_send", "email_list"],
   "requiredIntegrations": ["python-sandbox"],
-  "onboardingDurationDays": 1,
   "autonomyDefaults": {
     "email_reply_external": "always_queue",
     "email_send_new": "always_queue",

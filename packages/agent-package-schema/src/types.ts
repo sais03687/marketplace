@@ -61,7 +61,6 @@ export interface MarketplaceManifest {
   capabilities: Array<{ name: string; description: string }>;
   requiredTools: string[];
   requiredIntegrations: string[];  // "google-calendar" | "slack" | etc.
-  onboardingDurationDays: number;
   autonomyDefaults: Record<string, AutonomyLevel>;
   runtime?: AgentRuntime;
   runtimeConfig?: { entrypoint?: string; port?: number };
