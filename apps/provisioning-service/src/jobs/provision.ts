@@ -202,9 +202,18 @@ export async function provisionJob(
       // ── Buyer-org mode: create the agent's licensed mailbox in the buyer's tenant ──
       try {
         const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
+        // Longer than the default three tries.
+        //
+        // Admin consent takes minutes to propagate across Microsoft's services,
+        // and a hire runs seconds after the buyer grants it. The default
+        // 2s/4s/8s gives up about fourteen seconds in, which lost that race on
+        // the first real buyer-tenant hire: three 403s, then the same call
+        // succeeded when tried again by hand a few minutes later. Eight
+        // attempts reach roughly four minutes, which is a reasonable wait for
+        // something the buyer is watching a spinner for.
         const mailbox = await withRetry(
           () => createAgentMailbox(buyerTenantId, `${agentName} (Agent)`, username),
-          { step: "create_agent_mailbox_buyer", deploymentId },
+          { step: "create_agent_mailbox_buyer", deploymentId, maxRetries: 8 },
         );
         workspaceEmail = mailbox.email;
         workspaceUserId = mailbox.id;
@@ -241,7 +250,24 @@ export async function provisionJob(
         // Falling back to a platform mailbox would move the licence cost onto us for
         // every buyer who has not bought seats, and would hand the buyer an agent whose
         // identity lives outside their tenant without them ever choosing that.
-        if (err instanceof BuyerTenantProvisioningError) {
+        // Any failure, not just the typed one.
+        //
+        // The guard used to name BuyerTenantProvisioningError alone, so a Graph
+        // 403 - a different class entirely - fell through to the fallback and
+        // did exactly what the comment above forbids. On 2026-08-20 the first
+        // hire against a genuinely separate tenant hit a transient
+        // Authorization_RequestDenied while admin consent was still
+        // propagating. The fallback created the mailbox on the *platform*
+        // domain while buyerMicrosoftTenantId went on pointing at the buyer's
+        // tenant, so the poller asked tenant B for a user that only tenant A
+        // could have and got 404 ErrorInvalidUser on every cycle, forever.
+        // provision_complete reported success and the dashboard showed a
+        // healthy agent that could not receive a single email.
+        //
+        // A buyer who chose their own tenant gets their own tenant or gets a
+        // failure they can see. Silently relocating their agent's identity is
+        // not a recovery.
+        if (err instanceof BuyerTenantProvisioningError || buyerTenantId) {
           console.error(`[provision] Buyer tenant cannot host this agent: ${err.message}`);
           throw err;
         }
