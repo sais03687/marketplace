@@ -64,3 +64,31 @@ def test_the_reason_is_recorded_where_the_next_person_will_look():
     # explanation at the line that caused it.
     assert "ErrorInvalidUser" in SRC
     assert "propagating" in SRC
+
+
+# ── and teardown has to survive the same disagreement ──────────────────────
+
+DEPROVISION = (
+    Path(__file__).resolve().parents[1]
+    / "apps" / "provisioning-service" / "src" / "jobs" / "deprovision.ts"
+)
+DEP_SRC = io.open(DEPROVISION, encoding="utf-8").read()
+
+
+def test_the_identity_is_deleted_from_the_tenant_it_lives_in():
+    """Firing the broken deployment left its mailbox holding a licence seat.
+
+    deleteAgentIdentity was pointed at buyerMicrosoftTenantId — tenant B — while
+    the fallback had put the mailbox in tenant A. The delete found nothing, said
+    nothing, and the account sat there licensed after the agent was gone. The
+    comment above that line already warned this would "silently leave them paying
+    for a fired agent"; it arrived from the other direction.
+    """
+    assert 'mailboxLocation === "platform" ? null : buyerTenantId' in DEP_SRC
+    assert "deleteAgentIdentity(identityTenant ?? null" in DEP_SRC
+
+
+def test_it_reads_the_field_the_fallback_writes():
+    # mailboxLocation is set to "platform" by the fallback for exactly this.
+    assert "mailboxLocation" in DEP_SRC
+    assert 'mailboxLocation: "platform"' in SRC, "provisioning must still record it"

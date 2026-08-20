@@ -52,9 +52,24 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
     // platform Graph client here only worked because platform and buyer tenant are
     // the same during testing — against a real buyer it would 404 and silently
     // leave them paying for a fired agent.
+    // Where the mailbox actually is, not where the deployment says it belongs.
+    //
+    // These two can disagree. On 2026-08-20 a buyer-tenant hire lost a race with
+    // consent propagation, fell back to a platform mailbox, and kept
+    // buyerMicrosoftTenantId pointing at the buyer's tenant. Firing it then
+    // asked tenant B to delete a user that only existed in tenant A, so the
+    // delete found nothing and the account sat there holding a licence seat
+    // after the agent was gone — the exact outcome the comment above warns
+    // about, arrived at from the other direction.
+    //
+    // The provisioning fix means that state should no longer be created, and
+    // this means teardown survives it if it ever is. mailboxLocation is written
+    // by the fallback precisely to record this.
     const buyerTenantId = (deployment as any).buyerMicrosoftTenantId as string | null;
+    const mailboxLocation = (deployment as any).mailboxLocation as string | null;
+    const identityTenant = mailboxLocation === "platform" ? null : buyerTenantId;
     try {
-      await deleteAgentIdentity(buyerTenantId ?? null, workspaceUserId);
+      await deleteAgentIdentity(identityTenant ?? null, workspaceUserId);
       // Clear the pointers so the nightly reconciliation job doesn't retry a
       // deletion that already succeeded.
       await prisma.deployment.update({
