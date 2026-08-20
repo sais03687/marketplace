@@ -32,19 +32,23 @@ export default function MemoryPage() {
           return;
         }
         const data = await r.json();
-        if (data.memory === null) {
-          setError(data.message || "No memory available");
-        } else if (typeof data === "object" && data.entries) {
-          setMemory(data.entries);
-        } else if (typeof data === "object" && data.content) {
-          setRawContent(data.content);
+        // The stored snapshot: { "MEMORY.md": "...", "memory/x.md": "..." },
+        // pushed up by the agent. Rendered one card per file.
+        if (data.memory && typeof data.memory === "object") {
+          const entries = Object.entries(data.memory as Record<string, string>).map(
+            ([key, value]) => ({ key, value: String(value ?? "") }),
+          );
+          setMemory(entries);
         } else {
-          setRawContent(JSON.stringify(data, null, 2));
+          // A freshly hired agent has not pushed yet — not an error.
+          setError(
+            "This agent hasn't recorded anything to its memory yet. It syncs a few minutes after it starts working.",
+          );
         }
         setLoading(false);
       })
       .catch(() => {
-        setError("Container unreachable");
+        setError("Could not load memory. Try again in a moment.");
         setLoading(false);
       });
   }, [deploymentId]);

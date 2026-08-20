@@ -737,6 +737,50 @@ def _write_setup_answers(answers: dict, questions: list | None = None) -> bool:
     return True
 
 
+def _read_memory_for_snapshot() -> dict:
+    """MEMORY.md and every memory/*.md - and never PRIVATE.md.
+
+    The exact allowlist /internal/memory serves. PRIVATE.md holds the team
+    roster and internal detail and is excluded at source, so it cannot reach the
+    dashboard even by accident: this function is the only thing that assembles
+    what gets pushed, and it does not look at PRIVATE.md.
+    """
+    files: dict = {}
+    main = WORKSPACE_DIR / "MEMORY.md"
+    if main.exists():
+        files["MEMORY.md"] = main.read_text(encoding="utf-8", errors="replace")
+    mem_dir = WORKSPACE_DIR / "memory"
+    if mem_dir.is_dir():
+        for md in sorted(mem_dir.glob("*.md")):
+            files[f"memory/{md.name}"] = md.read_text(encoding="utf-8", errors="replace")
+    return files
+
+
+async def _push_memory_snapshot() -> None:
+    """Send the agent's memory up so the dashboard can show it.
+
+    The dashboard cannot read the container - Vercel is outside the firewall the
+    container sits behind - so memory reaches it the way approvals do: the agent
+    writes to the platform, authenticated with its deployment token, and the
+    dashboard reads the platform. A snapshot, not a live view; it is refreshed on
+    the same timer as the setup answers.
+    """
+    if not MARKETPLACE_URL or not DEPLOYMENT_ID:
+        return
+    try:
+        snapshot = _read_memory_for_snapshot()
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{MARKETPLACE_URL}/api/deployments/{DEPLOYMENT_ID}/memory",
+                headers={"Authorization": f"Bearer {APPROVAL_TOKEN}"},
+                json={"memory": snapshot},
+            )
+        if resp.status_code >= 400:
+            print(f"[adapter] memory snapshot push: HTTP {resp.status_code}", flush=True)
+    except Exception as e:
+        print(f"[adapter] could not push memory snapshot: {e}", flush=True)
+
+
 async def _sync_setup_answers() -> None:
     """Fetch this deployment's setup answers and fold them into memory.
 
@@ -2686,6 +2730,9 @@ async def _startup():
     async def _setup_answer_loop() -> None:
         while True:
             await _sync_setup_answers()
+            # After the sync, because the sync writes the setup block into
+            # MEMORY.md and the snapshot should carry it.
+            await _push_memory_snapshot()
             await asyncio.sleep(_SETUP_SYNC_INTERVAL_S)
 
     asyncio.create_task(_setup_answer_loop())

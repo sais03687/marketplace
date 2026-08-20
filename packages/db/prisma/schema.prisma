@@ -126,6 +126,13 @@ model Deployment {
   autonomyConfig                Json
   onboardingState               OnboardingState         @default(INTERVIEW)
   onboardingData                Json?
+  // A read-only snapshot of the agent's MEMORY.md + memory/*.md, pushed up by
+  // the agent on a timer so the dashboard can show it. PRIVATE.md is never
+  // included - the agent excludes it at source, the same way /internal/memory
+  // does. Vercel cannot reach a container, so this mirrors how approvals arrive:
+  // the agent writes to the platform, the dashboard reads the platform.
+  memorySnapshot                Json?
+  memorySyncedAt                DateTime?
   approvalWebhookToken          String                  @default(cuid())
   managerEmail                  String?                         @map("weeklyDigestEmail")
   allowedEmails                 Json                    @default("[]")

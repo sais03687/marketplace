@@ -9,18 +9,7 @@ const BASE_TABS = [
   { slug: "", label: "Overview" },
   { slug: "/approvals", label: "Approvals" },
   { slug: "/trust-scores", label: "Trust Scores" },
-  // Memory is hidden, not removed. The page works; the route it depends on does
-  // not: the web app runs on Vercel and reaches the agent through the
-  // provisioning service on port 3003, which is closed to the internet at the
-  // cloud firewall. Every buyer saw "Container unreachable" on a container that
-  // was answering fine, which makes a working product look broken to the first
-  // person who clicks it.
-  //
-  // Approvals reach the agent because the VPS polls the marketplace rather than
-  // being called. Memory would need the same treatment, and it is read-only, so
-  // it is not worth a firewall change on its own. Restore this line when the
-  // route can actually be reached.
-  // { slug: "/memory", label: "Memory" },
+  { slug: "/memory", label: "Memory" },
   { slug: "/knowledge", label: "Knowledge", requiresAgentMind: true },
   { slug: "/settings", label: "Settings" },
 ];
