@@ -411,8 +411,13 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             // matters once you trust the code being vetted (see the container
             // hardening TODO).
             `LLM_API_KEY=${process.env.VET_LLM_API_KEY || "vet-noop"}`,
-            `LLM_BASE_URL=`,
-            `LLM_MODEL=gpt-4o-mini`,
+            // The key, base URL and model must name the SAME provider or auth
+            // fails. When a vetting key is set we default the base URL and model
+            // to the platform's own (so a golden pass reflects what a buyer
+            // actually gets), each overridable with VET_LLM_BASE_URL / _MODEL for
+            // a cheaper or rate-limited vetting endpoint.
+            `LLM_BASE_URL=${process.env.VET_LLM_BASE_URL || (process.env.VET_LLM_API_KEY ? process.env.LLM_BASE_URL || "" : "")}`,
+            `LLM_MODEL=${process.env.VET_LLM_MODEL || (process.env.VET_LLM_API_KEY ? process.env.LLM_MODEL || "gpt-4o-mini" : "gpt-4o-mini")}`,
             // The gateway authenticates /hooks/* — without this the harness's own
             // probes below would 503 and every package would fail vetting.
             `AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}`,
