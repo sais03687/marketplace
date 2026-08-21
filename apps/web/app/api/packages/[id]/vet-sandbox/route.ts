@@ -31,10 +31,13 @@ export async function POST(
   // Parse optional custom test config from body
   let customTests: unknown[] | undefined;
   let skipDefaultTests = false;
+  let interactiveMessage: string | undefined;
   try {
     const body = await req.json().catch(() => ({}));
     customTests = Array.isArray(body?.customTests) ? body.customTests : undefined;
     skipDefaultTests = body?.skipDefaultTests === true;
+    interactiveMessage = typeof body?.interactiveMessage === "string" && body.interactiveMessage.trim()
+      ? body.interactiveMessage : undefined;
   } catch { /* no body — fine */ }
 
   const queue = getProvisioningQueue();
@@ -43,6 +46,7 @@ export async function POST(
     versionId,
     customTests,
     skipDefaultTests,
+    interactiveMessage,
   } as any);
 
   await prisma.agentVersion.update({

@@ -16,7 +16,7 @@ export interface CustomTest {
 
 export type ProvisionJobData =
   | { type: "provision" | "deprovision" | "update" | "pause" | "resume"; deploymentId: string }
-  | { type: "vet_package"; versionId: string; customTests?: CustomTest[]; skipDefaultTests?: boolean }
+  | { type: "vet_package"; versionId: string; customTests?: CustomTest[]; skipDefaultTests?: boolean; interactiveMessage?: string }
   | { type: "renew_ms_webhooks" }
   | { type: "cleanup_ms_users" };
 

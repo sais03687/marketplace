@@ -183,10 +183,13 @@ function elapsed(startMs: number): string {
 interface VetJobOptions {
   customTests?: CustomTest[];
   skipDefaultTests?: boolean;
+  /** A reviewer's manual test message. When set, the sandbox sends it to the
+   *  agent via /internal/run-sync and records the real reply for the report. */
+  interactiveMessage?: string;
 }
 
 export async function vetPackageJob(versionId: string, opts: VetJobOptions = {}): Promise<void> {
-  const { customTests = [], skipDefaultTests = false } = opts;
+  const { customTests = [], skipDefaultTests = false, interactiveMessage } = opts;
   console.log(`[vet-package] Starting vetting for version ${versionId}`);
 
   const agentVersion = await prisma.agentVersion.findUnique({
@@ -725,10 +728,46 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           if (!allPassed) report.overallStatus = "fail";
         }
 
-        // Correctness is judged by a human, not an automated gate. The vet
-        // container runs a real model (see the LLM_* env above) so a reviewer can
-        // send it tasks and read the real answers from the admin Sandbox tab -
-        // /internal/run-sync is what returns those replies synchronously.
+        // Manual review: a reviewer sends the agent a task and reads its real
+        // answer. Correctness is a human call, not an automated gate - so this
+        // records the reply, it never pass/fails the version. /internal/run-sync
+        // returns the composed reply synchronously (the normal path fires async
+        // and emails it, which goes nowhere in a sandbox). Needs a real model, so
+        // absent VET_LLM_API_KEY it reports that the sandbox has no model to test
+        // against rather than showing a vet-noop stub.
+        if (interactiveMessage && interactiveMessage.trim()) {
+          if (!process.env.VET_LLM_API_KEY) {
+            report.steps.push({
+              name: "Manual test",
+              status: "skip",
+              detail: "no vetting model configured — set VET_LLM_API_KEY to test the agent's real answers",
+            });
+          } else {
+            try {
+              const res = await runFetch(`${base}/internal/run-sync`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "x-deployment-token": VET_HOOKS_TOKEN },
+                body: JSON.stringify({ message: interactiveMessage }),
+                signal: AbortSignal.timeout(180_000),
+              }, 200);
+              let reply = "";
+              try { reply = (JSON.parse(res.responseBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
+              report.steps.push({
+                name: "Manual test",
+                status: reply.trim() ? "pass" : "fail",
+                detail: reply.trim() ? "agent replied" : "agent returned no reply",
+                logLines: [`> ${interactiveMessage}`, "", reply || "(no reply)"],
+              });
+            } catch (e: any) {
+              report.steps.push({
+                name: "Manual test",
+                status: "fail",
+                detail: `run failed: ${e.message}`,
+                logLines: [`> ${interactiveMessage}`],
+              });
+            }
+          }
+        }
       }
     }
   } catch (e: any) {

@@ -714,6 +714,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
   const [skipDefaultTests, setSkipDefaultTests] = useState(false);
   const [drafts, setDrafts] = useState<TestDraft[]>([]);
   const [viewMode, setViewMode] = useState<"pretty" | "terminal">("pretty");
+  const [testMessage, setTestMessage] = useState("");
 
   const isCustom = runtime === "CUSTOM";
 
@@ -775,6 +776,31 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
     }
   }, [versionId, drafts, skipDefaultTests]);
 
+  // Manual review: send the agent one task, boot a fresh sandbox, and read its
+  // real reply. Skips the built-in tests so the run focuses on the answer.
+  const runTest = useCallback(async () => {
+    if (!testMessage.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/packages/${versionId}/vet-sandbox`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interactiveMessage: testMessage, skipDefaultTests: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Failed to queue test"); return; }
+      setReport({ status: "queued", queuedAt: new Date().toISOString() });
+      setPolling(true);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }, [versionId, testMessage]);
+
+  const manualStep = report?.steps?.find((st) => st.name === "Manual test");
+
   const isRunning = report?.status === "queued" || report?.status === "running";
   const hasDone = report?.steps && report.steps.length > 0;
 
@@ -813,6 +839,50 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
           </Button>
         </div>
       </div>
+
+      {/* Test the agent — manual review. Send a task, read the real answer. */}
+      {isCustom && (
+        <div className="rounded border p-3 space-y-2 bg-muted/20">
+          <div>
+            <p className="text-xs font-medium">Test the agent</p>
+            <p className="text-[11px] text-muted-foreground">
+              Send the agent a task and read its real answer. Correctness is your call — this
+              never passes or fails the version. Boots a fresh sandbox each run (~1 min).
+            </p>
+          </div>
+          <textarea
+            value={testMessage}
+            onChange={(e) => setTestMessage(e.target.value)}
+            disabled={isRunning}
+            rows={3}
+            placeholder={"e.g. Total the revenue: North 120000, South 80000, East 145000 — what's the total and which region is highest?"}
+            className="w-full rounded border bg-background p-2 text-xs font-mono"
+          />
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={runTest}
+              disabled={loading || isRunning || !testMessage.trim()}
+            >
+              {isRunning ? "Running…" : "Send to agent"}
+            </Button>
+          </div>
+          {manualStep && !isRunning && (
+            <div className="rounded border bg-background p-2">
+              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Agent reply
+                {manualStep.status === "skip" && <span className="ml-1 text-yellow-600">(no model configured)</span>}
+                {manualStep.status === "fail" && <span className="ml-1 text-destructive">(failed)</span>}
+              </p>
+              <pre className="whitespace-pre-wrap break-words text-xs">
+                {manualStep.status === "skip"
+                  ? manualStep.detail
+                  : (manualStep.logLines?.join(String.fromCharCode(10)) ?? manualStep.detail)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Config panel */}
       {showConfig && isCustom && (

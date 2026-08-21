@@ -34,6 +34,7 @@ async function processJob(job: Job<ProvisionJobData>): Promise<void> {
       await vetPackageJob(job.data.versionId, {
         customTests: job.data.customTests,
         skipDefaultTests: job.data.skipDefaultTests,
+        interactiveMessage: job.data.interactiveMessage,
       });
       break;
     }
