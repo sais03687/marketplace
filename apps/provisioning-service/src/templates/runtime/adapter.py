@@ -4845,6 +4845,77 @@ def _record_running_version(version: str | None) -> None:
         print(f"[adapter] could not record running version: {e}", flush=True)
 
 
+class RunSyncPayload(BaseModel):
+    message: str
+    thread_id: str | None = None
+
+
+@app.post("/internal/run-sync")
+async def run_sync(body: RunSyncPayload, request: Request):
+    """Run one message to completion and return the reply text.
+
+    Vetting needs to check that an agent gives the *right* answer, not just that
+    it boots. The normal path fires the run with asyncio.create_task and returns
+    202 immediately, then emails the reply - which goes nowhere in a sandbox. So
+    this runs the graph inline and hands the composed reply straight back.
+
+    Vetting-only. It builds a synthetic manager context and a "never ask" policy
+    so a pure analysis-and-reply run completes without waiting on a human; a task
+    that tries to upload or share still interrupts (those are the graph's own
+    gates), and its draft is returned so the check can still see the figures.
+    """
+    _require_internal_auth(request)
+
+    thread_id = body.thread_id or f"vet:sync:{uuid.uuid4().hex[:8]}"
+    context = {
+        "agent_name": AGENT_NAME,
+        "agent_email": AGENT_EMAIL,
+        "company_name": COMPANY_NAME,
+        "company_domain": COMPANY_DOMAIN,
+        "manager_email": MANAGER_EMAIL,
+        "sender": MANAGER_EMAIL,
+        "hook_name": "vetting",
+        "session_key": thread_id,
+        # No human is watching a vetting run; do not wait on one.
+        "approval_policy": {"policy": "never"},
+    }
+    begin_run(thread_id)
+    try:
+        result = await run_agent(
+            content=body.message,
+            context=context,
+            contribute_fn=contribute_knowledge,
+            search_fn=search_knowledge,
+            use_fn=report_usage,
+            graph_fn=graph_request,
+            thread_id=thread_id,
+            **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
+            file_resolver_fn=resolve_sandbox_file,
+            file_registrar_fn=_register_inbound_file,
+            file_describer_fn=describe_file_shape,
+            verify_fn=verify_deliverables,
+            ranking_fn=check_rankings_against_file,
+            headline_fn=check_headline_against_summary,
+            verify_attempts=0,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"run failed: {e}"}
+
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "agent returned a non-dict result"}
+
+    # The composed reply, however the run ended. An interrupted run (it tried to
+    # upload) still carries its draft, which holds the figures the check wants.
+    text = result.get("text") or ""
+    if not text and result.get("status") == "__interrupted__":
+        for it in result.get("interrupts") or []:
+            text = (it.get("params") or {}).get("text") or it.get("reasoning") or ""
+            if text:
+                break
+
+    return {"ok": True, "action": result.get("action"), "text": text}
+
+
 class UpdateSkillsPayload(BaseModel):
     # path -> base64 of the file's bytes, relative to /agent/. Base64 because a
     # package carries binary as readily as source, and update.ts has always sent

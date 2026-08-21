@@ -28,7 +28,15 @@ def _call_sites():
             window = "\n".join(src.splitlines()[max(0, node.lineno - 40):node.lineno])
             sites.append({
                 "line": node.lineno,
-                "channel": "teams" if 'f"teams:' in window else "email",
+                "channel": (
+                    "teams" if 'f"teams:' in window
+                    # The vetting sync path is a third channel: no human waits,
+                    # and a golden task should see the agent's genuine first
+                    # answer, so verify_attempts=0 is correct there, not a
+                    # regression of the email rebuild budget.
+                    else "vetting" if '"hook_name": "vetting"' in window
+                    else "email"
+                ),
                 "verify_fn": "verify_fn" in kw,
                 "attempts": (ast.unparse(kw["verify_attempts"].value)
                              if "verify_attempts" in kw else None),
@@ -45,7 +53,8 @@ def test_every_run_gets_the_deliverable_check():
 
 def test_at_least_one_call_site_per_channel_is_covered():
     channels = {s["channel"] for s in _call_sites()}
-    assert channels == {"email", "teams"}
+    # vetting joined email and teams when /internal/run-sync was added.
+    assert channels == {"email", "teams", "vetting"}
 
 
 def test_chat_measures_but_never_loops():

@@ -403,7 +403,14 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `MANAGER_EMAIL=manager@vet.internal`,
             `APPROVAL_POLICY=always`,
             `MODEL=standard`,
-            `LLM_API_KEY=vet-noop`,
+            // vet-noop by default: with no real key the agent cannot reason,
+            // so golden tasks are skipped and the container holds no secret -
+            // which is why its logs are safe to show the creator. Set
+            // VET_LLM_API_KEY to run golden tasks; it is a dedicated,
+            // rate-limitable vetting key, not the platform runtime key, and only
+            // matters once you trust the code being vetted (see the container
+            // hardening TODO).
+            `LLM_API_KEY=${process.env.VET_LLM_API_KEY || "vet-noop"}`,
             `LLM_BASE_URL=`,
             `LLM_MODEL=gpt-4o-mini`,
             // The gateway authenticates /hooks/* — without this the harness's own
@@ -710,6 +717,71 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             logLines: testLogs,
           });
           if (!allPassed) report.overallStatus = "fail";
+        }
+
+        // ── Golden tasks: does the agent give the RIGHT answer? ────────────
+        //
+        // Every other step checks the agent RUNS. This checks it is CORRECT: the
+        // creator ships tests/golden.json - [{ name, input, expect }] - and each
+        // input is run to completion through /internal/run-sync, then the reply
+        // is checked for the expected string(s). This is the only gate that
+        // would catch a plausible agent that returns wrong numbers.
+        //
+        // Needs a real model. With LLM_API_KEY=vet-noop the agent cannot reason,
+        // so absent VET_LLM_API_KEY the step is skipped rather than failed - a
+        // missing model is an operator choice, not a bad package.
+        let golden: Array<{ name?: string; input?: string; expect?: unknown }> = [];
+        try {
+          const gp = join(packageDir!, "tests", "golden.json");
+          if (existsSync(gp)) golden = JSON.parse(readFileSync(gp, "utf-8"));
+        } catch (e: any) {
+          report.steps.push({ name: "Golden tasks", status: "fail", detail: `tests/golden.json is not valid JSON: ${e.message}` });
+          report.overallStatus = "fail";
+        }
+
+        if (Array.isArray(golden) && golden.length > 0 && !report.steps.some((st) => st.name === "Golden tasks")) {
+          if (!process.env.VET_LLM_API_KEY) {
+            report.steps.push({
+              name: "Golden tasks",
+              status: "skip",
+              detail: `${golden.length} defined — skipped: no vetting model configured (set VET_LLM_API_KEY)`,
+            });
+          } else {
+            const gLogs: string[] = [];
+            let gPassed = 0;
+            for (const g of golden) {
+              const name = g.name || (g.input || "").slice(0, 40);
+              const expects = Array.isArray(g.expect) ? g.expect : [g.expect];
+              try {
+                const res = await runFetch(`${base}/internal/run-sync`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "x-deployment-token": VET_HOOKS_TOKEN },
+                  body: JSON.stringify({ message: g.input || "" }),
+                  signal: AbortSignal.timeout(180_000),
+                }, 200);
+                let reply = "";
+                try { reply = (JSON.parse(res.responseBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
+                const missing = expects.filter((e) => e != null && !reply.toLowerCase().includes(String(e).toLowerCase()));
+                if (missing.length === 0) {
+                  gPassed++;
+                  gLogs.push(`→ ${name}  pass`);
+                } else {
+                  gLogs.push(`→ ${name}  FAIL — reply did not contain: ${missing.join(", ")}`);
+                  gLogs.push(`   reply: ${reply.slice(0, 300)}`);
+                }
+              } catch (e: any) {
+                gLogs.push(`→ ${name}  FAIL — run error: ${e.message}`);
+              }
+            }
+            const allGood = gPassed === golden.length;
+            report.steps.push({
+              name: "Golden tasks",
+              status: allGood ? "pass" : "fail",
+              detail: `${gPassed}/${golden.length} correct`,
+              logLines: gLogs,
+            });
+            if (!allGood) report.overallStatus = "fail";
+          }
         }
       }
     }

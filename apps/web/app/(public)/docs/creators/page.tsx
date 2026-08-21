@@ -598,6 +598,49 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
           ]}
         />
 
+        <H3 id="golden-tasks">Golden tasks — proving the answer is right</H3>
+        <P>
+          The tests above check that your agent <em>runs</em>. A <Code>tests/golden.json</Code>
+          file checks that it is <em>correct</em>: each entry is a real task and the answer the
+          reply must contain. Vetting runs every one to completion and fails if the reply does
+          not contain the expected string. This is the strongest signal you can send — and the
+          only check that catches an agent that runs cleanly but returns the wrong number.
+        </P>
+        <Pre>{`// tests/golden.json
+[
+  {
+    "name": "Sums a small revenue table",
+    "input": "Total the revenue below and tell me the total.
+region,revenue
+North,120000
+South,80000",
+    "expect": "200000"
+  },
+  {
+    "name": "Picks the highest region",
+    "input": "Which region has the highest revenue?
+North,120000
+South,80000
+East,145000",
+    "expect": ["East", "145000"]
+  }
+]`}</Pre>
+        <Table
+          headers={["Field", "Type", "Required", "Notes"]}
+          rows={[
+            ["name", "string", "No", "Shown in the vetting report; the input is used if omitted"],
+            ["input", "string", "Yes", "The message sent to your agent, exactly as a user would"],
+            ["expect", "string or string[]", "Yes", "The reply must contain this (case-insensitive). An array requires all of them."],
+          ]}
+        />
+        <Note>
+          Golden tasks need a model to run, so they are only executed when the platform has a
+          vetting model configured. If it does not, they are reported as skipped rather than
+          failed — a missing model is never counted against your package. Keep each task self-
+          contained (paste any data into the input); a task that needs a SharePoint upload will
+          pause for approval and cannot be scored automatically.
+        </Note>
+
         <Warning>
           Custom tests must pass <Code>HTTP 200</Code> from the hook endpoint — that is the only
           thing the sandbox verifies automatically. Whether the <em>content</em> of the response

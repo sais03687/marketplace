@@ -44,7 +44,10 @@ def test_the_vet_container_gets_no_real_secret():
     src = io.open(VET, encoding="utf-8").read()
     env = src[src.index("const envVars = ["):]
     env = env[: env.index("];")]
-    assert "LLM_API_KEY=vet-noop" in env
+    # The LLM key is opt-in now: vet-noop unless an operator sets VET_LLM_API_KEY
+    # to run golden tasks. Either way it is a dedicated vetting key, never the
+    # platform runtime key or an infrastructure secret.
+    assert 'process.env.VET_LLM_API_KEY || "vet-noop"' in env
     assert "ANTHROPIC_API_KEY=vet-noop" in env
     # The hooks token is random per run, not the platform secret.
     assert "AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}" in env
@@ -52,10 +55,14 @@ def test_the_vet_container_gets_no_real_secret():
     # not the platform secret - so its presence is safe. The property that
     # matters is that no line pulls a *real* secret into the vet env.
     import re
+    # The only host-env value allowed into the vet container is the opt-in
+    # vetting LLM key. Anything else read from process.env would be a leak.
     for line in env.splitlines():
-        assert "process.env." not in line, (
-            "the vet container must never receive a value read from the host env"
-        )
+        if "process.env." in line:
+            assert "VET_LLM_API_KEY" in line, (
+                f"the vet container reads a host-env value other than the vetting "
+                f"LLM key: {line.strip()}"
+            )
     assert "config.microsoftClientSecret" not in env
     assert "config.approvalWebhookToken" not in env
     assert "config.provisioningSecret" not in env
@@ -64,7 +71,10 @@ def test_the_vet_container_gets_no_real_secret():
         m = re.search(r"(TOKEN|SECRET|KEY|CLIENT)=([^`,]*)", line)
         if m:
             val = m.group(2).strip()
-            assert val in ("vet-noop", "${VET_HOOKS_TOKEN}", ""), (
+            allowed = ("vet-noop", "${VET_HOOKS_TOKEN}", "")
+            # The LLM key's opt-in form resolves to vet-noop by default.
+            is_optin_llm = "VET_LLM_API_KEY" in val and "vet-noop" in val
+            assert val in allowed or is_optin_llm, (
                 f"credential var set to something real: {line.strip()}"
             )
 
