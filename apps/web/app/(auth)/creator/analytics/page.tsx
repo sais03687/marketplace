@@ -6,12 +6,21 @@ import { BarChart3, Users, DollarSign, TrendingUp, Loader2, Wallet } from "lucid
 import { formatPrice } from "@/lib/utils";
 import Link from "next/link";
 
+interface Outcomes {
+  approved: number;
+  edited: number;
+  rejected: number;
+  expired: number;
+  pending: number;
+}
+
 interface AnalyticsData {
   totalDeployments: number;
   activeDeployments: number;
   mrr: number;
   approvalRate: number;
   totalApprovals: number;
+  outcomes: Outcomes;
   perAgent: Array<{
     slug: string;
     name: string;
@@ -19,6 +28,8 @@ interface AnalyticsData {
     totalDeployments: number;
     mrr: number;
     approvalCount: number;
+    outcomes: Outcomes;
+    topRejectedTasks: Array<{ taskType: string; count: number }>;
   }>;
 }
 
@@ -144,6 +155,47 @@ export default function AnalyticsPage() {
         </Card>
       </div>
 
+      {/* How buyers respond — the quality feedback loop. Approved / edited /
+          rejected / expired across all deployments. Aggregate only: no buyer
+          text ever reaches the creator, only counts of how their agents' actions
+          landed. */}
+      {data.outcomes && (data.outcomes.approved + data.outcomes.edited + data.outcomes.rejected + data.outcomes.expired) > 0 && (
+        <Card className="mt-6">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">How buyers respond to your agents</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const o = data.outcomes;
+              const decided = o.approved + o.edited + o.rejected;
+              const seg = (n: number) => (decided > 0 ? `${(n / decided) * 100}%` : "0%");
+              return (
+                <>
+                  <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
+                    <div className="bg-green-500" style={{ width: seg(o.approved) }} title={`Approved: ${o.approved}`} />
+                    <div className="bg-amber-500" style={{ width: seg(o.edited) }} title={`Edited: ${o.edited}`} />
+                    <div className="bg-red-500" style={{ width: seg(o.rejected) }} title={`Rejected: ${o.rejected}`} />
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                    <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-green-500" /> Approved <b>{o.approved}</b></span>
+                    <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> Edited <b>{o.edited}</b></span>
+                    <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Rejected <b>{o.rejected}</b></span>
+                    {o.expired > 0 && (
+                      <span className="flex items-center gap-1.5 text-muted-foreground"><span className="h-2.5 w-2.5 rounded-full bg-muted-foreground/40" /> Expired <b>{o.expired}</b></span>
+                    )}
+                  </div>
+                  <p className="mt-3 text-xs text-muted-foreground">
+                    Edited means a buyer sent your agent&apos;s action after changing it; rejected means they declined it.
+                    A high edit or reject rate on a task type is a sign the agent&apos;s output needs work.
+                    {o.expired > 0 && " Expired approvals timed out unanswered — often a sign the agent asks too often."}
+                  </p>
+                </>
+              );
+            })()}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Recent payouts summary */}
       {payoutData?.payouts && payoutData.payouts.length > 0 && (
         <Card className="mt-6">
@@ -183,6 +235,8 @@ export default function AnalyticsPage() {
                     <th className="pb-2 font-medium text-right">Total</th>
                     <th className="pb-2 font-medium text-right">MRR</th>
                     <th className="pb-2 font-medium text-right">Approvals</th>
+                    <th className="pb-2 font-medium text-right">Edited</th>
+                    <th className="pb-2 font-medium text-right">Rejected</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -205,6 +259,21 @@ export default function AnalyticsPage() {
                       </td>
                       <td className="py-2 text-right">
                         {agent.approvalCount}
+                      </td>
+                      <td className="py-2 text-right">
+                        {agent.outcomes?.edited
+                          ? <span className="text-amber-600">{agent.outcomes.edited}</span>
+                          : <span className="text-muted-foreground">0</span>}
+                      </td>
+                      <td className="py-2 text-right">
+                        {agent.outcomes?.rejected
+                          ? <span className="text-red-600">{agent.outcomes.rejected}</span>
+                          : <span className="text-muted-foreground">0</span>}
+                        {agent.topRejectedTasks && agent.topRejectedTasks.length > 0 && (
+                          <div className="text-xs font-normal text-muted-foreground">
+                            {agent.topRejectedTasks.map((t) => `${t.taskType} (${t.count})`).join(", ")}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   ))}
