@@ -642,10 +642,12 @@ East,145000",
         </Note>
 
         <Warning>
-          Custom tests must pass <Code>HTTP 200</Code> from the hook endpoint — that is the only
-          thing the sandbox verifies automatically. Whether the <em>content</em> of the response
-          matches <Code>expectedBehavior</Code> is assessed by the reviewer reading the response
-          body in the sandbox report. The sandbox is a bootability check, not a behavioral evaluator.
+          These custom <Code>tests.json</Code> tests only check that the hook endpoint returns
+          <Code>HTTP 200</Code>. Whether the <em>content</em> of the response matches
+          <Code>expectedBehavior</Code> is assessed by the reviewer reading the response body in
+          the sandbox report. To check the <em>answer</em> automatically — that the agent returns
+          the right number, not just a 200 — use <Code>tests/golden.json</Code> above, which runs
+          each task to completion and fails the version on a wrong answer.
         </Warning>
 
         <P>
