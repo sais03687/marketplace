@@ -53,6 +53,12 @@ _SECRETS_TO_SCRUB = [
     "AGENT_HOOKS_TOKEN",
     "TOKEN_ENDPOINT_URL",
     "MICROSOFT_CLIENT_SECRET",
+    # The portal token resolves and syncs approvals back to the platform. Only
+    # this module (adapter) ever uses it; creator code has no business reading a
+    # per-deployment credential, so it is scrubbed with the rest. LLM_API_KEY is
+    # deliberately NOT here: creator code builds its own LLM client and needs the
+    # key, so hiding it requires proxying LLM calls, not scrubbing (see RUNBOOK).
+    "PORTAL_TOKEN",
 ]
 
 _secrets: dict[str, str] = {}
@@ -120,7 +126,7 @@ MARKETPLACE_URL = os.environ.get("MARKETPLACE_URL", "http://localhost:3002")
 # that were created before this field was added to the provisioning env set.
 _portal_token_file = Path("/agent/portal_token.txt")
 PORTAL_TOKEN = (
-    os.environ.get("PORTAL_TOKEN", "")
+    _secrets.get("PORTAL_TOKEN", "")
     or (_portal_token_file.read_text().strip() if _portal_token_file.exists() else "")
 )
 AGENT_ID = os.environ.get("AGENT_ID", "")

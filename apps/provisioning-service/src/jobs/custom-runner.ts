@@ -311,6 +311,15 @@ export async function spawnCustomAgent(
         NanoCpus: 1_000_000_000,           // 1 CPU core
         PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
         SecurityOpt: ["no-new-privileges"],
+        // Drop every Linux capability. The agent is a Python HTTP server that
+        // reads/writes files and makes outbound calls through the proxy - none of
+        // which need a privileged kernel operation (raw sockets, mount, arbitrary
+        // chown, binding <1024). It binds 4000, well above the privileged range.
+        // The MCP sidecar, same base, has run with CapDrop:["ALL"] since it
+        // shipped, so this is proven compatible, not speculative. It shrinks the
+        // blast radius of a bug in creator code or a dependency from "root inside
+        // a container" to "an unprivileged process".
+        CapDrop: ["ALL"],
         // Kept so name resolution matches the platform's URLs, but it no longer
         // grants a path: an Internal network has no route to the host gateway.
         // Traffic to the platform goes through the netgate like everything else.
