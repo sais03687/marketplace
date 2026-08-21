@@ -756,6 +756,33 @@ def _read_memory_for_snapshot() -> dict:
     return files
 
 
+_HEARTBEAT_INTERVAL_S = float(os.environ.get("HEARTBEAT_INTERVAL_S", 60))
+
+
+async def _send_heartbeat() -> None:
+    """Tell the platform the agent is alive.
+
+    A short-timer post so the dashboard can show Online and a check can alert on
+    silence. Cheap and frequent: the timestamp is the signal. Failures here are
+    swallowed - a heartbeat that cannot be sent is itself the thing being
+    detected, from the other side.
+    """
+    if not MARKETPLACE_URL or not DEPLOYMENT_ID:
+        return
+    try:
+        llm_ok = await _check_llm_health()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"{MARKETPLACE_URL}/api/deployments/{DEPLOYMENT_ID}/heartbeat",
+                headers={"Authorization": f"Bearer {APPROVAL_TOKEN}"},
+                json={"ok": bool(llm_ok)},
+            )
+    except Exception:
+        # Deliberately silent. If the agent cannot reach the platform, the
+        # platform's own staleness check is what notices.
+        pass
+
+
 async def _push_memory_snapshot() -> None:
     """Send the agent's memory up so the dashboard can show it.
 
@@ -2736,6 +2763,14 @@ async def _startup():
             await asyncio.sleep(_SETUP_SYNC_INTERVAL_S)
 
     asyncio.create_task(_setup_answer_loop())
+
+    # Liveness on its own faster timer, separate from the 10-minute memory sync.
+    async def _heartbeat_loop() -> None:
+        while True:
+            await _send_heartbeat()
+            await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+
+    asyncio.create_task(_heartbeat_loop())
 
 
 # ─── Google SA email (informational context only) ────────────────────────────

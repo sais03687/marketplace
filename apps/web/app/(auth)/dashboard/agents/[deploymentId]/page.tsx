@@ -46,12 +46,72 @@ interface Deployment {
   agentVersion: string;
   status: string;
   onboardingState: string;
+  lastHeartbeatAt: string | null;
   pauseReason: string | null;
   autoUpdate: boolean;
   agent: Agent;
   _count: { approvals: number };
   updateAvailable: boolean;
   workspaceEmail: string | null;
+}
+
+// A live view of whether the agent is actually responding, distinct from its
+// lifecycle status. An ACTIVE deployment whose container has died still reads
+// ACTIVE - the status is what the platform intends, the heartbeat is what is
+// true. "Online" means it checked in within the last few minutes; a silence
+// longer than that is the failure this exists to surface.
+function timeAgo(iso: string): string {
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 90) return "just now";
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+function LiveHealth({
+  status,
+  lastHeartbeatAt,
+}: {
+  status: string;
+  lastHeartbeatAt: string | null;
+}) {
+  // Only meaningful for an agent that is supposed to be running.
+  if (status !== "ACTIVE" && status !== "ONBOARDING") return null;
+
+  if (!lastHeartbeatAt) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground"
+        title="No heartbeat received yet"
+      >
+        <span className="h-2 w-2 rounded-full bg-muted-foreground/50" />
+        Waiting for first check-in
+      </span>
+    );
+  }
+
+  const ageMs = Date.now() - new Date(lastHeartbeatAt).getTime();
+  // Heartbeat is every 60s; three misses is the threshold for "something is
+  // wrong" rather than "a beat was late".
+  const online = ageMs < 3 * 60 * 1000;
+
+  return online ? (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700"
+      title={`Last check-in ${timeAgo(lastHeartbeatAt)}`}
+    >
+      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+      Online
+    </span>
+  ) : (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700"
+      title={`Last check-in ${timeAgo(lastHeartbeatAt)} — the agent may be down`}
+    >
+      <span className="h-2 w-2 rounded-full bg-red-500" />
+      Not responding · last seen {timeAgo(lastHeartbeatAt)}
+    </span>
+  );
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -204,9 +264,15 @@ export default function AgentOverviewPage({
             )}
           </p>
         </div>
-        <Badge className={STATUS_COLORS[deployment.status] || ""}>
-          {deployment.status}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <LiveHealth
+            status={deployment.status}
+            lastHeartbeatAt={deployment.lastHeartbeatAt}
+          />
+          <Badge className={STATUS_COLORS[deployment.status] || ""}>
+            {deployment.status}
+          </Badge>
+        </div>
       </div>
 
       {/* Pause reason banner */}

@@ -133,6 +133,13 @@ model Deployment {
   // the agent writes to the platform, the dashboard reads the platform.
   memorySnapshot                Json?
   memorySyncedAt                DateTime?
+  // Liveness. The agent posts a heartbeat on a short timer; the dashboard
+  // shows Online when it is recent and Not responding when it is stale, and a
+  // periodic check alerts the manager if it goes quiet. This is how a silent
+  // failure - a dead container, a stalled poller - becomes visible.
+  lastHeartbeatAt               DateTime?
+  lastHeartbeatOk               Boolean?
+  heartbeatAlertedAt            DateTime?
   approvalWebhookToken          String                  @default(cuid())
   managerEmail                  String?                         @map("weeklyDigestEmail")
   allowedEmails                 Json                    @default("[]")
