@@ -296,6 +296,63 @@ _soul_md = (_here / "SOUL.md").read_text() if (_here / "SOUL.md").exists() else 
 _memory_md = (_here / "MEMORY.md").read_text() if (_here / "MEMORY.md").exists() else ""
 _private_md = (_here / "PRIVATE.md").read_text() if (_here / "PRIVATE.md").exists() else ""
 
+
+# ── Learning: the agent writes what it discovers into its own memory ─────────
+#
+# MEMORY.md was read once at import and never written back, so the agent could
+# not record anything it learned while working - "Acme's fiscal year ends in
+# March", "the CFO wants charts not tables", "the Q3 file lives in
+# Finance/Quarterly". The `remember` action gives it that, into a Learned
+# section kept apart from the setup answers so the two never clobber each other,
+# deduplicated and capped so it does not fill with noise. The in-process copy is
+# refreshed on write so this run and the next actually see the new fact.
+_LEARNED_START = "<!-- learned:start -->"
+_LEARNED_END = "<!-- learned:end -->"
+_MAX_LEARNED = 60
+
+
+def _remember(note: str) -> bool:
+    """Record a durable fact in MEMORY.md. True if it was new."""
+    global _memory_md
+    note = " ".join((note or "").split()).strip()
+    if not note:
+        return False
+    path = _here / "MEMORY.md"
+    try:
+        current = path.read_text(encoding="utf-8") if path.exists() else ""
+    except Exception:
+        return False
+
+    entries: list[str] = []
+    if _LEARNED_START in current and _LEARNED_END in current:
+        inner = current[current.index(_LEARNED_START) + len(_LEARNED_START):current.index(_LEARNED_END)]
+        entries = [ln.strip()[2:].strip() for ln in inner.splitlines() if ln.strip().startswith("- ")]
+
+    if any(note.lower() == e.lower() for e in entries):
+        return False  # already known
+    entries.append(note)
+    entries = entries[-_MAX_LEARNED:]
+
+    rendered = (
+        _LEARNED_START + chr(10) + chr(10)
+        + "## Learned while working" + chr(10) + chr(10)
+        + chr(10).join(f"- {e}" for e in entries) + chr(10) + chr(10)
+        + _LEARNED_END
+    )
+    if _LEARNED_START in current and _LEARNED_END in current:
+        head = current[:current.index(_LEARNED_START)]
+        tail = current[current.index(_LEARNED_END) + len(_LEARNED_END):]
+        updated = head + rendered + tail
+    else:
+        updated = current.rstrip() + chr(10) + chr(10) + rendered + chr(10)
+
+    try:
+        path.write_text(updated, encoding="utf-8")
+    except Exception:
+        return False
+    _memory_md = updated
+    return True
+
 # MCP_TOOLS.md is written dynamically by the adapter at startup
 _mcp_tools_md = (_here / "MCP_TOOLS.md").read_text() if (_here / "MCP_TOOLS.md").exists() else ""
 
@@ -698,7 +755,7 @@ Produce a JSON response (no markdown fences):
   "plan": "Overall plan for this task (update if needed)",
   "completed": <true if the task is fully done and the final response is ready>,
   "action": {{
-    "type": "send_email | reply_email | inbox_list | inbox_read | inbox_search | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_fetch | drive_list | drive_upload | drive_share | drive_create_link | my_drive_list | my_drive_read | my_drive_search | my_drive_upload | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_list | calendar_create | request_decision | none",
+    "type": "send_email | reply_email | inbox_list | inbox_read | inbox_search | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_fetch | drive_list | drive_upload | drive_share | drive_create_link | my_drive_list | my_drive_read | my_drive_search | my_drive_upload | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_list | calendar_create | request_decision | remember | none",
     "params": {{
       // For send_email/reply_email:
       "to": "recipient email",
@@ -827,6 +884,8 @@ Produce a JSON response (no markdown fences):
 - If the question has more than one defensible answer — "top performer" over revenue, growth and margin is three different people — give one, name the metric you used in the sentence, and say the answer changes under the others. Never choose silently and present it as the answer.
 - If you cannot find data on SharePoint after trying BOTH drive_list AND drive_search, say so in your reply and ask the manager where to find it.
 - request_decision BLOCKS until the manager responds — only use it when you genuinely need their input
+- Use `remember` to record something durable you have learned about this company that will help future tasks: how their data is organised ("the Q3 file is always in Finance/Quarterly"), a standing preference ("the CFO wants charts, not tables"), a recurring correction ("we count revenue net of refunds"), a fact about their calendar or structure ("their fiscal year ends in March"). Emit `remember` with a single clear sentence in `fact`. It writes to your memory and needs no approval — nothing leaves the company. Do this when you notice a fact you would want to know next time, not as a routine step.
+- Do NOT `remember` one-off task details, the contents of this specific request, transient numbers, or anything you would not want to still believe in six months. Memory is for what stays true. And never put someone's private contact details or internal-only information into `remember` — that belongs in the manager's hands, not your general memory.
 - When the user explicitly asks you to perform an action (write, upload, append, delete), DO IT DIRECTLY. Do not email the user back to ask for the file, do not use request_decision to clarify, and do not take detours. Execute the requested action using the tools available to you. If the action is blocked, the approval system will handle it automatically.
 - "type" MUST be one of the action types listed above, exactly as spelled. Never invent one, and never wrap a real action inside another. There is no approval wrapper action: to share a file you emit drive_share itself, with its own params. Asking for permission is not something you do — emit the action you want, and if it needs a human the platform pauses it, asks them, and resumes you automatically. An invented type does nothing at all, so the person waiting on you gets silence.
 - If an action fails (e.g., email bounce, API error), do NOT spiral into retries or request_decision loops. Report the error in your reply and move on.
@@ -1547,6 +1606,18 @@ async def execute_action(state: AgentState) -> AgentState:
     result_text = ""
 
     try:
+        # A local write to the agent's own memory. No external effect, nothing
+        # leaves the container, so it needs no approval and runs before the gate.
+        if action_type == "remember":
+            fact = params.get("fact") or params.get("note") or params.get("content") or ""
+            noted = _remember(fact)
+            state.actions_taken.append("remember")
+            state.action_results.append(
+                f"Remembered for future tasks: {' '.join(fact.split())}"
+                if noted else "Nothing new to remember (already known or empty)."
+            )
+            return state
+
         # ── Interrupt for blocked actions (requires manager approval) ────────
         # The buyer's policy comes from the platform, which owns it; the risk
         # score comes from this turn's own reasoning, which is where it is
