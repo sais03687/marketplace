@@ -7,6 +7,12 @@ import { getStripe, getStripeWebhookSecret } from "@/lib/stripe";
 import { settlePauseCredit } from "@/lib/pause-credit";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
+// The exact reason a billing pause records. invoice.paid resumes ONLY a pause
+// carrying this marker, so a buyer's own deliberate pause is never overridden by
+// a routine renewal payment. Shared so the write and the check cannot drift.
+const BILLING_PAUSE_REASON =
+  "Payment failed — please update your billing details to resume this agent.";
+
 
 /**
  * The subscription an invoice belongs to.
@@ -209,9 +215,17 @@ export async function POST(request: NextRequest) {
         const deployment = await prisma.deployment.findFirst({
           where: { stripeSubscriptionId: subscriptionId },
         });
-        if (deployment && deployment.status === "PAUSED") {
+        // Only lift a pause this system applied for non-payment. A buyer who
+        // deliberately paused their agent keeps it paused: pausing does not stop
+        // the subscription, so invoice.paid still fires every cycle, and resuming
+        // on it would silently undo the buyer's choice. The billing-reason marker
+        // is what distinguishes the two.
+        if (
+          deployment &&
+          deployment.status === "PAUSED" &&
+          deployment.pauseReason === BILLING_PAUSE_REASON
+        ) {
           await setDeploymentPaused(deployment.id, false, { reason: null });
-          // Restart the container if it was paused for billing
           try {
             await getProvisioningQueue().add("resume", { type: "resume", deploymentId: deployment.id });
           } catch (err: any) {
@@ -230,7 +244,7 @@ export async function POST(request: NextRequest) {
         });
         if (deployment && deployment.status !== "FIRED") {
           await setDeploymentPaused(deployment.id, true, {
-            reason: "Payment failed — please update your billing details to resume this agent.",
+            reason: BILLING_PAUSE_REASON,
           });
         }
       }
