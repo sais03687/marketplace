@@ -630,7 +630,7 @@ East,145000",
           rows={[
             ["name", "string", "No", "Shown in the vetting report; the input is used if omitted"],
             ["input", "string", "Yes", "The message sent to your agent, exactly as a user would"],
-            ["expect", "string or string[]", "Yes", "The reply must contain this (case-insensitive). An array requires all of them."],
+            ["expect", "string or string[]", "Yes", "The reply must contain this (case-insensitive; numbers match with or without thousands separators, so 345000 matches \"345,000\"). An array requires all of them."],
           ]}
         />
         <Note>

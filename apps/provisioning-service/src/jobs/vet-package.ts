@@ -766,7 +766,21 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
                 }, 200);
                 let reply = "";
                 try { reply = (JSON.parse(res.responseBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
-                const missing = expects.filter((e) => e != null && !reply.toLowerCase().includes(String(e).toLowerCase()));
+                // Match case-insensitively, and tolerate thousands separators: an
+                // agent that answers "345,000" satisfies an expect of "345000" and
+                // vice versa. Without this the gate fails at random whenever the
+                // model happens to group digits, which it does for most totals -
+                // turning a real correctness check into a flaky one creators learn
+                // to ignore. norm() drops only a comma/space sitting *between* two
+                // digits, so "East" and other prose are compared verbatim.
+                const norm = (v: string) => v.toLowerCase().replace(/(\d)[,\s](?=\d)/g, "$1");
+                const replyRaw = reply.toLowerCase();
+                const replyNorm = norm(reply);
+                const missing = expects.filter((e) => {
+                  if (e == null) return false;
+                  const es = String(e);
+                  return !replyRaw.includes(es.toLowerCase()) && !replyNorm.includes(norm(es));
+                });
                 if (missing.length === 0) {
                   gPassed++;
                   gLogs.push(`→ ${name}  pass`);

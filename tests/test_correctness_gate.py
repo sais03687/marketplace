@@ -64,9 +64,20 @@ def test_a_failed_golden_task_fails_vetting():
 
 
 def test_the_answer_is_checked_against_the_expected_strings():
-    block = VET[VET.index("Golden tasks: does the agent"):][:3000]
+    block = VET[VET.index("Golden tasks: does the agent"):]
     assert "run-sync" in block
-    assert "reply.toLowerCase().includes(String(e).toLowerCase())" in block
+    # Case-insensitive substring match of each expected string in the reply.
+    assert "replyRaw.includes(es.toLowerCase())" in block
+
+
+def test_numeric_answers_tolerate_thousands_separators():
+    # An agent that answers "345,000" must satisfy an expect of "345000" (and the
+    # reverse). Without this the gate fails at random whenever the model groups
+    # digits, which it does for most totals. norm() strips a comma/space only
+    # between two digits, so prose like "East" stays an exact match.
+    block = VET[VET.index("Golden tasks: does the agent"):]
+    assert "replyNorm.includes(norm(es))" in block
+    assert r'replace(/(\d)[,\s](?=\d)/g, "$1")' in block
 
 
 def test_missing_model_skips_rather_than_fails():
