@@ -45,7 +45,7 @@ def test_the_vet_container_gets_no_real_secret():
     env = src[src.index("const envVars = ["):]
     env = env[: env.index("];")]
     # The LLM key is opt-in now: vet-noop unless an operator sets VET_LLM_API_KEY
-    # to run golden tasks. Either way it is a dedicated vetting key, never the
+    # for a reviewer to test against. Either way it is a dedicated vetting key, never the
     # platform runtime key or an infrastructure secret.
     assert 'process.env.VET_LLM_API_KEY || "vet-noop"' in env
     assert "ANTHROPIC_API_KEY=vet-noop" in env

@@ -403,19 +403,20 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `MANAGER_EMAIL=manager@vet.internal`,
             `APPROVAL_POLICY=always`,
             `MODEL=standard`,
-            // vet-noop by default: with no real key the agent cannot reason,
-            // so golden tasks are skipped and the container holds no secret -
-            // which is why its logs are safe to show the creator. Set
-            // VET_LLM_API_KEY to run golden tasks; it is a dedicated,
-            // rate-limitable vetting key, not the platform runtime key, and only
-            // matters once you trust the code being vetted (see the container
-            // hardening TODO).
+            // vet-noop by default: with no real key the agent cannot reason, so
+            // the automated boot/health/egress probes need no secret and the
+            // container's logs stay safe to show the creator. Set VET_LLM_API_KEY
+            // to give the sandbox a REAL model - what lets a reviewer send the
+            // agent tasks from the admin Sandbox tab and read its real answers
+            // during manual review. Dedicated, rate-limitable; not the platform
+            // runtime key, and only worth setting once you trust the code enough
+            // to run it against a live model (see the container hardening TODO).
             `LLM_API_KEY=${process.env.VET_LLM_API_KEY || "vet-noop"}`,
-            // The key, base URL and model must name the SAME provider or auth
-            // fails. When a vetting key is set we default the base URL and model
-            // to the platform's own (so a golden pass reflects what a buyer
-            // actually gets), each overridable with VET_LLM_BASE_URL / _MODEL for
-            // a cheaper or rate-limited vetting endpoint.
+            // Key, base URL and model must name the SAME provider or auth fails.
+            // When a vetting key is set we default the base URL and model to the
+            // platform's own (so what the reviewer tests matches what a buyer
+            // gets), each overridable with VET_LLM_BASE_URL / _MODEL for a cheaper
+            // or rate-limited vetting endpoint.
             `LLM_BASE_URL=${process.env.VET_LLM_BASE_URL || (process.env.VET_LLM_API_KEY ? process.env.LLM_BASE_URL || "" : "")}`,
             `LLM_MODEL=${process.env.VET_LLM_MODEL || (process.env.VET_LLM_API_KEY ? process.env.LLM_MODEL || "gpt-4o-mini" : "gpt-4o-mini")}`,
             // The gateway authenticates /hooks/* — without this the harness's own
@@ -724,84 +725,10 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           if (!allPassed) report.overallStatus = "fail";
         }
 
-        // ── Golden tasks: does the agent give the RIGHT answer? ────────────
-        //
-        // Every other step checks the agent RUNS. This checks it is CORRECT: the
-        // creator ships tests/golden.json - [{ name, input, expect }] - and each
-        // input is run to completion through /internal/run-sync, then the reply
-        // is checked for the expected string(s). This is the only gate that
-        // would catch a plausible agent that returns wrong numbers.
-        //
-        // Needs a real model. With LLM_API_KEY=vet-noop the agent cannot reason,
-        // so absent VET_LLM_API_KEY the step is skipped rather than failed - a
-        // missing model is an operator choice, not a bad package.
-        let golden: Array<{ name?: string; input?: string; expect?: unknown }> = [];
-        try {
-          const gp = join(packageDir!, "tests", "golden.json");
-          if (existsSync(gp)) golden = JSON.parse(readFileSync(gp, "utf-8"));
-        } catch (e: any) {
-          report.steps.push({ name: "Golden tasks", status: "fail", detail: `tests/golden.json is not valid JSON: ${e.message}` });
-          report.overallStatus = "fail";
-        }
-
-        if (Array.isArray(golden) && golden.length > 0 && !report.steps.some((st) => st.name === "Golden tasks")) {
-          if (!process.env.VET_LLM_API_KEY) {
-            report.steps.push({
-              name: "Golden tasks",
-              status: "skip",
-              detail: `${golden.length} defined — skipped: no vetting model configured (set VET_LLM_API_KEY)`,
-            });
-          } else {
-            const gLogs: string[] = [];
-            let gPassed = 0;
-            for (const g of golden) {
-              const name = g.name || (g.input || "").slice(0, 40);
-              const expects = Array.isArray(g.expect) ? g.expect : [g.expect];
-              try {
-                const res = await runFetch(`${base}/internal/run-sync`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json", "x-deployment-token": VET_HOOKS_TOKEN },
-                  body: JSON.stringify({ message: g.input || "" }),
-                  signal: AbortSignal.timeout(180_000),
-                }, 200);
-                let reply = "";
-                try { reply = (JSON.parse(res.responseBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
-                // Match case-insensitively, and tolerate thousands separators: an
-                // agent that answers "345,000" satisfies an expect of "345000" and
-                // vice versa. Without this the gate fails at random whenever the
-                // model happens to group digits, which it does for most totals -
-                // turning a real correctness check into a flaky one creators learn
-                // to ignore. norm() drops only a comma/space sitting *between* two
-                // digits, so "East" and other prose are compared verbatim.
-                const norm = (v: string) => v.toLowerCase().replace(/(\d)[,\s](?=\d)/g, "$1");
-                const replyRaw = reply.toLowerCase();
-                const replyNorm = norm(reply);
-                const missing = expects.filter((e) => {
-                  if (e == null) return false;
-                  const es = String(e);
-                  return !replyRaw.includes(es.toLowerCase()) && !replyNorm.includes(norm(es));
-                });
-                if (missing.length === 0) {
-                  gPassed++;
-                  gLogs.push(`→ ${name}  pass`);
-                } else {
-                  gLogs.push(`→ ${name}  FAIL — reply did not contain: ${missing.join(", ")}`);
-                  gLogs.push(`   reply: ${reply.slice(0, 300)}`);
-                }
-              } catch (e: any) {
-                gLogs.push(`→ ${name}  FAIL — run error: ${e.message}`);
-              }
-            }
-            const allGood = gPassed === golden.length;
-            report.steps.push({
-              name: "Golden tasks",
-              status: allGood ? "pass" : "fail",
-              detail: `${gPassed}/${golden.length} correct`,
-              logLines: gLogs,
-            });
-            if (!allGood) report.overallStatus = "fail";
-          }
-        }
+        // Correctness is judged by a human, not an automated gate. The vet
+        // container runs a real model (see the LLM_* env above) so a reviewer can
+        // send it tasks and read the real answers from the admin Sandbox tab -
+        // /internal/run-sync is what returns those replies synchronously.
       }
     }
   } catch (e: any) {

@@ -31,7 +31,7 @@ def _call_sites():
                 "channel": (
                     "teams" if 'f"teams:' in window
                     # The vetting sync path is a third channel: no human waits,
-                    # and a golden task should see the agent's genuine first
+                    # and a manual test should see the agent's genuine first
                     # answer, so verify_attempts=0 is correct there, not a
                     # regression of the email rebuild budget.
                     else "vetting" if '"hook_name": "vetting"' in window
