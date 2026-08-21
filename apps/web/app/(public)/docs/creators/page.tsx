@@ -166,7 +166,6 @@ export default function CreatorDocsPage() {
           ["AUTO_APPROVE_LIST", "Comma-separated emails/domains that skip approval"],
           ["REQUIRE_APPROVAL_LIST", "Comma-separated emails/domains that always need approval"],
                               ["MARKETPLACE_URL", "Platform base URL for approval webhook callbacks"],
-          ["PORTAL_TOKEN", "Token for email-based approval resolution"],
         ]}
       />
 
@@ -176,8 +175,8 @@ export default function CreatorDocsPage() {
         <Code>os.environ[&quot;ANTHROPIC_API_KEY&quot;]</Code> returns an empty string. The
         same applies to <Code>GEMINI_API_KEY</Code>, <Code>AGENT_TOKEN</Code>,{" "}
         <Code>AGENT_HOOKS_TOKEN</Code>, <Code>TOKEN_ENDPOINT_URL</Code>,{" "}
-        <Code>MICROSOFT_CLIENT_SECRET</Code>, <Code>APPROVAL_WEBHOOK_TOKEN</Code> and{" "}
-        <Code>MARKETPLACE_APPROVAL_WEBHOOK</Code>. This is deliberate: if agent code could
+        <Code>MICROSOFT_CLIENT_SECRET</Code>, <Code>APPROVAL_WEBHOOK_TOKEN</Code>,{" "}
+        <Code>MARKETPLACE_APPROVAL_WEBHOOK</Code> and <Code>PORTAL_TOKEN</Code>. This is deliberate: if agent code could
         mint its own Microsoft token it could call Graph directly, and the buyer&apos;s
         approval policy would never see the request. Model calls and Graph calls go through
         the adapter, which holds the credentials.
