@@ -39,6 +39,8 @@ interface Approval {
   status: string;
   createdAt: string;
   expiresAt: string;
+  resolvedAt?: string | null;
+  resolutionAction?: string | null;
 }
 interface Deployment {
   id: string;
@@ -132,6 +134,7 @@ export default function AgentOverviewPage({
   const router = useRouter();
   const [deployment, setDeployment] = useState<Deployment | null>(null);
   const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [recentActivity, setRecentActivity] = useState<Approval[]>([]);
   const [stats, setStats] = useState({ thisWeek: 0, approvalRate: 0, total: 0 });
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
@@ -167,6 +170,19 @@ export default function AgentOverviewPage({
         if (appRes.ok) {
           const allApprovals: Approval[] = await appRes.json();
           setApprovals(allApprovals.filter((a) => a.status === "PENDING").slice(0, 5));
+          // The agent's recent track record, successes AND failures. Rejected and
+          // expired actions are failures a buyer would otherwise never see here -
+          // the pending queue empties and the outcome vanishes. Sorted newest
+          // first by when it resolved (falling back to when it was raised).
+          setRecentActivity(
+            allApprovals
+              .filter((a) => a.status !== "PENDING")
+              .sort((a, b) =>
+                new Date(b.resolvedAt || b.createdAt).getTime() -
+                new Date(a.resolvedAt || a.createdAt).getTime(),
+              )
+              .slice(0, 6),
+          );
           const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
           const thisWeek = allApprovals.filter((a) => new Date(a.createdAt).getTime() > weekAgo).length;
           const resolved = allApprovals.filter((a) => ["APPROVED", "EDITED", "REJECTED"].includes(a.status));
@@ -360,6 +376,43 @@ export default function AgentOverviewPage({
               />
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Recent activity — the agent's track record, including failures. A buyer
+          watching the pending queue never sees what became of past actions; a
+          rejected or expired one just disappears. This keeps outcomes visible. */}
+      {recentActivity.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold">Recent activity</h2>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href={`/dashboard/agents/${deploymentId}/approvals`}>View all</Link>
+            </Button>
+          </div>
+          <Card>
+            <CardContent className="p-0 divide-y">
+              {recentActivity.map((a) => {
+                const outcome =
+                  a.status === "APPROVED" ? { label: "Approved & sent", cls: "text-green-600", dot: "bg-green-500" }
+                  : a.status === "EDITED" ? { label: "Edited & sent", cls: "text-amber-600", dot: "bg-amber-500" }
+                  : a.status === "REJECTED" ? { label: "Rejected", cls: "text-red-600", dot: "bg-red-500" }
+                  : a.status === "EXPIRED" ? { label: "Expired — no response in time", cls: "text-muted-foreground", dot: "bg-muted-foreground/40" }
+                  : { label: a.status, cls: "text-muted-foreground", dot: "bg-muted-foreground/40" };
+                const when = a.resolvedAt || a.createdAt;
+                return (
+                  <div key={a.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${outcome.dot}`} />
+                    <span className="font-medium capitalize">{a.taskType.replace(/_/g, " ")}</span>
+                    <span className={`${outcome.cls}`}>{outcome.label}</span>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {timeAgo(when)}
+                    </span>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
         </div>
       )}
 
