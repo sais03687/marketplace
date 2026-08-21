@@ -68,6 +68,44 @@ If either connects, the firewall rule is wrong — fix it before anything else.
 Terraform provider or an `hcloud` script committed here) so it is reviewable and
 recreatable, and add a startup assertion that the expected posture holds.
 
+## Container isolation — what creator code can and cannot reach
+
+Agent containers run creator code. Two layers keep that code boxed in, and one
+known boundary is left open on purpose for the first-party pilot.
+
+**Capabilities and resources.** Each agent container runs with `CapDrop: ["ALL"]`,
+`no-new-privileges`, no swap, a 512 MB / 1-CPU / 256-PID cap, and on an Internal
+Docker network with no published ports of its own (the netgate publishes for it).
+A bug or a malicious dependency in creator code is an unprivileged process that
+cannot reach the network except through the egress proxy.
+
+**Secret scrubbing.** `adapter.py` reads sensitive env into a private `_secrets`
+dict and `os.environ.pop`s each one *before* it imports creator code, so creator
+code cannot read them from `os.environ`: the approval/hooks/agent tokens, the
+Microsoft client secret, the portal token. This is defence-in-depth, not a hard
+wall — `os.environ.pop` does not rewrite `/proc/1/environ`, so code that reads the
+raw process environment can still recover a scrubbed value. The hard wall is not
+putting a secret in the container at all.
+
+**The open boundary — close before onboarding untrusted third-party creators.**
+Two shared, broadly-scoped secrets are *not* scrubbed, because creator code needs
+them directly:
+
+- `LLM_API_KEY` — the platform's shared model key. Creator code builds its own LLM
+  client (`agent.py` reads it), so it cannot be hidden without proxying every LLM
+  call through the adapter and injecting the key server-side.
+- `GOOGLE_WORKSPACE_SA_KEY` — a domain-wide-delegation service-account key, shared
+  across all Google deployments, present only on Google-workspace agents. Same
+  shape: creator Google tools read it directly.
+
+For the current first-party pilot, where all creator code is the platform's own,
+this is acceptable. Before opening publishing to untrusted creators, both must
+move behind a broker: an LLM proxy that injects the key, and a Google token
+endpoint that mints a short-lived scoped token (mirroring the existing
+`/internal/microsoft-token` broker, which is why Microsoft creds are already
+absent from the container). Until then, treat a published third-party package as
+able to read the shared LLM key.
+
 ## Microsoft tenant gotchas
 
 - A brand-new tenant's mailbox takes **5–15 minutes to warm up**. During that
