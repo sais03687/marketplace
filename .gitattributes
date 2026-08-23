@@ -1,0 +1,9 @@
+# Shell scripts must stay LF-only. A CRLF sneaking into the shebang line makes the
+# kernel look for an interpreter named "/bin/sh\r", which fails with a confusing
+# "no such file or directory" on the VPS. These scripts ship code to production and
+# guard the network boundary, so a silent line-ending break is not acceptable.
+*.sh text eol=lf
+
+# The pinned exact-match config the vet job and adapter read; keep it LF so a
+# checkout on Linux is byte-identical to what tests assert against.
+*.mjs text eol=lf

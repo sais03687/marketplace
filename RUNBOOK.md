@@ -55,18 +55,24 @@ Those token checks are sound (see `apps/provisioning-service/src/utils/agent-tok
 but they were built assuming the network boundary exists. Do not treat the
 firewall as optional.
 
-**To verify the boundary from outside the VPS** (should all fail / time out):
+**To verify the boundary from outside the VPS**, run the committed prober from any
+machine that is NOT the VPS (it must test the public interface, so a check from
+the box itself is meaningless):
 
 ```sh
-curl -m 8 http://5.161.125.216:3003/                         # provisioning service
-curl -m 8 http://5.161.125.216:4000/                         # any agent gateway
+sh scripts/check-firewall-boundary.sh           # exit 0 = intact, exit 1 = breached
 ```
 
-If either connects, the firewall rule is wrong — fix it before anything else.
+It asserts 80/443 answer and 3003 + agent-gateway ports time out. A private port
+answering is a breach — fix the firewall before anything else. Worth running on a
+schedule from an external monitor after any Hetzner networking change.
 
-**TODO (tracked, not done):** move this rule into infrastructure-as-code (Hetzner
-Terraform provider or an `hcloud` script committed here) so it is reviewable and
-recreatable, and add a startup assertion that the expected posture holds.
+**The rule as code:** `infra/hetzner-firewall.sh` is the declarative source of
+truth — the intended inbound allow-list (22/80/443/icmp, default-deny for the
+rest) with `check` (read-only diff against live), `apply` (reconcile), and
+`attach`. It needs `hcloud` and your `HCLOUD_TOKEN` (never commit the token). This
+is what makes the boundary reviewable in git and recreatable with one command if
+the console rule is ever lost.
 
 ## Container isolation — what creator code can and cannot reach
 
