@@ -144,6 +144,18 @@ export async function startNetgate(
   if (!binding?.length) {
     throw new Error(`[netgate] ${name} did not publish a gateway port`);
   }
+  // Fail closed on the one invariant this file exists to hold: the gateway must be
+  // published on loopback, never a public interface. The cloud firewall does not
+  // cover these ephemeral high ports, so if HostIp ever came back 0.0.0.0 (a
+  // removed HostIp above, a Docker quirk) the agent would be exposed to the
+  // internet with only its token check left. Refuse to run rather than expose it.
+  const hostIp = binding[0].HostIp;
+  if (hostIp !== "127.0.0.1" && hostIp !== "::1") {
+    throw new Error(
+      `[netgate] ${name} published its gateway on ${hostIp || "0.0.0.0"}, not loopback — ` +
+        `refusing to start rather than expose the agent on a public interface.`,
+    );
+  }
   const hostPort = parseInt(binding[0].HostPort, 10);
   console.log(`[netgate] Started ${name} on ${networkName} — gateway on host port ${hostPort}`);
   return { proxyUrl: egressProxyUrl(deploymentId), hostPort };
