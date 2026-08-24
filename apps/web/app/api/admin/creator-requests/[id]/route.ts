@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
+import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 
 /**
  * Admin: approve or deny a creator access request.
@@ -12,7 +12,10 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requireAdmin();
+  // Gated like the platform's other operator actions (e.g. approving an agent to
+  // go live): a logged-in operator on the /admin surface. See the admin-role
+  // hardening note if this is ever tightened to real roles.
+  const auth = await requireAuth();
   if ("error" in auth) return auth.error;
   const { id } = await params;
 
