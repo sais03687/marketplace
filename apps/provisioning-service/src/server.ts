@@ -52,6 +52,51 @@ const MARKETPLACE_URL = process.env.MARKETPLACE_URL || "https://www.agentstore.i
 // is empty on boot and therefore useless during exactly the outage it exists for.
 const _tenantCache = new Map<string, { tenantId: string; cachedAt: number }>();
 const TENANT_CACHE_TTL_MS = 15 * 60 * 1000;
+
+// ─── LLM broker: model enforcement + usage cap ──────────────────────────────
+// A deployment is billed for the tier of the model its creator declared, so the
+// broker forces every call to use exactly that model — a cheap-tier agent cannot
+// run a premium model on the platform's dime, whatever its code asks for. The
+// allowed model is deployment.agent.model (or the platform default if the creator
+// declared none), cached to avoid a DB hit on every completion.
+const _brokerModelCache = new Map<string, { model: string; cachedAt: number }>();
+const BROKER_MODEL_TTL_MS = 15 * 60 * 1000;
+
+async function allowedModelFor(deploymentId: string): Promise<string> {
+  const fallback = process.env.LLM_BROKER_MODEL || process.env.LLM_MODEL || "google/gemini-2.5-flash";
+  const cached = _brokerModelCache.get(deploymentId);
+  if (cached && Date.now() - cached.cachedAt < BROKER_MODEL_TTL_MS) return cached.model;
+  try {
+    const dep = await prisma.deployment.findUnique({
+      where: { id: deploymentId },
+      select: { agent: { select: { model: true } } },
+    });
+    const model = dep?.agent?.model || fallback;
+    _brokerModelCache.set(deploymentId, { model, cachedAt: Date.now() });
+    return model;
+  } catch {
+    // DB blip — serve the fallback rather than failing the agent's LLM call.
+    return cached?.model || fallback;
+  }
+}
+
+// Per-deployment usage cap: a simple fixed-window request rate limit so a hostile
+// or runaway agent cannot burn the platform's model budget without bound. Counts
+// requests, not tokens — a coarse but effective ceiling. Tune with LLM_BROKER_RPM.
+const _brokerRate = new Map<string, { count: number; windowStart: number }>();
+const BROKER_RPM = parseInt(process.env.LLM_BROKER_RPM || "120", 10);
+const BROKER_WINDOW_MS = 60 * 1000;
+
+function brokerRateExceeded(deploymentId: string): boolean {
+  const now = Date.now();
+  const r = _brokerRate.get(deploymentId);
+  if (!r || now - r.windowStart >= BROKER_WINDOW_MS) {
+    _brokerRate.set(deploymentId, { count: 1, windowStart: now });
+    return false;
+  }
+  r.count += 1;
+  return r.count > BROKER_RPM;
+}
 const TENANT_CACHE_PATH =
   process.env.TENANT_CACHE_PATH || path.resolve(process.cwd(), ".tenant-cache.json");
 
@@ -639,19 +684,38 @@ export function startProxyServer() {
         return send(res, 401, { error: "Unauthorized" });
       }
 
+      // Usage cap: bound how fast one deployment can spend the platform's budget.
+      if (brokerRateExceeded(deploymentId)) {
+        console.warn(`[llm-broker] rate limit hit for ${deploymentId}`);
+        return send(res, 429, { error: "Rate limit exceeded" });
+      }
+
       // Everything after /internal/llm is the upstream path (e.g. /chat/completions).
       const subPath = req.url.slice("/internal/llm".length) || "/chat/completions";
       let body = "";
       req.on("data", (chunk: string) => { body += chunk; });
       req.on("end", async () => {
         try {
+          // Force the creator's DECLARED model — the tier they are billed for —
+          // regardless of what their code requested. Rejects only an unparseable
+          // body; a completions body is always JSON.
+          const allowedModel = await allowedModelFor(deploymentId);
+          let forwardBody = body;
+          try {
+            const parsed = JSON.parse(body);
+            parsed.model = allowedModel;
+            forwardBody = JSON.stringify(parsed);
+          } catch {
+            return send(res, 400, { error: "Invalid JSON body" });
+          }
+
           const upstream = await fetch(`${upstreamBase}${subPath}`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${realKey}`,
             },
-            body,
+            body: forwardBody,
           });
           // Stream the upstream response straight back — works for both a single
           // JSON body and an SSE token stream.
