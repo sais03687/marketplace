@@ -120,8 +120,13 @@ export function isAdminUser(userId: string | null | undefined): boolean {
   const raw = process.env.ADMIN_USER_IDS?.trim();
   if (!raw) {
     // Not configured — do not lock anyone out. Announce it so an unconfigured
-    // production is visible in the logs rather than silently wide open.
-    console.warn("[admin] ADMIN_USER_IDS is not set — admin pages are open to any logged-in user. Set it to lock them down.");
+    // production is visible in the logs. The diagnostic distinguishes "the var is
+    // absent from this environment" (undefined) from "it was saved with an empty
+    // value" (length 0) — no value is logged, only its presence and length.
+    const rawVal = process.env.ADMIN_USER_IDS;
+    console.warn(
+      `[admin] ADMIN_USER_IDS not usable (present=${rawVal !== undefined}, length=${(rawVal ?? "").length}) — admin pages open to any logged-in user.`,
+    );
     return true;
   }
   return raw.split(",").map((s) => s.trim()).filter(Boolean).includes(userId);
