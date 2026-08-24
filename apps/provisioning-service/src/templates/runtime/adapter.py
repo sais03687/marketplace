@@ -65,6 +65,24 @@ _secrets: dict[str, str] = {}
 for _key in _SECRETS_TO_SCRUB:
     _secrets[_key] = os.environ.pop(_key, "")
 
+# ─── LLM broker (opt-in) ────────────────────────────────────────────────────
+# When LLM_BROKER_URL is set, route creator code's LLM client through the
+# platform's proxy instead of handing it the real model key. We overwrite
+# LLM_BASE_URL and LLM_API_KEY *before* creator code imports, so its ChatOpenAI
+# (which reads these from os.environ) transparently talks to the broker; the real
+# key never enters this container. The key we hand it is "<deploymentId>.<token>"
+# — the broker splits and verifies it. Absent LLM_BROKER_URL nothing changes, so
+# this is inert for deployments that still hold the key directly.
+_llm_broker_url = os.environ.pop("LLM_BROKER_URL", "")
+if _llm_broker_url:
+    _dep = os.environ.get("DEPLOYMENT_ID", "")
+    _tok = _secrets.get("AGENT_TOKEN", "")
+    if _dep and _tok:
+        os.environ["LLM_BASE_URL"] = _llm_broker_url
+        os.environ["LLM_API_KEY"] = f"{_dep}.{_tok}"
+    else:
+        print("[adapter] LLM_BROKER_URL set but DEPLOYMENT_ID/AGENT_TOKEN missing — leaving LLM env as-is", flush=True)
+
 # ─── MCP Sidecar Discovery ─────────────────────────────────────────────────
 # Read MCP_*_URL env vars, scrub them, then discover tools at startup.
 

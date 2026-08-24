@@ -615,6 +615,67 @@ export function startProxyServer() {
       return;
     }
 
+    // Internal endpoint — LLM broker. Proxies chat completions to the upstream
+    // provider (OpenRouter) with the REAL key injected here, so the shared model
+    // key never enters an agent container. Untrusted creator code can then be
+    // handed a proxy URL + a per-deployment token instead of the platform key.
+    //
+    // The container presents Authorization: Bearer "<deploymentId>.<agentToken>"
+    // (the platform sets LLM_API_KEY to this before creator code imports). We
+    // split off the deployment id so we can verify the derived token, then swap in
+    // the real key. The request/response bodies stream straight through, so both
+    // streaming and non-streaming completions work unchanged.
+    if (req.method === "POST" && req.url?.startsWith("/internal/llm/")) {
+      const realKey = process.env.LLM_BROKER_KEY || process.env.OPENROUTER_API_KEY || process.env.LLM_API_KEY || "";
+      const upstreamBase = (process.env.LLM_BROKER_UPSTREAM || process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+      if (!realKey) return send(res, 503, { error: "LLM broker not configured" });
+
+      const presented = String(req.headers["authorization"] ?? "").replace(/^Bearer\s+/i, "");
+      const dot = presented.lastIndexOf(".");
+      const deploymentId = dot > 0 ? presented.slice(0, dot) : "";
+      const agentToken = dot > 0 ? presented.slice(dot + 1) : "";
+      if (!deploymentId || !agentTokenMatches(agentToken, deploymentId, SECRET)) {
+        console.warn("[llm-broker] rejected an unauthenticated request");
+        return send(res, 401, { error: "Unauthorized" });
+      }
+
+      // Everything after /internal/llm is the upstream path (e.g. /chat/completions).
+      const subPath = req.url.slice("/internal/llm".length) || "/chat/completions";
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        try {
+          const upstream = await fetch(`${upstreamBase}${subPath}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${realKey}`,
+            },
+            body,
+          });
+          // Stream the upstream response straight back — works for both a single
+          // JSON body and an SSE token stream.
+          res.writeHead(upstream.status, {
+            "Content-Type": upstream.headers.get("content-type") || "application/json",
+          });
+          if (upstream.body) {
+            const reader = upstream.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(Buffer.from(value));
+            }
+          }
+          res.end();
+        } catch (err: any) {
+          console.error("[llm-broker] upstream error:", err.message);
+          if (!res.headersSent) send(res, 502, { error: "LLM upstream failed" });
+          else res.end();
+        }
+      });
+      return;
+    }
+
     // Internal endpoint — agent containers send email via Microsoft Graph
     if (req.method === "POST" && req.url === "/internal/outlook-send") {
       let body = "";
