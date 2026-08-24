@@ -8,6 +8,7 @@ import { Plus, Pencil, GitBranch } from "lucide-react";
 import Link from "next/link";
 import { formatPrice } from "@/lib/utils";
 import { DeleteAgentButton } from "./delete-agent-button";
+import { CreatorAccessGate } from "./creator-access-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -19,20 +20,17 @@ export default async function CreatorDashboardPage() {
     where: { clerkUserId: userId },
   });
 
-  if (!creator) {
+  // Publishing is invite-gated during the beta. Anyone who is not an approved
+  // creator sees the request flow instead of the dashboard — whether they have
+  // never asked, are awaiting review, or were denied.
+  if (!creator || creator.status !== "APPROVED") {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-center">
-        <h2 className="text-xl font-semibold">Welcome, Creator</h2>
-        <p className="mt-2 text-muted-foreground">
-          Publish your first AI agent to the marketplace.
-        </p>
-        <Button className="mt-6" asChild>
-          <Link href="/creator/publish">
-            <Plus className="mr-2 h-4 w-4" />
-            Publish New Agent
-          </Link>
-        </Button>
-      </div>
+      <CreatorAccessGate
+        status={creator?.status ?? "none"}
+        displayName={creator?.displayName ?? ""}
+        email={creator?.email ?? ""}
+        note={creator?.requestNote ?? ""}
+      />
     );
   }
 

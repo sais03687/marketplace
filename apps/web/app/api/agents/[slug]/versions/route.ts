@@ -48,6 +48,10 @@ export async function POST(
     where: { clerkUserId: userId },
   });
   if (!creator) return jsonError("Creator not found", 404);
+  // Gated during the beta — only an approved creator may publish a new version.
+  if (creator.status !== "APPROVED") {
+    return jsonError("Creator access is pending approval; you cannot publish yet.", 403);
+  }
 
   const agent = await prisma.agent.findUnique({
     where: { slug },

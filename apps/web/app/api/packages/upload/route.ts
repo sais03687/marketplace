@@ -272,19 +272,27 @@ export async function POST(request: Request) {
     where: { slug },
   });
 
-  // Ensure creator exists (skip lookup if already resolved via API key)
-  let creator = creatorFromApiKey ?? await prisma.creator.findUnique({
+  // Creator access is gated during the beta: a person requests access and an
+  // admin approves it. Uploading no longer silently creates a creator — an
+  // un-approved account cannot put code on the platform, which is what keeps the
+  // sandbox (and eventually production) from running a stranger's code.
+  const creator = creatorFromApiKey ?? await prisma.creator.findUnique({
     where: { clerkUserId: userId },
   });
 
   if (!creator) {
-    creator = await prisma.creator.create({
-      data: {
-        clerkUserId: userId,
-        displayName: "Creator",
-        email: `${userId}@marketplace.dev`,
-      },
-    });
+    return jsonError(
+      "Creator access is invite-only during the beta. Request access from the Creator page and an admin will review it.",
+      403,
+    );
+  }
+  if (creator.status !== "APPROVED") {
+    return jsonError(
+      creator.status === "PENDING"
+        ? "Your creator access request is still under review. You'll be able to publish once it's approved."
+        : "Your creator access request was not approved. Contact the team if you think this is a mistake.",
+      403,
+    );
   }
 
   if (existingAgent && existingAgent.creatorId !== creator.id) {

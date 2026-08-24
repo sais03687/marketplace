@@ -14,6 +14,13 @@ model Creator {
   email           String   @unique
   stripeAccountId String?
   stripeOnboarded Boolean  @default(false)
+  // Publishing is gated: a person requests creator access, an admin approves or
+  // denies. Uploading a package requires status APPROVED. Existing creators are
+  // migrated to APPROVED so nothing they already run breaks; new requests start
+  // PENDING. This is the invite-gate for the beta — see /api/creator/request.
+  status          CreatorStatus @default(PENDING)
+  requestNote     String?       // what the requester said about themselves
+  reviewedAt      DateTime?     // when an admin approved or denied
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   agents          Agent[]
@@ -483,4 +490,10 @@ enum WorkspaceProvider {
   GOOGLE
   MICROSOFT
   NONE
+}
+
+enum CreatorStatus {
+  PENDING
+  APPROVED
+  DENIED
 }

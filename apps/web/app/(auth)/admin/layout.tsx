@@ -4,10 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SafeUserButton } from "@/components/auth/safe-user-button";
 import { cn } from "@/lib/utils";
-import { ShieldCheck, Brain } from "lucide-react";
+import { ShieldCheck, Brain, UserPlus } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/admin/vetting", label: "Vetting Queue", icon: ShieldCheck },
+  { href: "/admin/creators", label: "Creator Requests", icon: UserPlus },
   { href: "/admin/agentmind", label: "AgentMind Queue", icon: Brain },
 ];
 
