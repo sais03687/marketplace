@@ -83,7 +83,10 @@ export function HireModal({
 }: HireModalProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      {/* Cap the height and scroll internally: the wizard is taller than a short
+          laptop viewport, and without this its footer (the Continue/Hire button)
+          spilled below the screen with no way to reach it. */}
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <HireProvider
           agentId={agentId}
           agentName={agentName}
