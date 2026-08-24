@@ -74,6 +74,14 @@ for _key in _SECRETS_TO_SCRUB:
 # — the broker splits and verifies it. Absent LLM_BROKER_URL nothing changes, so
 # this is inert for deployments that still hold the key directly.
 _llm_broker_url = os.environ.pop("LLM_BROKER_URL", "")
+# File fallback: lets an operator enable the broker on an already-running
+# deployment by dropping /agent/llm_broker.txt in (docker cp + restart), without
+# recreating the container and losing its learned memory. Mirrors the
+# portal_token.txt fallback below.
+if not _llm_broker_url:
+    _broker_file = Path("/agent/llm_broker.txt")
+    if _broker_file.exists():
+        _llm_broker_url = _broker_file.read_text().strip()
 if _llm_broker_url:
     _dep = os.environ.get("DEPLOYMENT_ID", "")
     _tok = _secrets.get("AGENT_TOKEN", "")
