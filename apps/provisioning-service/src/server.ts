@@ -700,6 +700,7 @@ export function startProxyServer() {
           // regardless of what their code requested. Rejects only an unparseable
           // body; a completions body is always JSON.
           const allowedModel = await allowedModelFor(deploymentId);
+          console.log(`[llm-broker] ${deploymentId} → ${allowedModel}`);
           let forwardBody = body;
           try {
             const parsed = JSON.parse(body);
