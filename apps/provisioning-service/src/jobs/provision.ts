@@ -421,6 +421,16 @@ export async function provisionJob(
   const llmBaseUrl = providerCreds ? providerCreds.baseUrl : config.llmBaseUrl;
   const llmModel = pickedModel ? pickedModel.id : config.llmModel;
 
+  // LLM broker: when enabled, the container never receives the real model key.
+  // We hand it the broker URL and a harmless placeholder key; the adapter swaps in
+  // the per-deployment token (deploymentId.agentToken) and the broker URL before
+  // creator code imports. So creator code's LLM client talks to the broker, which
+  // holds the real key, forces the declared model, and rate-limits. Off → the
+  // container holds the real key as before (fine for the trusted first-party
+  // agents provisioned so far).
+  const brokerOn = config.llmBrokerEnabled;
+  const containerLlmApiKey = brokerOn ? "brokered-see-adapter" : llmApiKey;
+
   const containerEnv: ContainerEnv = {
     DEPLOYMENT_ID: deploymentId,
     AGENT_ID: deployment.agentId,
@@ -436,9 +446,10 @@ export async function provisionJob(
     APPROVAL_WEBHOOK_TOKEN: config.approvalWebhookToken,
     MODEL: deployment.agent.modelTier,
     MANAGER_EMAIL: deployment.managerEmail || "",
-    LLM_API_KEY: llmApiKey,
+    LLM_API_KEY: containerLlmApiKey,
     LLM_BASE_URL: llmBaseUrl,
     LLM_MODEL: llmModel,
+    ...(brokerOn ? { LLM_BROKER_URL: config.llmBrokerContainerUrl } : {}),
     APPROVAL_POLICY: approvalPolicy,
     APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,
     AUTO_APPROVE_LIST: autoApproveList,

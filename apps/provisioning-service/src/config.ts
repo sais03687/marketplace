@@ -39,6 +39,16 @@ export const config = {
   llmBaseUrl: process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1",
   llmModel: process.env.LLM_MODEL || "google/gemini-2.5-flash",
 
+  // LLM broker: when enabled, new agent containers are handed the broker URL and a
+  // placeholder key instead of the real model key, so an untrusted creator's code
+  // never holds the shared key. The broker (server.ts /internal/llm) injects the
+  // real key, forces the declared model, and rate-limits. Reached as
+  // host.docker.internal because the agent network has no direct host route.
+  llmBrokerEnabled: process.env.LLM_BROKER_ENABLED === "1",
+  llmBrokerContainerUrl:
+    process.env.LLM_BROKER_CONTAINER_URL ||
+    `http://host.docker.internal:${process.env.PROVISIONING_PORT || "3003"}/internal/llm`,
+
   // Google Calendar integration
   googleClientId: process.env.GOOGLE_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",

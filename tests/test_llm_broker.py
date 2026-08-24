@@ -68,3 +68,21 @@ def test_adapter_redirects_llm_env_only_when_opted_in():
 def test_broker_is_off_by_default():
     runner = (ROOT / "apps" / "provisioning-service" / "src" / "jobs" / "custom-runner.ts").read_text(encoding="utf-8")
     assert "LLM_BROKER_URL" not in runner
+
+
+def test_provision_wires_the_broker_when_enabled():
+    prov = (ROOT / "apps" / "provisioning-service" / "src" / "jobs" / "provision.ts").read_text(encoding="utf-8")
+    # When the broker is on, the container gets the broker URL and a PLACEHOLDER
+    # key — never the real model key.
+    assert "config.llmBrokerEnabled" in prov
+    assert 'brokerOn ? "brokered-see-adapter" : llmApiKey' in prov
+    assert "LLM_BROKER_URL: config.llmBrokerContainerUrl" in prov
+    # The container env carries the placeholder, not the raw key, under the broker.
+    assert "LLM_API_KEY: containerLlmApiKey" in prov
+
+
+def test_broker_flag_is_env_gated():
+    cfg = (ROOT / "apps" / "provisioning-service" / "src" / "config.ts").read_text(encoding="utf-8")
+    assert 'llmBrokerEnabled: process.env.LLM_BROKER_ENABLED === "1"' in cfg
+    # The container-facing URL reaches the broker via host.docker.internal.
+    assert "host.docker.internal" in cfg and "/internal/llm" in cfg
