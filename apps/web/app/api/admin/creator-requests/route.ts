@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { jsonSuccess, requireAdmin } from "@/lib/api-utils";
 
 /**
  * Admin: list creator access requests to review.
@@ -9,7 +9,7 @@ import { jsonSuccess, requireAuth } from "@/lib/api-utils";
  * admin can reach out before deciding.
  */
 export async function GET() {
-  const auth = await requireAuth();
+  const auth = await requireAdmin();
   if ("error" in auth) return auth.error;
 
   const creators = await prisma.creator.findMany({

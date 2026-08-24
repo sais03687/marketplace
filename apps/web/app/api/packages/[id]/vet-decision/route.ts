@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
 import { sendPlatformEmail, buildVettingDecisionEmail } from "@/lib/email";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
@@ -11,7 +11,8 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  const authResult = await requireAuth();
+  // Approving/rejecting an agent version to go live is an admin action.
+  const authResult = await requireAdmin();
   if ("error" in authResult) return authResult.error;
 
   let decision: string;

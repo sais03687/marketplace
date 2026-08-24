@@ -102,6 +102,31 @@ export async function requireOrg(): Promise<
   return { userId, orgId, company };
 }
 
+/**
+ * Is this Clerk user an admin?
+ *
+ * Admins are an allowlist of Clerk user IDs in the ADMIN_USER_IDS env var
+ * (comma-separated). This is used rather than a Clerk role claim because
+ * sessionClaims.publicMetadata is empty unless the Clerk session token is
+ * customised, so the role check silently failed for everyone — the platform's
+ * admin surface was effectively gated on "logged in" alone.
+ *
+ * Fail-open when UNSET: if ADMIN_USER_IDS is empty, every logged-in user is
+ * treated as admin — the pre-existing behaviour, so shipping this cannot lock the
+ * operator out before they configure it. Set ADMIN_USER_IDS to activate the lock.
+ */
+export function isAdminUser(userId: string | null | undefined): boolean {
+  if (!userId) return false;
+  const raw = process.env.ADMIN_USER_IDS?.trim();
+  if (!raw) {
+    // Not configured — do not lock anyone out. Announce it so an unconfigured
+    // production is visible in the logs rather than silently wide open.
+    console.warn("[admin] ADMIN_USER_IDS is not set — admin pages are open to any logged-in user. Set it to lock them down.");
+    return true;
+  }
+  return raw.split(",").map((s) => s.trim()).filter(Boolean).includes(userId);
+}
+
 export async function requireAdmin(): Promise<
   { userId: string } | ApiError
 > {
@@ -109,9 +134,7 @@ export async function requireAdmin(): Promise<
   if ("error" in result) return result;
 
   const { userId } = result;
-  const { sessionClaims } = await auth();
-  const role = (sessionClaims?.publicMetadata as Record<string, unknown> | undefined)?.role;
-  if (role !== "admin") {
+  if (!isAdminUser(userId)) {
     return { error: jsonError("Admin access required", 403) };
   }
   return { userId };

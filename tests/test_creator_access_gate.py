@@ -40,17 +40,15 @@ def test_request_endpoint_creates_a_pending_creator():
     )
 
 
-def test_admin_can_approve_or_deny_and_requires_login():
+def test_admin_can_approve_or_deny_and_is_admin_gated():
     src = _read(WEB / "app" / "api" / "admin" / "creator-requests" / "[id]" / "route.ts")
-    # Gated like the platform's other operator actions (vet-decision) — a
-    # logged-in operator on the /admin surface, not an open endpoint.
-    assert "requireAuth()" in src
+    assert "requireAdmin()" in src
     assert '"APPROVED"' in src and '"DENIED"' in src
 
 
-def test_admin_list_requires_login():
+def test_admin_list_is_admin_gated():
     src = _read(WEB / "app" / "api" / "admin" / "creator-requests" / "route.ts")
-    assert "requireAuth()" in src
+    assert "requireAdmin()" in src
 
 
 def test_migration_approves_existing_creators():

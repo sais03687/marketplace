@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
 
@@ -11,7 +11,7 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const authResult = await requireAuth();
+  const authResult = await requireAdmin();
   if ("error" in authResult) return authResult.error;
 
   const { id: versionId } = await params;
@@ -65,7 +65,7 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const authResult = await requireAuth();
+  const authResult = await requireAdmin();
   if ("error" in authResult) return authResult.error;
 
   const { id: versionId } = await params;
