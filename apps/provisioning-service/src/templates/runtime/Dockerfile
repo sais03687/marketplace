@@ -21,6 +21,21 @@ COPY platform-requirements.txt .
 
 RUN mkdir -p /data
 
+# Run creator code as an unprivileged user, never root. Capabilities are already
+# dropped (CapDrop: ALL) and egress is proxied; this closes the last easy win by
+# ensuring a bug or a hostile dependency in creator code is a non-root process,
+# not root inside the container. The agent binds 4000 (above the privileged
+# range) and writes only /data and /agent/creator, both owned by this user below.
+#
+# pip install ran above as root, before this switch, so build-time dependency
+# installation is unaffected. NOTE: a FRESH named volume for /data inherits this
+# ownership on first mount; an EXISTING root-owned volume (e.g. reprovisioning a
+# deployment created before this change) must be chowned once —
+#   docker run --rm -v <vol>:/data busybox chown -R 10001:10001 /data
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin agent \
+    && chown -R agent:agent /agent /data
+USER agent
+
 EXPOSE 4000
 
 CMD ["python", "adapter.py"]

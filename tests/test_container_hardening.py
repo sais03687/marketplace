@@ -58,3 +58,21 @@ def test_llm_key_is_knowingly_not_scrubbed_with_a_reason():
     # the boundary is documented where the decision lives, not silently omitted.
     assert '"LLM_API_KEY"' not in _SCRUB_BLOCK
     assert "LLM_API_KEY is" in _SCRUB_BLOCK  # the explanatory comment
+
+
+def test_agent_container_runs_as_non_root():
+    """Creator code must run unprivileged, not as root. Capabilities are dropped
+    already; a non-root USER shrinks the blast radius of a hostile dependency or a
+    container-escape attempt. pip install still runs as root (before the switch),
+    so builds are unaffected."""
+    from pathlib import Path
+    dockerfile = (
+        Path(__file__).resolve().parents[1]
+        / "apps" / "provisioning-service" / "src" / "templates" / "runtime" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert "USER agent" in dockerfile
+    assert "useradd" in dockerfile
+    # The user must own the two writable paths or the agent cannot boot.
+    assert "chown -R agent:agent /agent /data" in dockerfile
+    # The privilege switch must come AFTER pip install, or deps fail to install.
+    assert dockerfile.index("pip install") < dockerfile.index("USER agent")
