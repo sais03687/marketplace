@@ -30,7 +30,7 @@ import {
 } from "botbuilder";
 import { ConnectorClient, MicrosoftAppCredentials } from "botframework-connector";
 import { prisma } from "@marketplace/db";
-import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeTenantLicensing, buildTeamsAppZip } from "./clients/microsoft-workspace.js";
+import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeTenantLicensing } from "./clients/microsoft-workspace.js";
 import { config } from "./config.js";
 import { agentTokenFor, agentTokenMatches, hooksTokenFor } from "./utils/agent-token.js";
 
@@ -957,29 +957,6 @@ export function startProxyServer() {
     // Which licence would an agent consume in this tenant, and what could it then do?
     // Backs the hire-flow preview. Deliberately shares describeTenantLicensing() with
     // provisioning so the preview cannot promise something provisioning won't deliver.
-    // The Teams app package, for a buyer to sideload.
-    //
-    // Auto-install was removed: Microsoft refuses app-only uploads to a tenant
-    // app catalog with 403, in every tenant, and it is not a grantable consent.
-    // The package was never the problem, so we hand it to the buyer instead.
-    if (req.method === "GET" && req.url?.startsWith("/internal/teams-app-package")) {
-      const authHeader = req.headers["authorization"] ?? "";
-      if (SECRET && authHeader !== `Bearer ${SECRET}`) {
-        return send(res, 401, { error: "Unauthorized" });
-      }
-      try {
-        const zip = buildTeamsAppZip();
-        res.writeHead(200, {
-          "Content-Type": "application/zip",
-          "Content-Disposition": 'attachment; filename="agentstore-teams-app.zip"',
-          "Content-Length": String(zip.length),
-        });
-        return res.end(zip);
-      } catch (err: any) {
-        return send(res, 500, { error: `Could not build the Teams package: ${err.message}` });
-      }
-    }
-
     if (req.method === "GET" && req.url?.startsWith("/internal/tenant-licensing")) {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

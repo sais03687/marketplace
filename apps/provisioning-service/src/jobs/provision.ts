@@ -228,23 +228,17 @@ export async function provisionJob(
         });
         console.log(`[provision] Buyer-org agent mailbox created: ${mailbox.email}`);
 
-        // Teams is installed by the buyer, not by us.
+        // Teams is not set up at hire time.
         //
-        // We used to POST the app package to /appCatalogs/teamsApps here with
-        // application permissions. Microsoft returns 403 "User not authorized to
-        // perform this operation" for that, in every tenant, and it is not a
-        // consent that can be granted — app-only publishing to a tenant app
-        // catalog is not supported by that API. So every hire logged a failure
-        // that no buyer could act on and no admin could fix.
-        //
-        // The package itself is fine; only the upload was refused. Buyers can
-        // download it and sideload it — see /api/deployments/[id]/teams-package.
-        // Revisit if the app is ever published to the Teams Store, which also
-        // requires converting the bot from SingleTenant to multi-tenant.
-        console.log(
-          `[provision] Teams app not auto-installed by design — the buyer sideloads it ` +
-            `from the agent's Settings page (Microsoft does not permit app-only catalog upload)`,
-        );
+        // Auto-install never worked: POSTing the app package to /appCatalogs/teamsApps
+        // with application permissions returns 403 in every tenant, and app-only
+        // publishing to a tenant catalog is not a grantable consent. The manual
+        // sideload flow that replaced it (a Settings download) was removed too — it
+        // asked buyers into the Teams admin centre for an optional channel, which was
+        // more friction than it was worth. Email is the channel; Teams is retired.
+        // The bot code remains dormant; revisit if the app is ever published to the
+        // Teams Store (which also needs the bot converted to multi-tenant).
+        console.log(`[provision] Teams not set up at hire — email is the channel`);
       } catch (err: any) {
         // A licence or mailbox failure in the buyer's tenant fails the hire outright.
         // Falling back to a platform mailbox would move the licence cost onto us for

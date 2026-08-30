@@ -269,35 +269,6 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Microsoft Teams</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          <p className="text-muted-foreground">
-            Message your agent and resolve approvals from Teams. This takes one manual
-            step: Microsoft does not allow an app to publish itself into your
-            organisation&apos;s app catalogue, so you install the package yourself.
-          </p>
-          <ol className="list-decimal pl-5 space-y-1 text-muted-foreground">
-            <li>Download the package below.</li>
-            <li>
-              In the Teams admin centre, go to <span className="font-medium">Teams apps
-              → Manage apps → Upload new app</span>.
-            </li>
-            <li>Upload the zip, then allow it for the people who need it.</li>
-          </ol>
-          <Button asChild variant="outline" size="sm">
-            <a href={`/api/deployments/${deploymentId}/teams-package`}>
-              Download Teams app package
-            </a>
-          </Button>
-          <p className="text-xs text-muted-foreground">
-            Email works without this. Teams is optional.
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
           <CardTitle className="text-base">Notifications</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
