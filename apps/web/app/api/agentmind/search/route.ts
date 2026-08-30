@@ -38,11 +38,10 @@ export async function GET(request: NextRequest) {
   if ("error" in parsed) return parsed.error;
   const { data: params } = parsed;
 
-  // Validate deployment exists
-  // Authenticated as the deployment it claims to be, not merely naming
-  // one. This checked existence only, so an unauthenticated caller could
-  // act as any active deployment - and what AgentMind does with that is
-  // hand it to every other company's agent.
+  // Authenticated as the deployment it claims to be, not merely naming one — the
+  // token proves it. We then serve only knowledge from the caller's OWN company
+  // (see the where clause below), so a caller cannot read another org's lessons
+  // even if it somehow presented a valid token for a deployment in that org.
   const authed = await requireDeploymentToken(request, params.deploymentId);
   if ("error" in authed) return authed.error;
   const { deployment } = authed;
@@ -58,11 +57,15 @@ export async function GET(request: NextRequest) {
   const where: Record<string, unknown> = {
     agentId: params.agentId,
     status: "APPROVED",
-    // Lessons this buyer has silenced for their own agent. AgentMind is shared
-    // across every deployment of an agent, so a lesson written by one buyer
-    // reaches all of them; deleting is rightly company-scoped, which left a
-    // buyer harmed by somebody else's lesson with no remedy but switching the
-    // whole commons off. Muting is that remedy, and it stops here.
+    // Org scope: a deployment only ever sees lessons contributed by deployments
+    // in its OWN company. This is the isolation the buyer docs promise ("scoped to
+    // your organisation — other companies' data is never visible"). Contributions
+    // are PII-scrubbed and reviewed regardless, but knowledge still never crosses
+    // a company boundary. Filtered through the contributing deployment's company.
+    deployment: { companyId: deployment.companyId },
+    // Lessons this buyer has silenced for their own agent. Deleting is
+    // company-scoped, which left a buyer with no remedy but switching the whole
+    // commons off; muting is that remedy, and it stops here.
     mutes: { none: { deploymentId: params.deploymentId } },
   };
 
