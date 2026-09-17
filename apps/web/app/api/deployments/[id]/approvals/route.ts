@@ -114,9 +114,11 @@ export async function POST(
   const stakes = Number(stakesScore ?? riskScore ?? 0) || 0;
   const ambiguity = Number(ambiguityScore ?? 0) || 0;
   const reversibility = Number(reversibilityScore ?? 0) || 0;
+  // Fallback only — the adapter sends combinedScore. reversibility is "how
+  // easily undone" (10 = trivial) so it is inverted: permanent is the risky one.
   const combined =
     Number(combinedScore ?? 0) ||
-    (stakes + ambiguity + reversibility) / 3 ||
+    (stakes + ambiguity + (10 - reversibility)) / 3 ||
     0;
 
   const approval = await prisma.approval.create({

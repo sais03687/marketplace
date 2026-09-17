@@ -67,7 +67,9 @@ export async function POST(
 
   const d = parsed.data;
   const combinedScore =
-    d.stakesScore * 0.5 + d.ambiguityScore * 0.3 + d.reversibilityScore * 0.2;
+    // reversibility is "how easily undone" (10 = trivial), so it is inverted
+    // here: the permanent action is the risky one.
+    d.stakesScore * 0.5 + d.ambiguityScore * 0.3 + (10 - d.reversibilityScore) * 0.2;
   const now = new Date();
 
   const approval = await prisma.approval.create({

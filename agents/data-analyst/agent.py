@@ -417,6 +417,38 @@ _WRITE_ACTIONS = {
 }
 
 
+def _risk_combined(risk: dict | None) -> float | None:
+    """One risk number from the three scores, with reversibility the right way up.
+
+    `reversibility` is how easily the action can be undone, and the model scores
+    it that way: across 54 live samples it gave `drive_upload` — a write you
+    delete in one click — an 8 or a 9 in 45 of them. Averaging that in raw made
+    an action *riskier* the easier it was to undo, and a permanent one (scoring
+    1-2) *safer*. The gate exists for irreversible actions, so the sign error ran
+    against precisely the case it was built for.
+
+    So the contribution is `10 - reversibility`, and it is computed here from the
+    three components rather than read from the model's own `combined` field,
+    because arithmetic the model does unprompted is the thing least worth
+    trusting — see `_read_back_summary` in the adapter.
+    """
+    if not isinstance(risk, dict):
+        return None
+    try:
+        stakes = float(risk["stakes"])
+        ambiguity = float(risk["ambiguity"])
+        reversibility = float(risk["reversibility"])
+    except (KeyError, TypeError, ValueError):
+        # An incomplete assessment is not a low-risk one. Hand back whatever the
+        # model said so the caller's own "unreadable means ask" path decides.
+        value = (risk or {}).get("combined")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return (stakes + ambiguity + (10.0 - reversibility)) / 3.0
+
+
 def _needs_manager_approval(
     action_type: str, params: dict, policy: dict | None = None
 ) -> bool:
@@ -783,10 +815,14 @@ Produce a JSON response (no markdown fences):
     }}
   }},
   "risk_assessment": {{
-    "stakes": <1-10>,
-    "ambiguity": <1-10>,
-    "reversibility": <1-10>,
-    "combined": <float average>
+    // 1 = low, 10 = high. Say what each scale means, because an undefined one
+    // gets read whichever way the sentence happens to run.
+    "stakes": <1-10: how much damage if this is wrong>,
+    "ambiguity": <1-10: how unsure you are what was actually asked for>,
+    "reversibility": <1-10: how EASILY UNDONE this is. 10 = trivial to undo
+                      (delete the file you just wrote), 1 = permanent. Higher
+                      is SAFER, so the platform counts 10 minus this value>,
+    "combined": <float: (stakes + ambiguity + (10 - reversibility)) / 3>
   }},
   "needs_approval": <true if email goes to external recipient>,
   "final_response": {{
@@ -1653,7 +1689,7 @@ async def execute_action(state: AgentState) -> AgentState:
                 return state
 
         _risk = state.analysis.get("risk_assessment") or {}
-        _gate_params = {**params, "_risk_combined": _risk.get("combined")}
+        _gate_params = {**params, "_risk_combined": _risk_combined(_risk)}
         if _needs_manager_approval(
             action_type, _gate_params, state.context.get("approval_policy")
         ):

@@ -3285,7 +3285,10 @@ async def queue_for_approval(
     original_request: str = "",
 ) -> str:
     """Submit an action to the marketplace approval queue. Returns the approval ID."""
-    combined = (stakes + ambiguity + reversibility) / 3
+    # `reversibility` is how easily the action is undone (10 = trivial), so it
+    # counts inverted: a permanent action is the risky one. Averaging it raw
+    # scored an easily-deleted upload as riskier than an irreversible write.
+    combined = (stakes + ambiguity + (10 - reversibility)) / 3
     # Normalised here rather than at the four call sites, because the bug was a
     # call site that forgot to.
     payload = {
