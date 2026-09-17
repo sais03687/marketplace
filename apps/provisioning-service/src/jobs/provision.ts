@@ -302,9 +302,24 @@ export async function provisionJob(
         workspaceUserId = user.id;
         await prisma.deployment.update({
           where: { id: deploymentId },
-          data: { workspaceEmail: user.email, workspaceUserId: user.id },
+          // Record where the mailbox actually went. This branch used to write
+          // only the address, leaving mailboxLocation and workspaceScope at
+          // their defaults -- which is why the two oldest platform-mailbox
+          // deployments carry rows that contradict themselves
+          // (mailboxLocation "platform" with workspaceScope "buyer_org").
+          // Teardown and the pollers read these to decide which tenant to talk
+          // to, so a wrong value is not cosmetic.
+          data: {
+            workspaceEmail: user.email,
+            workspaceUserId: user.id,
+            mailboxLocation: "platform",
+            workspaceScope: "platform",
+          },
         });
-        console.log(`[provision] Microsoft 365 user created: ${user.email}`);
+        console.log(
+          `[provision] Microsoft 365 user created in the platform tenant ` +
+            `(email tier): ${user.email}`,
+        );
       } catch (err: any) {
         console.warn(`[provision] Microsoft 365 user creation failed: ${err.message}`);
       }
@@ -479,9 +494,26 @@ export async function provisionJob(
             // this path too — it falls back to the platform tenant when a
             // deployment has no buyer tenant of its own.
             WORKSPACE_SCOPE: "platform",
+            // No buyer tenant, so this is the email tier: the agent's mailbox
+            // lives here, work arrives as attachments and leaves the same way.
+            // The agent reads this to withhold its drive_*/excel_* actions --
+            // on this path they would resolve against the PLATFORM tenant's
+            // SharePoint, which holds other buyers' agents, so offering them
+            // would be an isolation bug rather than merely a dead end.
+            //
+            // Stated explicitly rather than inferred from the absence of
+            // buyer_org, so an agent provisioned before this variable existed
+            // keeps the tier it already had instead of being reclassified on
+            // its next restart.
+            AGENT_TIER: "email",
             TOKEN_ENDPOINT_URL: "http://host.docker.internal:3003/internal/microsoft-token",
             AGENT_TOKEN: agentTokenFor(deploymentId, config.provisioningSecret),
             AGENT_HOOKS_TOKEN: hooksTokenFor(deploymentId, config.provisioningSecret),
+            // Kept even though the email tier withholds every tool that reads
+            // it: microsoft_tools defaults this to the literal "default", which
+            // is one folder shared by every platform-tenant agent. If a drive
+            // call ever slipped past the gate, an unset value is the version
+            // that crosses a buyer boundary.
             SHAREPOINT_FOLDER: agentSlug,
             // Outlook email via Graph API
             EMAIL_MODE: "outlook",
