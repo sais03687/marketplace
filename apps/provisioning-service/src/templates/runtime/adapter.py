@@ -1367,8 +1367,13 @@ def _describe_pasted_data(text: str) -> str:
     if not shape:
         return ""
     return (
-        "The table pasted in the message above has this shape — read it before "
-        "writing code against the data:\n" + shape.replace("pasted.csv: ", "", 1)
+        "The data for this task is in the message above, not in a file. It "
+        "has this shape — read it before writing code against the data:\n"
+        + shape.replace("pasted.csv: ", "", 1)
+        + "\n\nDo not run drive_list or drive_search looking for a file to "
+        "use instead. A workbook on SharePoint whose name matches this task is "
+        "usually one you produced on an earlier run, and computing over it "
+        "returns a confident figure about the wrong rows."
     )
 
 
