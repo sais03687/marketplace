@@ -108,8 +108,17 @@ def test_rewriting_over_an_existing_learned_block_does_not_duplicate_it(memory):
 # ── the action is wired, and safe ──────────────────────────────────────────
 
 def test_remember_is_a_declared_action():
-    src = io.open(Path(agent.__file__), encoding="utf-8").read()
-    assert "| remember | none" in src
+    """The enum is now built from `_ALL_ACTIONS`, so that is what to assert on.
+
+    This used to grep the prompt for the literal "| remember | none". The action
+    list became a single tuple when the email tier needed to withhold the
+    workspace tools, so the string is gone and the tuple is the declaration.
+    """
+    assert "remember" in agent._ALL_ACTIONS
+    assert "remember" in agent._action_types_for_prompt().split(" | ")
+    assert "remember" not in agent._ORG_ONLY_ACTIONS, (
+        "remember is a local write and must exist on every tier"
+    )
 
 
 def test_remember_runs_without_an_approval_gate():

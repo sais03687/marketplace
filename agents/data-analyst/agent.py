@@ -49,6 +49,48 @@ except (ImportError, ValueError):
 _WORKSPACE_PROVIDER = os.environ.get("WORKSPACE_PROVIDER", "NONE")
 _WORKSPACE_SCOPE = os.environ.get("WORKSPACE_SCOPE", "platform")
 
+# ─── Tier: does this agent reach into the buyer's own workspace? ─────────────
+#
+# Two tiers exist, and they differ in one thing: whether the buyer granted
+# tenant access. The org tier has `WORKSPACE_SCOPE=buyer_org` — a mailbox and a
+# SharePoint folder inside the buyer's Microsoft 365, which costs them a Global
+# Admin's consent and a licence seat. The email tier has neither: the mailbox
+# lives in the platform tenant, work arrives as attachments, and deliverables go
+# back the same way.
+#
+# It is not a feature flag. Microsoft will not let an ordinary employee consent
+# to a file-reading scope — tested 2026-09-17, a role-less user was refused with
+# "Need admin approval", and publisher verification would not change it because
+# the default low-impact classification is only openid/profile/email/
+# offline_access/User.Read. So for any buyer whose IT will not sign off, the
+# email tier is the product, not a downgrade.
+#
+# The drive tools are withheld rather than discouraged. In email-tier mode they
+# would resolve against the PLATFORM tenant's SharePoint — shared infrastructure
+# holding other buyers' agents — so advertising them is an isolation bug, not
+# just a dead end. And a tool the model is told not to use is a tool it uses
+# eventually; one it was never handed, it cannot.
+# Opt-in by an explicit signal, NOT inferred from the absence of buyer_org.
+# Inferring it reclassified every deployment that predates the variable - the
+# two legacy platform-mailbox agents among them - and stripped their tools on
+# the next restart with no deploy and no warning. A tier is a property of what
+# was sold, so provisioning states it; silence means the tier that already
+# existed.
+_EMAIL_ONLY = os.environ.get("AGENT_TIER", "org").strip().lower() == "email"
+
+# Actions that read or write the buyer's workspace. Every one needs tenant
+# access, so none of them exist on the email tier.
+_ORG_ONLY_ACTIONS = frozenset({
+    "drive_list", "drive_search", "drive_read_text", "drive_fetch",
+    "drive_upload", "drive_share", "drive_create_link", "sharepoint_read",
+    "excel_list_sheets", "excel_read", "excel_write", "excel_append",
+})
+
+
+def _action_available(action_type: str) -> bool:
+    """Is this action offered to this agent at all?"""
+    return not (_EMAIL_ONLY and action_type in _ORG_ONLY_ACTIONS)
+
 # ─── LLM Config ──────────────────────────────────────────────────────────────
 
 _llm_api_key = os.environ.get("LLM_API_KEY", "")
@@ -641,6 +683,44 @@ async def search_commons(state: AgentState) -> AgentState:
 # Telling it more firmly was tried twice and failed twice. So the closing pass
 # no longer sees a schema it can put an action in: there is no action field to
 # fill, and nothing to choose. The only thing it can produce is the reply.
+# The actions this agent may emit, in the order the prompt lists them. One list,
+# because the JSON enum and the tool guide used to be two hand-maintained copies
+# and a tool removed from one stayed advertised in the other.
+_ALL_ACTIONS = (
+    "send_email", "reply_email", "inbox_list", "inbox_read", "inbox_search",
+    "mcp_call", "sharepoint_read", "drive_search", "drive_read_text",
+    "drive_fetch", "drive_list", "drive_upload", "drive_share",
+    "drive_create_link", "my_drive_list", "my_drive_read", "my_drive_search",
+    "my_drive_upload", "my_drive_share", "my_drive_create_link",
+    "excel_list_sheets", "excel_read", "excel_write", "excel_append",
+    "calendar_list", "calendar_create", "request_decision", "remember", "none",
+)
+
+
+def _action_types_for_prompt() -> str:
+    """The enum the model chooses from — withheld actions are simply absent."""
+    return " | ".join(a for a in _ALL_ACTIONS if _action_available(a))
+
+
+def _tools_table_for_prompt(rows: str) -> str:
+    """Drop tool-guide rows for actions this tier does not have.
+
+    The guide is a markdown table whose first cell is the action name, so the
+    row is the authoritative description and this filters it rather than
+    maintaining a second copy.
+    """
+    if not _EMAIL_ONLY:
+        return rows
+    kept = []
+    for line in rows.split("\n"):
+        cells = line.split("|")
+        name = cells[1].strip() if len(cells) > 1 else ""
+        if name in _ORG_ONLY_ACTIONS:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 WRAP_UP_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
 
 {soul_instructions}
@@ -719,6 +799,79 @@ Produce a JSON object and nothing else (no markdown fences):
 }}"""
 
 
+def _delivery_rules_for_prompt() -> str:
+    """Where a finished deliverable goes, which differs by tier.
+
+    The org tier uploads to the buyer's SharePoint. The email tier has none, so
+    the reply itself is the delivery mechanism. Leaving the SharePoint wording in
+    place for an email-tier agent would be the E4 mistake again: two rules, one
+    of them impossible, and the model obeying the louder.
+    """
+    if not _EMAIL_ONLY:
+        return "- Upload all deliverables to SharePoint - don't just describe them"
+    return (
+        "- Attach every deliverable to your reply - don't just describe it. You "
+        "have no SharePoint and no access to the requester's files, so the reply "
+        "IS the delivery: write what you produce to /tmp/output/ in the sandbox "
+        "and it travels with your message. A described-but-unattached workbook "
+        "does not exist as far as the requester is concerned, and saying you "
+        "produced it would be false.\n"
+        "- Anything you were given arrives with the request - an attachment, or "
+        "a table pasted into the message. Read attachments in the sandbox at "
+        "/tmp/input/<name>. There is no folder to browse and no file of theirs "
+        "reachable by name."
+    )
+
+
+def _missing_data_rule_for_prompt() -> str:
+    """What to do when the data needed is not in hand."""
+    if not _EMAIL_ONLY:
+        return (
+            "- If you cannot find data on SharePoint after trying BOTH drive_list "
+            "AND drive_search, say so in your reply and ask the manager where to "
+            "find it."
+        )
+    return (
+        "- If the request needs data that was not attached or pasted, do not "
+        "guess and do not go looking for it - you cannot reach their files. "
+        "Reply asking for exactly what you need, naming the fields or the file, "
+        "and stop. A clear request for the missing piece is a useful answer; an "
+        "estimate presented as a finding is not."
+    )
+
+
+_TOOLS_TABLE_ROWS = """| Action | Use when | Params |
+|--------|----------|--------|
+| drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
+| drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
+| drive_read_text | Read a SMALL text file you need to quote — a note, a README. It is cut at 2000 characters, so it is the wrong tool for data: a fee table or a dataset read this way arrives truncated and every figure taken from it is unsafe. For anything you mean to compute with, use drive_fetch. Never for .xlsx. | item_id |
+| drive_fetch | Hand workspace files to the sandbox without reading them here. Use for ANY file you mean to analyse rather than quote — a dataset, a spreadsheet, anything over a few hundred rows. **Ask for every file you need in one call**, by name: `files: ["orders.csv", "price_list.xlsx"]`. Names are looked up for you, so you do not need drive_list first. Then open them in the sandbox as /tmp/input/<name>. drive_read_text puts the content in this conversation and is cut at 2000 characters, so it is for reading a note, not for analysing data. | files (list of names or ids), subfolder (optional) |
+| drive_upload | Upload a file to your SharePoint folder. `content_base64` takes the `file_id` the sandbox returned — never file content. To upload anything, write it to `/tmp/output/` in the python-sandbox first and pass the id you get back. | filename, content_base64, content_type |
+| drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
+| drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
+| my_drive_share | Same as drive_share, but for a file in your own OneDrive. | item_id, recipients (list of emails), role, message (optional) |
+| my_drive_create_link | Same as drive_create_link, but for your own OneDrive. Defaults to anonymous, so pass scope="organization" unless a public link was actually asked for. | item_id, link_type, scope |
+| excel_list_sheets | List worksheet names in an .xlsx file. ALWAYS call this before excel_read — never guess sheet names. | item_id |
+| excel_read | Read data from a specific sheet+range in an .xlsx file. Returns a 2D array of values. | item_id, sheet, range (default A1:D50) |
+| excel_write | Overwrite a cell range in an .xlsx file. Range must match data dimensions (e.g. A5:D5 for 1 row × 4 cols). | item_id, sheet, range, values |
+| excel_append | Append rows after the last used row in an .xlsx sheet. | item_id, sheet, values |
+| my_drive_list | List files in your own OneDrive (separate from the shared SharePoint folder). | subfolder (optional) |
+| my_drive_read | Read a text file from your OneDrive. | item_id |
+| my_drive_search | Search your OneDrive by name/keyword. | query |
+| my_drive_upload | Upload a file to your OneDrive. Same `file_id` rule as drive_upload. | filename, content_base64, content_type |
+| inbox_list | List messages in your mailbox. | limit (default 10), unread_only (default true) |
+| inbox_read | Read one message in full. | message_id |
+| inbox_search | Search your mailbox. | query, limit (default 10) |
+| calendar_list | List upcoming calendar events. | days_ahead (default 7) |
+| calendar_create | Create a calendar event. | summary, start, end |
+| sharepoint_read | Read a SharePoint file by path. | path |
+| mcp_call | Run Python code (pandas, matplotlib, numpy) or parse documents (PDF, DOCX, XLSX) via the sandbox. | server="python-sandbox", tool, arguments |
+| reply_email | Reply to the current email thread. Always allowed, including to people outside the organisation. | to, subject, text, thread_id |
+| send_email | Start a new email (not a reply). Recipients must be inside the organisation. | to, subject, text |
+| request_decision | Ask your manager a question and wait for their answer. Blocks until they reply. | question, context, options (optional), urgency |
+| request_decision | Ask the manager a question and BLOCK until they answer. Only for genuine ambiguity. | question, context, options, urgency |"""
+
+
 REASONING_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
 
 {soul_instructions}
@@ -787,7 +940,7 @@ Produce a JSON response (no markdown fences):
   "plan": "Overall plan for this task (update if needed)",
   "completed": <true if the task is fully done and the final response is ready>,
   "action": {{
-    "type": "send_email | reply_email | inbox_list | inbox_read | inbox_search | mcp_call | sharepoint_read | drive_search | drive_read_text | drive_fetch | drive_list | drive_upload | drive_share | drive_create_link | my_drive_list | my_drive_read | my_drive_search | my_drive_upload | my_drive_share | my_drive_create_link | excel_list_sheets | excel_read | excel_write | excel_append | calendar_list | calendar_create | request_decision | remember | none",
+    "type": "{action_types}",
     "params": {{
       // For send_email/reply_email:
       "to": "recipient email",
@@ -843,36 +996,7 @@ Produce a JSON response (no markdown fences):
 
 ## Tool Guide — when to use each action type
 
-| Action | Use when | Params |
-|--------|----------|--------|
-| drive_list | Browse files in your SharePoint folder. ALWAYS start here to discover what files exist. | subfolder (optional) |
-| drive_search | Search all of SharePoint by name/keyword. Unreliable due to indexing delay — prefer drive_list. | query |
-| drive_read_text | Read a SMALL text file you need to quote — a note, a README. It is cut at 2000 characters, so it is the wrong tool for data: a fee table or a dataset read this way arrives truncated and every figure taken from it is unsafe. For anything you mean to compute with, use drive_fetch. Never for .xlsx. | item_id |
-| drive_fetch | Hand workspace files to the sandbox without reading them here. Use for ANY file you mean to analyse rather than quote — a dataset, a spreadsheet, anything over a few hundred rows. **Ask for every file you need in one call**, by name: `files: ["orders.csv", "price_list.xlsx"]`. Names are looked up for you, so you do not need drive_list first. Then open them in the sandbox as /tmp/input/<name>. drive_read_text puts the content in this conversation and is cut at 2000 characters, so it is for reading a note, not for analysing data. | files (list of names or ids), subfolder (optional) |
-| drive_upload | Upload a file to your SharePoint folder. `content_base64` takes the `file_id` the sandbox returned — never file content. To upload anything, write it to `/tmp/output/` in the python-sandbox first and pass the id you get back. | filename, content_base64, content_type |
-| drive_share | Give named people access to a SharePoint file. Every recipient must be someone the requester named — never invent addresses. | item_id, recipients (list of emails), role ("read" or "write", default read), message (optional) |
-| drive_create_link | Create a shareable link to a SharePoint file. Prefer scope="organization"; "anonymous" makes a link anyone in the world can open. | item_id, link_type ("view" or "edit", default view), scope ("organization" or "anonymous", default organization) |
-| my_drive_share | Same as drive_share, but for a file in your own OneDrive. | item_id, recipients (list of emails), role, message (optional) |
-| my_drive_create_link | Same as drive_create_link, but for your own OneDrive. Defaults to anonymous, so pass scope="organization" unless a public link was actually asked for. | item_id, link_type, scope |
-| excel_list_sheets | List worksheet names in an .xlsx file. ALWAYS call this before excel_read — never guess sheet names. | item_id |
-| excel_read | Read data from a specific sheet+range in an .xlsx file. Returns a 2D array of values. | item_id, sheet, range (default A1:D50) |
-| excel_write | Overwrite a cell range in an .xlsx file. Range must match data dimensions (e.g. A5:D5 for 1 row × 4 cols). | item_id, sheet, range, values |
-| excel_append | Append rows after the last used row in an .xlsx sheet. | item_id, sheet, values |
-| my_drive_list | List files in your own OneDrive (separate from the shared SharePoint folder). | subfolder (optional) |
-| my_drive_read | Read a text file from your OneDrive. | item_id |
-| my_drive_search | Search your OneDrive by name/keyword. | query |
-| my_drive_upload | Upload a file to your OneDrive. Same `file_id` rule as drive_upload. | filename, content_base64, content_type |
-| inbox_list | List messages in your mailbox. | limit (default 10), unread_only (default true) |
-| inbox_read | Read one message in full. | message_id |
-| inbox_search | Search your mailbox. | query, limit (default 10) |
-| calendar_list | List upcoming calendar events. | days_ahead (default 7) |
-| calendar_create | Create a calendar event. | summary, start, end |
-| sharepoint_read | Read a SharePoint file by path. | path |
-| mcp_call | Run Python code (pandas, matplotlib, numpy) or parse documents (PDF, DOCX, XLSX) via the sandbox. | server="python-sandbox", tool, arguments |
-| reply_email | Reply to the current email thread. Always allowed, including to people outside the organisation. | to, subject, text, thread_id |
-| send_email | Start a new email (not a reply). Recipients must be inside the organisation. | to, subject, text |
-| request_decision | Ask your manager a question and wait for their answer. Blocks until they reply. | question, context, options (optional), urgency |
-| request_decision | Ask the manager a question and BLOCK until they answer. Only for genuine ambiguity. | question, context, options, urgency |
+{tools_table}
 
 **Workflow for analyzing an .xlsx file:**
 1. `drive_list` → find the .xlsx file and get its item_id
@@ -889,7 +1013,7 @@ Produce a JSON response (no markdown fences):
 - When the task requires code, write complete Python scripts (not pseudocode)
 - IMPORTANT: In pandas, freq="M" is deprecated. Always use freq="ME" (month-end) or freq="MS" (month-start) for date ranges.
 - For matplotlib charts, always use plt.savefig("/tmp/output/chart.png", dpi=150, bbox_inches="tight") and plt.close()
-- Upload all deliverables to SharePoint — don't just describe them
+{delivery_rules}
 - Give every workbook a sheet named "Summary" as its first sheet, holding the
   few figures that answer the question as label/value rows — the total, the gap,
   the winner, whatever was actually asked. The detail sheets hold the workings.
@@ -927,7 +1051,7 @@ Produce a JSON response (no markdown fences):
 - When you give a figure, say in one line how you got it and what you assumed. A number nobody can check has to be taken on trust; a number with its derivation beside it can be corrected in seconds.
 - If the data cannot answer the question, say so and name the field you would need. Churn dates cannot explain *why* anyone churned. Do not supply a plausible cause you inferred rather than measured — that is the answer they cannot check and the one most likely to be acted on.
 - If the question has more than one defensible answer — "top performer" over revenue, growth and margin is three different people — give one, name the metric you used in the sentence, and say the answer changes under the others. Never choose silently and present it as the answer.
-- If you cannot find data on SharePoint after trying BOTH drive_list AND drive_search, say so in your reply and ask the manager where to find it.
+{missing_data_rule}
 - request_decision BLOCKS until the manager responds — only use it when you genuinely need their input
 - Use `remember` to record something durable you have learned about this company that will help future tasks: how their data is organised ("the Q3 file is always in Finance/Quarterly"), a standing preference ("the CFO wants charts, not tables"), a recurring correction ("we count revenue net of refunds"), a fact about their calendar or structure ("their fiscal year ends in March"). Emit `remember` with a single clear sentence in `fact`. It writes to your memory and needs no approval — nothing leaves the company. Do this when you notice a fact you would want to know next time, not as a routine step.
 - Do NOT `remember` one-off task details, the contents of this specific request, transient numbers, or anything you would not want to still believe in six months. Memory is for what stays true. And never put someone's private contact details or internal-only information into `remember` — that belongs in the manager's hands, not your general memory.
@@ -1146,6 +1270,10 @@ async def reason_and_act(state: AgentState) -> AgentState:
     )
 
     prompt = REASONING_PROMPT.format(
+        action_types=_action_types_for_prompt(),
+        tools_table=_tools_table_for_prompt(_TOOLS_TABLE_ROWS),
+        delivery_rules=_delivery_rules_for_prompt(),
+        missing_data_rule=_missing_data_rule_for_prompt(),
         agent_name=ctx.get("agent_name", "Data Analyst"),
         company_name=ctx.get("company_name", ""),
         content=message_content,
@@ -1660,6 +1788,32 @@ async def execute_action(state: AgentState) -> AgentState:
             state.action_results.append(
                 f"Remembered for future tasks: {' '.join(fact.split())}"
                 if noted else "Nothing new to remember (already known or empty)."
+            )
+            return state
+
+        # ── An action this tier does not have ───────────────────────────────
+        #
+        # The email tier never advertises these, so reaching here means the
+        # model produced one from its own training rather than from the tool
+        # guide. Refusing in the node, not just omitting from the prompt, is
+        # what makes the boundary real — and the hand-back names the substitute
+        # so the turn is not wasted, which is the one thing that has reliably
+        # changed the model's next move.
+        if not _action_available(action_type):
+            print(
+                f"[agent] {action_type} is not available on this tier "
+                "(no buyer workspace) — handing back",
+                flush=True,
+            )
+            state.actions_taken.append(f"{action_type} unavailable")
+            state.action_results.append(
+                f"STEP FAILED — {action_type} does not exist for you. You have no "
+                "access to the requester's SharePoint or OneDrive, and no file of "
+                "theirs is reachable by name. Everything you need is in the message "
+                "or attached to it: read attachments in the sandbox at "
+                "/tmp/input/<name>, write what you produce to /tmp/output/, and "
+                "deliver it by attaching it to your reply. Do not look for this "
+                "action under another name."
             )
             return state
 
