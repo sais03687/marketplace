@@ -50,6 +50,16 @@ jobs:
         with:
           node-version: "24"
 
+      # tests/test_commons_scrubbing.mjs imports apps/web/lib/agentmind/guardrails.ts,
+      # which imports zod. Nothing here installed JS dependencies, so that test
+      # could only ever fail in CI — it needs the workspace, not just node.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Install runtime dependencies
         run: |
           python -m pip install --upgrade pip
