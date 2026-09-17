@@ -2163,6 +2163,39 @@ def route_after_execution(state: AgentState) -> str:
     if state.context.get("_approved_action_executing"):
         print("[agent] Approved action executed — composing the reply", flush=True)
         return "wrap_up"
+
+    # A mid-run email is only ever sent by finalize, so going back to
+    # reason_and_act throws it away. execute_action does not send; it records
+    # "the platform will send it after this iteration", and that sentence was
+    # only ever true if the iteration happened to be the last one. The next turn
+    # overwrites state.analysis, finalize reads whatever action is there by
+    # then, and the message the model wrote is gone with no trace in the log.
+    #
+    # T12 on 2026-09-16: turn 1 decided the request was ambiguous — "top
+    # performer" could mean revenue, growth or margin — and wrote to ask which
+    # was meant. The question was never sent. Turn 2 had no memory of it and
+    # picked revenue on its own. The silent assumption the question existed to
+    # prevent, produced by losing the question.
+    #
+    # The model is told not to re-emit the action ("emitting this action again
+    # will not produce one"), so it cannot recover from this by itself, and the
+    # branch in finalize that packages a mid-run email has never once run.
+    #
+    # Finalizing here is also the honest semantics: an agent that stops to ask
+    # a question is blocked on the answer, which arrives as a new message and
+    # starts a new run.
+    action = state.analysis.get("action") if isinstance(state.analysis, dict) else None
+    if (
+        isinstance(action, dict)
+        and action.get("type") in ("send_email", "reply_email")
+        and not state.analysis.get("completed")
+    ):
+        print(
+            "[agent] mid-run email emitted — finalizing so it is actually sent",
+            flush=True,
+        )
+        return "finalize"
+
     return "reason_and_act"
 
 
