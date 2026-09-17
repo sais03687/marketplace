@@ -40,9 +40,15 @@ jobs:
 
       # node runs the poller's own functions rather than a reimplementation of
       # them — see tests/test_inbound_message.py.
+      #
+      # 24, not 20: three of those tests invoke node with
+      # --experimental-strip-types, which did not exist before 22.6, so on 20
+      # they exited 9 ("bad option") and this job had failed on every push since
+      # it was added. The tests themselves passed locally the whole time, which
+      # is why the red tick went unexamined.
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install runtime dependencies
         run: |
