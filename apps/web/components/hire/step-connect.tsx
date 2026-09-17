@@ -10,12 +10,33 @@ import { MessageSquare, Info, CheckCircle2, XCircle, ExternalLink } from "lucide
 // Microsoft 365 is the only workspace an agent can be provisioned into. Google was
 // removed entirely, and "Neither" depended on AgentMail, which is no longer an agent
 // mail channel — an agent needs an M365 mailbox to send or receive anything at all.
-const WORKSPACE_OPTIONS: Array<{
-  value: "MICROSOFT";
+// How the agent gets its work, which is the only real choice on this step.
+//
+// "buyer_org" needs a Global Administrator to consent, and Microsoft gives no
+// way around that: a role-less user asking for a file-reading scope is refused
+// with "Need admin approval", and publisher verification does not help because
+// the default low-impact classification is only openid/profile/email/
+// offline_access/User.Read (tested against a live tenant, 2026-09-17).
+//
+// So "platform" is not a downgrade, it is the product for every buyer whose IT
+// will not sign off. The agent still gets its own mailbox and identity; it just
+// never reaches into their tenant, and its workspace tools are withheld rather
+// than offered and broken.
+const TIER_OPTIONS: Array<{
+  value: "buyer_org" | "platform";
   label: string;
   desc: string;
 }> = [
-  { value: "MICROSOFT", label: "Microsoft 365", desc: "Outlook Calendar, OneDrive, Excel, Word" },
+  {
+    value: "platform",
+    label: "Email only — no IT approval needed",
+    desc: "Send work to your agent by email and it replies with the finished files. Nothing to install, no admin sign-off.",
+  },
+  {
+    value: "buyer_org",
+    label: "Connect Microsoft 365",
+    desc: "Your agent can also read and write files in your own SharePoint. Needs a Microsoft 365 admin to approve, plus a licence seat.",
+  },
 ];
 
 type Licensing = {
@@ -300,9 +321,13 @@ export function StepConnect() {
   // with no mailbox-capable seat cannot be provisioned no matter what is paid. This
   // used to be a warning the buyer could click straight past, which meant they could
   // be charged for a hire that was already guaranteed to fail.
+  // The email tier can never be blocked here: it asks nothing of the buyer's
+  // tenant, so there is nothing to check and nothing that can be missing.
   const blockedReason: string | null =
-    state.workspaceProvider !== "MICROSOFT" || !msConnected
-      ? "Connect your Microsoft 365 organization to continue — your agent needs a mailbox in your tenant."
+    state.mailboxLocation === "platform"
+      ? null
+      : !msConnected
+      ? "Connect your Microsoft 365 organization to continue — or choose Email only above, which needs no admin approval."
       : licensingStatus === "loading"
         ? "Checking your Microsoft 365 licences…"
         : licensingStatus === "no-seat"
@@ -352,29 +377,34 @@ export function StepConnect() {
         </div>
 
         <div className="space-y-2">
-          <p className="text-sm font-medium">Workspace</p>
+          <p className="text-sm font-medium">How {state.hireName} gets its work</p>
           <p className="text-xs text-muted-foreground">
-            Give {state.hireName} access to your organization{"'"}s calendar and
-            files. One-click connection — no technical setup required.
+            Either option gives {state.hireName} its own email address and identity.
+            You can start with email and connect Microsoft 365 later.
           </p>
-          {WORKSPACE_OPTIONS.map(({ value, label, desc }) => (
+          {TIER_OPTIONS.map(({ value, label, desc }) => (
             <label
               key={value}
               className={`flex items-center gap-3 cursor-pointer rounded-lg border p-4 transition-colors hover:border-primary/50 ${
-                state.workspaceProvider === value
+                state.mailboxLocation === value
                   ? "border-primary bg-primary/5"
                   : ""
               }`}
             >
               <input
                 type="radio"
-                name="workspaceProvider"
+                name="mailboxLocation"
                 value={value}
-                checked={state.workspaceProvider === value}
+                checked={state.mailboxLocation === value}
                 onChange={() => {
-                  updateState({ workspaceProvider: value });
-                  // Clear tenantId if switching away from Microsoft
-                  if (value !== "MICROSOFT") {
+                  // workspaceProvider stays MICROSOFT either way: the agent's
+                  // own mailbox is a Microsoft 365 mailbox whichever tenant it
+                  // lives in. Setting it to NONE would skip mailbox creation
+                  // altogether and leave the agent unreachable.
+                  updateState({ mailboxLocation: value, workspaceProvider: "MICROSOFT" });
+                  if (value === "platform") {
+                    // Dropping the tenant is what selects the email tier in
+                    // provisioning, so it must not survive a change of mind.
                     updateState({ buyerMicrosoftTenantId: null });
                   }
                 }}
@@ -383,7 +413,7 @@ export function StepConnect() {
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <p className="text-sm font-medium">{label}</p>
-                  {value === "MICROSOFT" && msConnected && (
+                  {value === "buyer_org" && msConnected && (
                     <Badge variant="outline" className="text-green-700 border-green-300 bg-green-50 text-[10px] px-1.5 py-0">
                       <CheckCircle2 className="h-3 w-3 mr-0.5" />
                       Connected
@@ -397,7 +427,7 @@ export function StepConnect() {
         </div>
       </div>
 
-      {state.workspaceProvider === "MICROSOFT" && !msConnected && (
+      {state.mailboxLocation === "buyer_org" && !msConnected && (
         <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-3">
           <div className="flex items-start gap-2 text-xs text-blue-800">
             <Info className="mt-0.5 h-3 w-3 shrink-0" />
@@ -424,7 +454,7 @@ export function StepConnect() {
         </div>
       )}
 
-      {state.workspaceProvider === "MICROSOFT" && msConnected && (
+      {state.mailboxLocation === "buyer_org" && msConnected && (
         <div className="rounded-lg bg-green-50 border border-green-200 p-3 text-xs text-green-800">
           <div className="flex items-start gap-2">
             <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
@@ -444,12 +474,32 @@ export function StepConnect() {
         </div>
       )}
 
-      {state.workspaceProvider === "MICROSOFT" && msConnected && (
+      {state.mailboxLocation === "buyer_org" && msConnected && (
         <LicensingSummary
           tenantId={state.buyerMicrosoftTenantId}
           agentName={state.hireName}
           onStatusChange={setLicensingStatus}
         />
+      )}
+
+      {state.mailboxLocation === "platform" && (
+        <div className="rounded-lg bg-green-50 border border-green-200 p-3 text-xs text-green-800">
+          <div className="flex items-start gap-2">
+            <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
+            <div>
+              <p className="font-medium mb-1">Nothing to set up</p>
+              <p>
+                {state.hireName} gets its own address (e.g.{" "}
+                <span className="font-mono">
+                  {state.agentSlug}-&lt;your-org&gt;@agents.agentstore.it.com
+                </span>
+                ). Email it a spreadsheet and a question; it replies with the
+                workbook, the charts, and a notebook showing every step it ran.
+                It cannot reach anything you don{"'"}t send it.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="space-y-2">

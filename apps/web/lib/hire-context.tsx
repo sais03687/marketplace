@@ -71,7 +71,10 @@ export function HireProvider({
       slackConnected: false,
       workspaceProvider: "MICROSOFT",
       buyerMicrosoftTenantId: null,
-      mailboxLocation: "buyer_org",
+      // Default to the tier that always completes. "buyer_org" needs a Global
+      // Administrator, and a buyer without one used to reach a disabled
+      // Continue button with no way forward. They can still choose it on step 3.
+      mailboxLocation: "platform",
       managerEmail: "",
       onboardingAnswers: {},
       deploymentId: null,
