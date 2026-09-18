@@ -50,6 +50,7 @@ export async function GET(
     select: {
       allowedEmails: true,
       managerEmail: true,
+      mailboxLocation: true,
       company: { select: { verifiedDomains: true } },
     },
   });
@@ -66,6 +67,18 @@ export async function GET(
     // Company.domain, so a stale client narrows rather than widens.
     companyDomain: ((deployment.company.verifiedDomains as string[]) ?? [])[0] ?? "",
     managerEmail: deployment.managerEmail ?? null,
+    // Whether the agent's own mail domain counts as "inside the organisation".
+    //
+    // The poller treats it that way, and on the org tier it is right: the
+    // mailbox lives in the buyer's tenant, so its domain IS theirs and admits
+    // their colleagues with no network call.
+    //
+    // On the email tier the mailbox lives in OUR tenant, so that same rule
+    // would admit every other agent on the platform and anyone else holding an
+    // address there. The buyer's colleagues, meanwhile, are on a domain nobody
+    // has told us about. So this tier has no wildcard at all: the manager, plus
+    // whoever the buyer lists explicitly.
+    trustAgentOwnDomain: deployment.mailboxLocation !== "platform",
   });
 }
 

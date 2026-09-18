@@ -333,7 +333,17 @@ async function classifyApprovalReply(replyText) {
 // ─── Email Allowlist ─────────────────────────────────────────────────────────
 
 /** { allowedEmails: string[], companyDomains: string[], companyDomain: string, managerEmail: string|null } */
-let allowlistCache = { allowedEmails: [], companyDomains: [], companyDomain: "", managerEmail: null };
+let allowlistCache = {
+  allowedEmails: [],
+  companyDomains: [],
+  companyDomain: "",
+  managerEmail: null,
+  // Default false: an older platform that does not send this field is more
+  // likely to be serving a platform-hosted mailbox than not, and the safe
+  // reading of silence is the narrow one. The org tier gets its colleagues
+  // from companyDomains either way.
+  trustAgentOwnDomain: false,
+};
 
 // The allowlist is fetched lazily — only when there is actually mail to decide
 // about — rather than on a fixed heartbeat. A timer-based refresh queried the
@@ -450,8 +460,15 @@ function isSenderAllowed(fromHeader) {
   // companyDomains is Microsoft's verifiedDomains for the buyer's tenant.
   // companyDomain is kept only for an older platform that has not redeployed;
   // the API now sources it from the same verified list.
+  //
+  // The agent's own domain counts as "inside the organisation" only when the
+  // mailbox lives in the buyer's tenant, which is the org tier. On the email
+  // tier it lives in OURS, so this same line would admit every other agent on
+  // the platform and anyone else holding an address there -- one buyer's agent
+  // able to mail another's. That tier has no wildcard: the manager, plus
+  // whoever the buyer listed.
   const domains = [
-    agentOwnDomain(),
+    ...(allowlistCache.trustAgentOwnDomain ? [agentOwnDomain()] : []),
     ...(allowlistCache.companyDomains || []),
     companyDomain || "",
   ];

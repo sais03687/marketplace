@@ -187,15 +187,30 @@ export async function provisionJob(
     // Non-fatal: an empty list grants nothing, and the agent's own mail domain
     // still covers its colleagues, so a Graph hiccup narrows the boundary rather
     // than widening it.
-    try {
-      const verified = await getVerifiedDomains(buyerTenantId || config.microsoftTenantId);
-      await prisma.company.update({
-        where: { id: deployment.companyId },
-        data: { verifiedDomains: verified },
-      });
-      console.log(`[provision] Verified tenant domains: ${verified.join(", ") || "(none)"}`);
-    } catch (err: any) {
-      console.warn(`[provision] Could not read verified domains: ${err.message}`);
+    //
+    // Only when the buyer HAS a tenant. The fallback used to read our own when
+    // they had none, which wrote the platform's domains onto their company row:
+    // their colleagues -- on a domain nobody has told us about -- stayed locked
+    // out, while every address in our tenant, including every other buyer's
+    // agent, was admitted as a colleague. On the email tier there is no tenant
+    // to ask, so there is no wildcard: the manager, plus whoever the buyer
+    // lists explicitly.
+    if (buyerTenantId) {
+      try {
+        const verified = await getVerifiedDomains(buyerTenantId);
+        await prisma.company.update({
+          where: { id: deployment.companyId },
+          data: { verifiedDomains: verified },
+        });
+        console.log(`[provision] Verified tenant domains: ${verified.join(", ") || "(none)"}`);
+      } catch (err: any) {
+        console.warn(`[provision] Could not read verified domains: ${err.message}`);
+      }
+    } else {
+      console.log(
+        "[provision] Email tier: no tenant to verify, so no domain wildcard — " +
+          "the manager and the explicit allowlist decide who may write in.",
+      );
     }
 
     if (buyerTenantId) {
