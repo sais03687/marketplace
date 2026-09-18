@@ -27,18 +27,22 @@ export function StepInterview() {
         const res = await fetch(`/api/agents/${state.agentSlug}`);
         if (res.ok) {
           const agent = await res.json();
-          setQuestions(mergeWithPlatformQuestions(agent.onboardingQuestions));
+          setQuestions(
+            mergeWithPlatformQuestions(agent.onboardingQuestions, state.mailboxLocation),
+          );
         } else {
           // Fall back to platform questions only
-          setQuestions(mergeWithPlatformQuestions(null));
+          setQuestions(mergeWithPlatformQuestions(null, state.mailboxLocation));
         }
       } catch {
-        setQuestions(mergeWithPlatformQuestions(null));
+        setQuestions(mergeWithPlatformQuestions(null, state.mailboxLocation));
       }
       setLoading(false);
     }
     fetchQuestions();
-  }, [state.agentSlug]);
+    // Refetch on a tier change: the buyer picks the tier on the step before
+    // this one and can go Back and change it, and the question set differs.
+  }, [state.agentSlug, state.mailboxLocation]);
 
   const sortedQuestions = [...questions].sort(
     (a, b) => (a.order ?? 99) - (b.order ?? 99),

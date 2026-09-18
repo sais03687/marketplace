@@ -242,6 +242,22 @@ async def run_agent(
         in the deployment and passed to the agent during onboarding so it can configure itself
         immediately — no back-and-forth email required.
       </P>
+      <P>
+        <strong>Buyers hire on one of two tiers, and not every question fits both.</strong>{" "}
+        On the <Code>buyer_org</Code> tier the agent is connected to the company{"'"}s
+        Microsoft 365 and can read and write their SharePoint. On the{" "}
+        <Code>platform</Code> tier — the default, because it needs no admin approval — it
+        has its own mailbox and nothing else: work arrives as an email attachment and
+        leaves the same way, and every SharePoint and OneDrive action is withheld from it.
+      </P>
+      <P>
+        So a question like {'"'}How is your SharePoint organised?{'"'} is wasted on a
+        platform-tier buyer, and worse, implies a capability the agent does not have. Add{" "}
+        <Code>{'"tiers": ["buyer_org"]'}</Code> to any question that presupposes a connected
+        workspace and it simply won{"'"}t be asked there. Omit the field and the question is
+        asked on both, which is the right default for anything about the team, their data,
+        or how they want to be replied to.
+      </P>
       <Pre>{`[
   {
     "id": "approval_policy",
@@ -265,6 +281,14 @@ async def run_agent(
     "question": "Briefly describe your company and what you'd like the agent to focus on first.",
     "memoryKey": "context.companyBackground",
     "required": true
+  },
+  {
+    "id": "sharepoint_structure",
+    "order": 4,
+    "question": "How is your SharePoint organised? Which folders hold the reports?",
+    "memoryKey": "context.sharepointLayout",
+    "required": false,
+    "tiers": ["buyer_org"]
   }
 ]`}</Pre>
 

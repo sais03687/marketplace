@@ -155,16 +155,31 @@ export function StepConfirmation() {
           <span className="text-muted-foreground">Slack</span>
           <span>{state.slackConnected ? "Connected" : "Not connected"}</span>
         </div>
+        {/* The tier, not the provider. workspaceProvider is MICROSOFT on both
+            tiers -- the agent's own mailbox is a Microsoft 365 mailbox wherever
+            it lives -- so printing it told an email-tier buyer "Microsoft 365"
+            one step after they chose the option that explicitly needs no
+            Microsoft admin, which reads as though they had connected a tenant
+            they had not. */}
         <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Workspace</span>
-          <span>Microsoft 365</span>
+          <span className="text-muted-foreground">How it works</span>
+          <span>
+            {state.mailboxLocation === "buyer_org"
+              ? "Connected to your Microsoft 365"
+              : "Email only — no connection needed"}
+          </span>
         </div>
-        {state.workspaceProvider === "MICROSOFT" && state.buyerMicrosoftTenantId && (
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Data location</span>
-            <span>Your Microsoft 365 tenant</span>
-          </div>
-        )}
+        {/* Shown on BOTH tiers. This used to render only when a tenant was
+            connected, so the buyer who most needed to know where their files
+            end up -- the one sending them to us -- was the only one not told. */}
+        <div className="flex justify-between text-sm">
+          <span className="text-muted-foreground">Data location</span>
+          <span>
+            {state.mailboxLocation === "buyer_org"
+              ? "Your Microsoft 365 tenant"
+              : "Files you email are processed on our servers"}
+          </span>
+        </div>
         {state.managerEmail && (
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Approvals</span>

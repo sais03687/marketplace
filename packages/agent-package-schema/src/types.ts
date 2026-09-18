@@ -81,6 +81,19 @@ export interface OnboardingQuestion {
   memoryKey: string;     // dot-path into MEMORY.md sections
   required: boolean;
   followUp?: string;
+  /**
+   * Which hire tiers this question applies to. Omitted means both.
+   *
+   * A buyer on the email tier was asked "How is your SharePoint organized?"
+   * on the first real hire (2026-09-18) — a tier with no SharePoint, where
+   * every drive tool is withheld. Answering it is wasted effort, and being
+   * asked implies a capability the agent does not have.
+   *
+   * Filtered server-side rather than left to the wording, for the same reason
+   * the workspace tools are withheld rather than discouraged: a question a
+   * creator was merely advised not to ask still gets asked.
+   */
+  tiers?: Array<"platform" | "buyer_org">;
 }
 
 // ─── Agent Tests ─────────────────────────────────────────────────────────────

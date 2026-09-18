@@ -47,7 +47,14 @@ export async function GET(
   return jsonSuccess({
     onboardingState: deployment.onboardingState,
     onboardingData: deployment.onboardingData,
-    questions: mergeWithPlatformQuestions(agent?.onboardingQuestions),
+    // Tier-filtered: a buyer with no connected workspace is not asked how
+    // their SharePoint is organised.
+    questions: mergeWithPlatformQuestions(
+      agent?.onboardingQuestions,
+      (deployment as { mailboxLocation?: string }).mailboxLocation === "platform"
+        ? "platform"
+        : "buyer_org",
+    ),
     status: deployment.status,
   });
 }

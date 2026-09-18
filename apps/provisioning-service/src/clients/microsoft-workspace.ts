@@ -211,6 +211,7 @@ async function getPlatformDomain(): Promise<string> {
 export async function createMicrosoftUser(
   username: string,
   displayName: string,
+  opts: { skipOneDrive?: boolean } = {},
 ): Promise<{ email: string; id: string }> {
   const domain = await getPlatformDomain();
   const userPrincipalName = `${username}@${domain}`;
@@ -249,7 +250,21 @@ export async function createMicrosoftUser(
 
   // Queue OneDrive personal site provisioning (async, takes 1–5 min).
   // Non-fatal — SharePoint shared storage still works without it.
-  await provisionOneDrive(config.microsoftTenantId, [user.userPrincipalName]);
+  //
+  // Skipped on the email tier, which withholds every my_drive_* action: the
+  // drive it would provision is one the agent can never open. It is not free
+  // either — it resets the user's password to a temp value, takes a delegated
+  // token, and re-randomises — and on a seconds-old account the reset races
+  // directory propagation and logs a 404 that reads like a failed hire when
+  // nothing is wrong. Observed on the first real email-tier provision,
+  // 2026-09-18.
+  if (opts.skipOneDrive) {
+    console.log(
+      `[microsoft] Skipping OneDrive for ${user.userPrincipalName}: this tier has no drive tools`,
+    );
+  } else {
+    await provisionOneDrive(config.microsoftTenantId, [user.userPrincipalName]);
+  }
 
   return { email: user.userPrincipalName, id: user.id };
 }

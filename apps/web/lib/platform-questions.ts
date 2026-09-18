@@ -16,6 +16,14 @@ export interface OnboardingQuestion {
   type?: "text" | "choice";
   options?: Array<{ value: string; label: string }>;
   default?: string;
+  /**
+   * Which hire tiers this question applies to. Omitted means both, so every
+   * existing package keeps working untouched.
+   *
+   * Mirrors OnboardingQuestion in @marketplace/agent-package-schema, which is
+   * what a creator's questions.json is validated against.
+   */
+  tiers?: Array<"platform" | "buyer_org">;
 }
 
 export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
@@ -87,10 +95,27 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
  */
 export function mergeWithPlatformQuestions(
   agentQuestions: unknown,
+  /**
+   * The hire tier, so questions that presuppose a connected workspace are not
+   * asked of a buyer who has none.
+   *
+   * The first real email-tier hire (2026-09-18) was asked "How is your
+   * SharePoint organized?" — a tier where every drive tool is withheld.
+   * Answering it is wasted effort, and being asked implies a capability the
+   * agent does not have.
+   *
+   * Filtered here rather than left to creator guidance, because a question a
+   * creator was merely advised not to ask still gets asked. Omitting `tiers`
+   * means "both", so every existing package keeps working untouched.
+   */
+  mailboxLocation: "platform" | "buyer_org" = "buyer_org",
 ): OnboardingQuestion[] {
-  const existing: OnboardingQuestion[] = Array.isArray(agentQuestions)
-    ? (agentQuestions as OnboardingQuestion[])
-    : [];
+  const appliesHere = (q: OnboardingQuestion) =>
+    !Array.isArray(q.tiers) || q.tiers.length === 0 || q.tiers.includes(mailboxLocation);
+
+  const existing: OnboardingQuestion[] = (
+    Array.isArray(agentQuestions) ? (agentQuestions as OnboardingQuestion[]) : []
+  ).filter(appliesHere);
 
   const existingIds = new Set(existing.map((q) => q.id));
 
@@ -99,7 +124,7 @@ export function mergeWithPlatformQuestions(
   }, 0);
 
   const additions = PLATFORM_QUESTIONS.filter(
-    (q) => !existingIds.has(q.id),
+    (q) => !existingIds.has(q.id) && appliesHere(q),
   ).map((q, i) => ({ ...q, order: maxOrder + 1 + i }));
 
   return [...existing, ...additions];

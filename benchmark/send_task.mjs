@@ -11,7 +11,7 @@
 import { findTask, attachmentsOf, allTasks } from "./tasks.mjs";
 
 const FROM = "sai@agents.agentstore.it.com";
-const TO = "data-analyst-acme-corp-az3d9btj@agents.agentstore.it.com";
+const TO = process.env.AGENT_TO || "data-analyst-acme-corp-az3d9btj@agents.agentstore.it.com";
 
 const ids = process.argv.slice(2);
 if (!ids.length) {

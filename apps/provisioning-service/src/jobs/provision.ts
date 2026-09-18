@@ -310,7 +310,8 @@ export async function provisionJob(
       try {
         const username = `${agentSlug}-${companySlug}-${usernameSuffix}`;
         const user = await withRetry(
-          () => createMicrosoftUser(username, agentName),
+          // Email tier: no drive tools, so no drive to provision.
+          () => createMicrosoftUser(username, agentName, { skipOneDrive: true }),
           { step: "create_workspace_user_microsoft", deploymentId },
         );
         workspaceEmail = user.email;

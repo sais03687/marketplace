@@ -32,7 +32,10 @@
     "order": 5,
     "question": "How is your SharePoint organized? Are there specific folders for reports, raw data, or templates?",
     "memoryKey": "working_knowledge.sharepoint_structure",
-    "required": false
+    "required": false,
+    "tiers": [
+      "buyer_org"
+    ]
   },
   {
     "id": "preferred_tools",
