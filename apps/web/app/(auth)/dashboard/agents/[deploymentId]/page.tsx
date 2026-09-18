@@ -55,6 +55,13 @@ interface Deployment {
   _count: { approvals: number };
   updateAvailable: boolean;
   workspaceEmail: string | null;
+  /**
+   * "buyer_org" = the agent lives in the buyer's Microsoft 365. "platform" =
+   * the email tier, where it has a mailbox here and nothing else. The fire
+   * dialog promised to delete a OneDrive and preserve a shared SharePoint
+   * folder that an email-tier agent never had.
+   */
+  mailboxLocation: string | null;
 }
 
 // A live view of whether the agent is actually responding, distinct from its
@@ -590,7 +597,9 @@ export default function AgentOverviewPage({
                   ) : null}
                 </li>
                 <li>Its mailbox, and every email it has sent or received</li>
-                <li>Its OneDrive and any files stored there</li>
+                {deployment.mailboxLocation !== "platform" && (
+                  <li>Its OneDrive and any files stored there</li>
+                )}
                 <li>The running agent and its isolated network</li>
               </ul>
             </div>
@@ -610,7 +619,14 @@ export default function AgentOverviewPage({
             <div>
               <p className="font-medium mb-2">Kept</p>
               <ul className="space-y-1.5 text-muted-foreground list-disc pl-5">
-                <li>Files in the shared SharePoint folder, which is not deleted</li>
+                {deployment.mailboxLocation === "platform" ? (
+                  <li>
+                    Everything you sent it is still in your own mailbox — it only
+                    ever had what you emailed it
+                  </li>
+                ) : (
+                  <li>Files in the shared SharePoint folder, which is not deleted</li>
+                )}
                 <li>This agent&apos;s approval history, kept for your records</li>
               </ul>
             </div>

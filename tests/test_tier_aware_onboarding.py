@@ -115,3 +115,28 @@ def test_the_email_tier_skips_it():
 def test_the_org_path_is_untouched():
     """The buyer-tenant mailbox comes from createAgentMailbox, not this call."""
     assert "createAgentMailbox(buyerTenantId" in PROVISION
+
+# ── the fire dialog ─────────────────────────────────────────────────────────
+
+AGENT_PAGE = _read(
+    "apps", "web", "app", "(auth)", "dashboard", "agents", "[deploymentId]", "page.tsx"
+)
+
+
+def test_fire_dialog_does_not_promise_to_delete_a_drive_that_never_existed():
+    assert 'deployment.mailboxLocation !== "platform" && (' in AGENT_PAGE, (
+        "an email-tier agent has no OneDrive; every my_drive_* action is withheld"
+    )
+
+
+def test_fire_dialog_says_something_true_about_kept_files():
+    assert 'deployment.mailboxLocation === "platform" ? (' in AGENT_PAGE
+    assert "it only" in AGENT_PAGE and "ever had what you emailed it" in AGENT_PAGE, (
+        "the email tier has no shared SharePoint folder to keep"
+    )
+
+
+def test_the_page_can_actually_read_the_tier():
+    assert "mailboxLocation: string | null;" in AGENT_PAGE, (
+        "the API returns the whole deployment row; the interface omitted this"
+    )
