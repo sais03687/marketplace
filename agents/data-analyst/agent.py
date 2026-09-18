@@ -133,7 +133,34 @@ _RUN_DEADLINE_S = float(os.environ.get("LLM_RUN_DEADLINE_S", "600"))
 # task is almost never.
 _MAX_TIMEOUTS = int(os.environ.get("LLM_MAX_TIMEOUTS", "2"))
 
-_llm_model = os.environ.get("LLM_MODEL")
+def _resolve_llm_model() -> str:
+    """Which model this agent runs, with a file that outranks the environment.
+
+    LLM_MODEL is baked into the container at provisioning and never revisited,
+    so it drifts from the manifest and nothing says so. This agent's manifest
+    has declared `anthropic/claude-sonnet-5` since 1180664 while the container
+    ran `openai/gpt-oss-120b` for a month -- every benchmark number attributed to
+    the product was really a number about a different model.
+
+    Changing the env means recreating the container, which throws away the
+    MEMORY.md the agent has accumulated. So the file wins instead: docker cp it
+    in, restart, keep the memory. Same escape hatch as /agent/llm_broker.txt
+    (a53814f), except this one takes precedence -- the env is the stale side
+    here, not the override.
+    """
+    override = Path("/agent/llm_model.txt")
+    try:
+        if override.exists():
+            named = override.read_text().strip()
+            if named:
+                print(f"[agent] LLM_MODEL overridden by {override}: {named}", flush=True)
+                return named
+    except Exception as exc:
+        print(f"[agent] Could not read {override} ({exc}); using the environment", flush=True)
+    return os.environ.get("LLM_MODEL", "")
+
+
+_llm_model = _resolve_llm_model()
 if not _llm_model:
     raise RuntimeError("LLM_MODEL environment variable is required.")
 
