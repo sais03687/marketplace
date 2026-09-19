@@ -474,6 +474,9 @@ export async function provisionJob(
     LLM_API_KEY: containerLlmApiKey,
     LLM_BASE_URL: llmBaseUrl,
     LLM_MODEL: llmModel,
+    // The manifest's structuredOutput, read by platform_llm.StructuredLLM.
+    STRUCTURED_OUTPUT:
+      typeof manifest?.structuredOutput === "string" ? manifest.structuredOutput : "auto",
     ...(brokerOn ? { LLM_BROKER_URL: config.llmBrokerContainerUrl } : {}),
     APPROVAL_POLICY: approvalPolicy,
     APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,

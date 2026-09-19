@@ -151,6 +151,12 @@ export function validateManifest(m: unknown): ValidationError[] {
     }
   }
 
+  // Structured output mode (optional)
+  if (manifest.structuredOutput !== undefined &&
+      !["auto", "json", "schema", "none"].includes(manifest.structuredOutput as string)) {
+    errors.push({ field: "structuredOutput", message: "structuredOutput must be one of: auto, json, schema, none" });
+  }
+
   // Runtime config (optional)
   if (manifest.runtimeConfig !== undefined) {
     const rc = manifest.runtimeConfig as Record<string, unknown>;

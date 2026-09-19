@@ -70,6 +70,10 @@ export interface MarketplaceManifest {
   heartbeat?: {
     intervalHours?: number; // how often to wake the agent (default: 6)
   };
+  // Optional: how platform_llm.StructuredLLM asks the model for structured
+  // output. "auto" (default) picks per vendor; "none" is for an agent that
+  // wants prose back, such as a chat agent. Passed in as STRUCTURED_OUTPUT.
+  structuredOutput?: "auto" | "json" | "schema" | "none";
 }
 
 // ─── Onboarding ──────────────────────────────────────────────────────────────

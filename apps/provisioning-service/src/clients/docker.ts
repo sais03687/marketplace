@@ -156,6 +156,7 @@ export interface ContainerEnv {
   LLM_API_KEY?: string;
   LLM_BASE_URL?: string;
   LLM_MODEL?: string;
+  STRUCTURED_OUTPUT?: string;
   // When set, the adapter routes the creator's LLM client through this broker
   // (overwriting LLM_BASE_URL/LLM_API_KEY before creator code imports) so the real
   // model key never enters the container. See config.llmBrokerEnabled.

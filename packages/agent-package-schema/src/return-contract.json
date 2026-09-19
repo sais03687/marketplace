@@ -25,6 +25,17 @@
       "type": "string",
       "description": "Email body (plain text). Required when action is 'send_email' or 'reply_email'."
     },
+    "check": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 3,
+      "description": "Up to three things the requester should verify before using the reply: a choice you made (how you read an ambiguous column, which metric you ranked on), data you changed or left out, a part you could not do. The platform shows them under the reply's first paragraph as 'Check before you use this', after any problem it verified itself, and labels any figure in them that the run never computed."
+    },
+    "deliverables": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File names that are the answer. Only these (plus the working notebook) are attached. Omit it and every file the run produced is attached except names starting with '_', the convention for scratch output."
+    },
     "thread_id": {
       "type": ["string", "null"],
       "description": "AgentMail thread ID. Required when action is 'reply_email'. Pass null to start a fresh thread."

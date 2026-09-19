@@ -166,6 +166,10 @@ export default function CreatorDocsPage() {
           ["AUTO_APPROVE_LIST", "Comma-separated emails/domains that skip approval"],
           ["REQUIRE_APPROVAL_LIST", "Comma-separated emails/domains that always need approval"],
                               ["MARKETPLACE_URL", "Platform base URL for approval webhook callbacks"],
+          ["LLM_MODEL", "The model your manifest names, as vendor/model — pass it to your client"],
+          ["LLM_BASE_URL", "OpenAI-compatible endpoint to send model calls to"],
+          ["LLM_API_KEY", "A token scoped to this deployment for that endpoint — not a provider key"],
+          ["STRUCTURED_OUTPUT", "auto | json | schema | none — from your manifest's structuredOutput"],
         ]}
       />
 
@@ -235,6 +239,78 @@ async def run_agent(
         the deployment's policy. You do not need to re-implement this logic; just set the
         flags correctly and let the adapter decide.
       </Note>
+
+      <H3>What the platform does with your reply</H3>
+      <P>
+        Before any reply reaches the buyer&apos;s approval queue or their inbox, the platform
+        checks it against evidence — what your run actually executed, the files it produced,
+        and what the buyer asked — rather than against your agent&apos;s own account of its
+        work. You get these checks without writing any code for them:
+      </P>
+      <Table
+        headers={["Check", "What it catches"]}
+        rows={[
+          ["Claimed work", "A reply that says a file or calculation exists when the run executed and produced nothing"],
+          ["Reply vs file", "A figure in the reply that is not in the delivered file (the buyer's own numbers are exempt; percentages and scientific notation are read correctly)"],
+          ["Headline", "A headline figure the workbook's Summary sheet does not hold"],
+          ["Ranking", "\"Best\" / \"highest\" claims the column they rank disagrees with"],
+          ["Blank reply", "An empty reply is never sent; the buyer is told the task did not finish"],
+        ]}
+      />
+      <P>
+        When a check finds a problem, the platform calls <Code>run_agent</Code> again — up to
+        twice — with <Code>context[&quot;platform_feedback&quot;]</Code> set to{" "}
+        <Code>{`{"round", "problems", "previous_reply", "instructions"}`}</Code>. Rewrite the
+        reply so it agrees with the files and the work done; usually that means correcting the
+        text, not redoing the task. An agent that ignores the feedback simply returns the same
+        reply — and whatever problem survives is shown to the buyer at the top of the email.
+      </P>
+
+      <P>Two optional fields in your result let you shape the email:</P>
+      <Table
+        headers={["Field", "Type", "Effect"]}
+        rows={[
+          ["check", "string[] (max 3)", "What the buyer should verify before using the reply — a choice you made, data you changed, a part you could not do. Shown under the first paragraph as \"⚠ Check before you use this\", after any problem the platform verified. A figure in these items that your run never computed is labelled as such."],
+          ["deliverables", "string[]", "The file names that are the answer. Only these, plus the working notebook, are attached. Omit it and every file your run produced is attached except names starting with \"_\" — use that prefix for scratch output."],
+        ]}
+      />
+      <Pre>{`return {
+    "action": "reply_email",
+    "text": "Revenue was 7,385.75 across 6 orders.\\n\\nMethod: ...",
+    "check": ["I read amount as the order total, not a unit price. If it is a "
+              "unit price, reply and I will multiply by qty."],
+    "deliverables": ["orders_cleaned.xlsx"],
+}`}</Pre>
+
+      <H3>Calling the model</H3>
+      <P>
+        Build an OpenAI-compatible client from <Code>LLM_MODEL</Code>,{" "}
+        <Code>LLM_BASE_URL</Code> and <Code>LLM_API_KEY</Code>. The platform routes and pays
+        for the calls; your code never holds a provider key. If your agent expects JSON back —
+        an action to take, fields to read — use the platform&apos;s{" "}
+        <Code>platform_llm</Code> module, which ships in every agent image:
+      </P>
+      <Pre>{`import os
+from langchain_openai import ChatOpenAI
+from platform_llm import StructuredLLM
+
+llm = ChatOpenAI(model=os.environ["LLM_MODEL"], base_url=os.environ["LLM_BASE_URL"],
+                 api_key=os.environ["LLM_API_KEY"], max_tokens=16000)
+structured = StructuredLLM(model=os.environ["LLM_MODEL"])
+
+response = await structured.ainvoke(llm, prompt, timeout=120, schema=MY_SCHEMA)`}</Pre>
+      <P>
+        It forces JSON at the model rather than asking for it in the prompt, picking the mode
+        each vendor honours (Anthropic models need a schema; most others take plain JSON mode),
+        routes only to providers that support it, falls back cleanly when one refuses, and
+        turns an answer cut off at the length limit into empty content for your retry instead
+        of an exception. JSON mode guarantees an object, not your fields — check the fields
+        you need and ask again if they are missing. A schema must list every field you read:
+        in schema mode an object with no listed properties comes back empty, so pass free-form
+        objects as JSON-encoded strings (<Code>decode_json_strings</Code> undoes that). Set{" "}
+        <Code>&quot;structuredOutput&quot;: &quot;none&quot;</Code> in your manifest if your
+        agent wants prose back.
+      </P>
 
       <H3>onboarding/questions.json — Hire wizard questions</H3>
       <P>
@@ -433,7 +509,7 @@ async def run_agent(
     { "name": "Interview scheduling", "description": "Books calendar slots via Outlook Calendar." }
   ],
   "requiredTools": ["email", "calendar", "sharepoint"],
-  "requiredIntegrations": ["microsoft365"],
+  "requiredIntegrations": ["python-sandbox"],
   "autonomyDefaults": {
     "email_external": "queue_if_stakes_gt_5",
     "email_internal": "auto_execute"
@@ -454,9 +530,10 @@ async def run_agent(
           ["modelTier", "enum", "Yes", "standard | pro | premium. Ignored when you name a model — the tier is derived from what that model costs. Sets the price floor."],
           ["runtime", "string", "Yes", "Must be \"custom\"."],
           ["capabilities", "array", "Yes", "List of { name, description } objects. Shown as feature bullets on the listing."],
-          ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, calendar, sharepoint, excel, teams, etc."],
+          ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, calendar, sharepoint, excel, etc. Listing metadata only — it grants nothing."],
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
+          ["structuredOutput", "enum", "No", "auto | json | schema | none. How platform_llm asks your model for structured output. Default auto picks per vendor; use none for an agent that wants prose back. See Calling the model."],
         ]}
       />
 
@@ -611,7 +688,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
           rows={[
             ["id", "string", "Yes", "Unique test identifier"],
             ["name", "string", "Yes", "Human-readable test name shown in the sandbox report"],
-            ["input.channel", "enum", "Yes", "\"email\" or \"slack\""],
+            ["input.channel", "enum", "Yes", "\"email\""],
             ["input.from", "string", "Yes", "Simulated sender address"],
             ["input.subject", "string", "No", "Email subject (required for channel: email)"],
             ["input.body", "string", "Yes", "Message body sent to the agent"],
