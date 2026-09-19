@@ -1958,6 +1958,9 @@ def _file_figures(blob: str) -> list[Decimal]:
     return vals
 
 
+_MAX_COMPARE_PLACES = 12
+
+
 def _figure_present(target: Decimal, raw: str, haystack: list[Decimal]) -> bool:
     """Is `target` in the file, allowing for the rounding a summary applies?
 
@@ -1965,7 +1968,11 @@ def _figure_present(target: Decimal, raw: str, haystack: list[Decimal]) -> bool:
     would flag every rounded figure, so both sides are rounded to the precision
     the summary chose to state.
     """
-    places = len(raw.split(".")[1]) if "." in raw else 0
+    # Capped, because a float's repr is not a precision. The reply may echo
+    # 0.12987012987012986 straight from Python while Excel stores fifteen
+    # significant digits — 0.12987012987013 — and at seventeen places the two
+    # never meet (T01, 2026-09-19).
+    places = min(len(raw.split(".")[1]) if "." in raw else 0, _MAX_COMPARE_PLACES)
     quantum = Decimal(1).scaleb(-places)
     try:
         want = target.quantize(quantum)
@@ -2084,7 +2091,15 @@ async def verify_deliverables(summary_text: str, file_ids: list[str] | None = No
     if not checked_any:
         return []
 
-    missing = [raw for raw, val in figures if not _figure_present(val, raw, haystack)]
+    # A rate stated as 5.33 against a cell holding 0.0533 is the same claim.
+    # The headline check learned that from E3 on 2026-08-17; this one did not,
+    # and T01 on 2026-09-19 appended "I could not reconcile them" to a reply
+    # whose every rate was right.
+    missing = [
+        raw for raw, val in figures
+        if not _figure_present(val, raw, haystack)
+        and not _same_but_for_percent(val, haystack)
+    ]
     if missing:
         print(
             f"[adapter] Deliverable check: {len(missing)} of {len(figures)} figures "
