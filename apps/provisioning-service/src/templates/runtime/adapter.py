@@ -921,17 +921,29 @@ def _restore_files_from_disk() -> None:
         )
 
 
-def begin_run(thread_id: str) -> None:
+# What the platform knows about a run beyond its files and steps: the request
+# it answers, and what the agent said about its own reply - the `check` items
+# for the buyer, the `deliverables` it means to send, and the problems the
+# platform itself verified. Every delivery path reads it, which is why it lives
+# with the run rather than being passed down each one. In memory only: a resume
+# after a restart has none of it, and every reader treats absence as "nothing
+# to add" rather than failing.
+_RUN_META: dict[str, dict] = {}
+
+
+def begin_run(thread_id: str, request: str = "") -> None:
     """Start a fresh run on `thread_id`, discarding anything it held before."""
     _current_run.set(thread_id or "")
     if not thread_id:
         return
     _RUN_FILES[thread_id] = []
     _RUN_STEPS[thread_id] = []
+    _RUN_META[thread_id] = {"request": request or ""}
     while len(_RUN_FILES) > _RUN_FILES_LIMIT:
         oldest = next(iter(_RUN_FILES))
         _RUN_FILES.pop(oldest)
         _RUN_STEPS.pop(oldest, None)
+        _RUN_META.pop(oldest, None)
 
 
 def attach_run(thread_id: str) -> None:
@@ -940,6 +952,40 @@ def attach_run(thread_id: str) -> None:
     if thread_id:
         _RUN_FILES.setdefault(thread_id, [])
         _RUN_STEPS.setdefault(thread_id, [])
+        _RUN_META.setdefault(thread_id, {})
+
+
+def current_run_meta() -> dict:
+    """The request, check items, deliverables and verified problems of this run."""
+    return _RUN_META.setdefault(_current_run.get(""), {})
+
+
+_MAX_AGENT_CHECKS = 3
+
+
+def record_agent_output(result: dict) -> None:
+    """Keep what an agent's result says about its own reply, for delivery to use.
+
+    `check`: up to three things the requester should verify - a choice the agent
+    made, data it changed, a part it could not do. `deliverables`: the file names
+    that are the answer; everything else the run produced (drafts, `_check.csv`
+    scratch files) stays out of the email. Both optional; an agent that sends
+    neither gets no check list and every non-scratch file attached.
+    """
+    if not isinstance(result, dict):
+        return
+    meta = current_run_meta()
+    checks = result.get("check")
+    if isinstance(checks, str):
+        checks = [checks]
+    if isinstance(checks, list):
+        items = [" ".join(str(c).split()) for c in checks if isinstance(c, (str, int, float))]
+        meta["checks"] = [
+            i for i in items if i and i.lower() not in ("none", "n/a", "nothing")
+        ][:_MAX_AGENT_CHECKS]
+    deliverables = result.get("deliverables")
+    if isinstance(deliverables, list):
+        meta["deliverables"] = [str(d).rsplit("/", 1)[-1] for d in deliverables if d]
 
 
 def current_run_files() -> list[str]:
@@ -1817,14 +1863,129 @@ def note_unattached_files(text: str, attachments: list[dict] | None) -> str:
     )
 
 
+# ─── "Check before you use this" ──────────────────────────────────────────────
+#
+# An agent will not get everything right first time, and it does not have to:
+# what it must do is let the reader catch a wrong assumption in seconds and fix
+# it in one line. An assumption buried in a method paragraph ("multiplied by
+# quantity per row") was seen by nobody on 2026-09-19; the same sentence as a
+# numbered item with its alternative beside it is a one-line correction.
+#
+# So the list is the platform's, rendered the same way for every agent, under
+# the reply's first paragraph: problems the platform verified first, then the
+# agent's own `check` items.
+
+_CHECK_HEADING = "⚠ Check before you use this:"
+
+
+def label_unverified(items: list[str], *sources) -> list[str]:
+    """Mark figures in an agent's check items that nothing in the run produced.
+
+    The list is written after the file checks run, so its numbers were verified
+    by nobody: on 2026-09-19 an item said keeping a duplicate "would double Beta
+    Ltd's revenue to $35,401.00" (it would have added 16,800), and another put a
+    return's effect at 7,791.50 against a true 7,500. A figure the run computed,
+    the request supplied or the checked reply states is left alone; any other is
+    labelled, not removed, because the alternative it describes is still worth
+    raising.
+    """
+    known: list[Decimal] = []
+    for src in sources:
+        text = src if isinstance(src, str) else json.dumps(src, default=str)
+        known.extend(v for _, v in _summary_figures_loose(text))
+
+    def _backed(raw: str, val: Decimal) -> bool:
+        q = Decimal(1).scaleb(-_stated_places(raw))
+        for k in known:
+            try:
+                if abs(k).quantize(q) == abs(val) or abs(k * 100).quantize(q) == abs(val):
+                    return True
+            except InvalidOperation:
+                continue
+        return False
+
+    out = []
+    for item in items:
+        figures = [
+            (raw, val) for raw, val in _summary_figures_loose(item)
+            if "." in raw or abs(val) >= 10
+        ]
+        if any(not _backed(raw, val) for raw, val in figures):
+            item = f"{item.rstrip('.')} (figure not calculated - ask me to run it)."
+        out.append(item)
+    return out
+
+
+def with_check_section(text: str, checks: list[str]) -> str:
+    """Put the check list under the reply's first paragraph, where it is read.
+
+    First paragraph rather than the very top, because the answer comes first -
+    the list qualifies it. A lead-in ending in a colon keeps the breakdown it
+    introduces. At most one platform item plus three from the agent.
+    """
+    if not checks or _CHECK_HEADING in text:
+        return text
+    section = _CHECK_HEADING + "\n" + "\n".join(
+        f"{i}. {item}" for i, item in enumerate(checks[: _MAX_AGENT_CHECKS + 1], 1)
+    )
+    body = text.strip()
+    head, sep, rest = body.partition("\n\n")
+    if not sep:
+        head, sep, rest = body.partition("\n")
+    lead = head
+    if head.rstrip().endswith(":") and rest:
+        breakdown, _, rest = rest.partition("\n\n")
+        lead = f"{head}{sep}{breakdown}"
+    if not rest:
+        return f"{body}\n\n{section}"
+    return f"{lead}\n\n{section}\n\n{rest}"
+
+
+def run_checks(reply_text: str) -> list[str]:
+    """The check items for this run's reply: verified problems, then the agent's."""
+    meta = current_run_meta()
+    agent_items = label_unverified(
+        list(meta.get("checks") or []),
+        meta.get("request", ""), current_run_steps(), reply_text,
+    )
+    return list(meta.get("platform_checks") or []) + agent_items
+
+
 def finalise_reply_text(text: str, attachments: list[dict] | None) -> str:
     """Everything the platform has to say about the message it is about to send.
 
-    One call per delivery path rather than two, because the two facts are
-    checked against the same list and a site that remembered one and forgot the
-    other would be back where F3 started.
+    One call per delivery path rather than two, because the facts are checked
+    against the same list and a site that remembered one and forgot the other
+    would be back where F3 started. The check list is added here for the same
+    reason: every path that sends a reply passes through this function.
     """
+    text = with_check_section(text, run_checks(text)) if (text or "").strip() else text
     return note_the_notebook(note_unattached_files(text, attachments), attachments)
+
+
+def _only_deliverables(files: list[dict]) -> list[dict]:
+    """The files that are the answer, not the working that produced them.
+
+    On 2026-09-19 replies went out carrying `_check.csv`, `_revenue_check.csv`
+    and a superseded draft workbook beside the real one, and a reply's own note
+    about a correction could not say which workbook was the corrected one. An
+    agent names its deliverables; one that does not gets everything except
+    names starting with "_", the convention for scratch output.
+
+    If the names given match nothing the run produced, the scratch rule applies
+    instead: a typo in `deliverables` must not turn into an email with no file.
+    """
+    wanted = {n.lower() for n in current_run_meta().get("deliverables") or []}
+    if wanted:
+        named = [f for f in files if str(f.get("name", "")).lower() in wanted]
+        if named:
+            return named
+        print(
+            f"[adapter] deliverables {sorted(wanted)} match none of "
+            f"{[f.get('name') for f in files]} - attaching all but scratch files",
+            flush=True,
+        )
+    return [f for f in files if not str(f.get("name", "")).startswith("_")]
 
 
 def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
@@ -1862,6 +2023,7 @@ def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
             "contentType": _CONTENT_TYPES.get(ext, "application/octet-stream"),
         })
     files.reverse()
+    files = _only_deliverables(files)
 
     notebook = notebook_attachment(current_run_steps(), request=request, subject=subject)
     if notebook:
@@ -1899,7 +2061,24 @@ def run_attachments(*, request: str = "", subject: str = "") -> list[dict]:
 #
 # The lookbehind also drops digits welded to a word, "Q3" and "FY2026", which
 # were matched and then discarded by the filters below anyway.
-_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])-?\d[\d,]*(?:\.\d+)?")
+# An optional exponent, because code prints large floats in scientific notation.
+# pandas shows a region total of 849,800,400 as 8.498004e+08; read without the
+# exponent that was "8.498004", absent from any file, and on 2026-09-19 it set off
+# a false mismatch, two hand-backs, and a reply pasted together from raw output.
+_NUMBER_RE = re.compile(r"(?<![A-Za-z0-9])-?\d[\d,]*(?:\.\d+)?(?:[eE][+-]?\d+)?")
+
+
+def _stated_places(raw: str) -> int:
+    """Decimal places a figure was stated to, honouring an exponent.
+
+    Negative for a figure precise only to tens or hundreds: 8.498004e+08 states
+    seven significant digits, so it is compared to the nearest hundred, not unit.
+    """
+    try:
+        exp = Decimal(raw.replace(",", "")).as_tuple().exponent
+    except (InvalidOperation, ValueError):
+        return len(raw.split(".")[1]) if "." in raw else 0
+    return -exp if isinstance(exp, int) else 0
 
 # A bare integer under this is nearly always a count, an ordinal, a step number
 # or a month — "3 regions", "top 5", "Q3". Requiring a decimal point or real
@@ -1949,6 +2128,16 @@ def _summary_figures(text: str) -> list[tuple[str, Decimal]]:
     return out
 
 
+def _summary_figures_loose(text: str) -> list[tuple[str, Decimal]]:
+    """Every number in `text`, small ones included - for recognising inputs."""
+    out = []
+    for m in _NUMBER_RE.finditer(_URL_RE.sub(" ", text or "")):
+        val = _normalise_number(m.group(0).rstrip(".,"))
+        if val is not None:
+            out.append((m.group(0), val))
+    return out
+
+
 def _file_figures(blob: str) -> list[Decimal]:
     vals: list[Decimal] = []
     for m in _NUMBER_RE.finditer(_URL_RE.sub(" ", blob or "")):
@@ -1974,8 +2163,7 @@ def _figure_present(target: Decimal, raw: str, haystack: list[Decimal]) -> bool:
     # the two never meet (2026-09-19). A decimal-place cap is not enough: it
     # fits a rate like 0.1298... but not 12345.6789..., whose fifteen digits
     # leave only ten decimals. One digit of margin below fifteen.
-    stated = len(raw.split(".")[1]) if "." in raw else 0
-    places = min(stated, max(0, _MAX_COMPARE_SIG_DIGITS - 1 - target.adjusted()))
+    places = min(_stated_places(raw), max(0, _MAX_COMPARE_SIG_DIGITS - 1 - target.adjusted()))
     quantum = Decimal(1).scaleb(-places)
     try:
         want = target.quantize(quantum)
@@ -2093,6 +2281,16 @@ async def verify_deliverables(summary_text: str, file_ids: list[str] | None = No
 
     if not checked_any:
         return []
+
+    # A figure the requester wrote themselves - a threshold, a rate from their
+    # fee schedule, a count they supplied - is an input, not a result, and was
+    # never going to be in the file. On 2026-09-19 "more than 100 transactions",
+    # quoted from the request's own rules, was flagged twice; the rewrites
+    # dropped the explanation that made the answer checkable. Compared by value.
+    request_values = {
+        abs(v) for _, v in _summary_figures_loose(current_run_meta().get("request", ""))
+    }
+    figures = [(raw, val) for raw, val in figures if abs(val) not in request_values]
 
     # A rate stated as a percentage against a cell holding the fraction is the
     # same claim. The headline check learned that on 2026-08-17; this one did
@@ -4937,7 +5135,7 @@ async def run_sync(body: RunSyncPayload, request: Request):
         # No human is watching a vetting run; do not wait on one.
         "approval_policy": {"policy": "never"},
     }
-    begin_run(thread_id)
+    begin_run(thread_id, body.message)
     try:
         result = await run_agent(
             content=body.message,
@@ -6394,7 +6592,7 @@ async def _handle_message(message: str, context: dict):
         # message arriving on another one cannot clear them: runs overlap, and a
         # shared list meant the newest arrival wiped everyone else's. Resumes
         # attach instead of beginning, and keep what they have built up.
-        begin_run(thread_id)
+        begin_run(thread_id, message)
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
             # Handles the agent was given for this message's attachments become
