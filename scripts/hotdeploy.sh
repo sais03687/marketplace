@@ -16,7 +16,9 @@ DEP=cmsmc95dp0003l704az3d9btj
 CTR=custom-agent-cmsmc95d
 cd /opt/marketplace
 git fetch -q origin main
-git checkout origin/main -- agents/data-analyst/ apps/provisioning-service/src/templates/runtime/adapter.py apps/provisioning-service/src/templates/runtime/platform_llm.py
+# The whole runtime template directory, not named files: a new hire's image is
+# built from it, and the Dockerfile there must agree with the files it COPYs.
+git checkout origin/main -- agents/data-analyst/ apps/provisioning-service/src/templates/runtime/
 docker cp agents/data-analyst/agent.py       $CTR:/agent/creator/agent.py
 docker cp agents/data-analyst/microsoft_tools.py $CTR:/agent/creator/microsoft_tools.py
 docker cp agents/data-analyst/AGENTS.md      $CTR:/agent/creator/AGENTS.md
