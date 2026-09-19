@@ -751,6 +751,37 @@ def _tools_table_for_prompt(rows: str) -> str:
     return "\n".join(kept)
 
 
+# The "check before you use this" list at the top of every reply. Shared by the
+# reasoning and closing prompts so the two cannot drift apart.
+#
+# Why a list rather than prose: the agent will not get everything right first
+# time, and it does not have to - what it has to do is let the reader catch a
+# wrong assumption in seconds and correct it in one line. An assumption buried
+# in a method paragraph ("multiplied by quantity per row") was seen by nobody on
+# 2026-09-19; the same sentence as a numbered item with the alternative answer
+# beside it is a one-line fix.
+CHECK_RULES = """## The "check" list
+
+The platform shows "check" as a short numbered list right under the first
+paragraph of your reply, headed "Check before you use this". It is the most
+visible thing you write after the answer itself. Put there, and only there,
+anything that could change the answer or how they should use it:
+
+- A choice you made that they might not have: how you read an ambiguous column
+  or word, which metric you ranked on, what you did with a blank, negative or
+  duplicate value. Give the alternative's effect when you know it, e.g. "I read
+  `amount` as a unit price. If it is the order total, revenue is 7,385.75".
+- Anything in the data that looked wrong and that you changed or left out.
+- A part of the request you could not do, and what you would need to do it.
+
+Each item is one or two short sentences: what you did, why it matters, and what
+they can reply to change it. At most 3 items, most important first. Do not list
+routine steps, restate the answer, or add general advice to double-check. If
+nothing qualifies, send [] - an empty list is the normal case for a clear request
+with clean data, and a list that always has something in it stops being read.
+Do not repeat these items in "text"."""
+
+
 WRAP_UP_PROMPT = """You are {agent_name}, the Data Analyst at {company_name}.
 
 {soul_instructions}
@@ -822,10 +853,13 @@ Write the reply.
 - Sign off as "{agent_name}", and never with a placeholder. There is no
   "[Your Name]" to fill in later — this text is sent exactly as you write it.
 
+{check_rules}
+
 Produce a JSON object and nothing else (no markdown fences):
 {{
   "subject": "subject line for the reply, or null to keep the existing one",
-  "text": "the reply itself, as plain text with line breaks"
+  "text": "the reply itself, as plain text with line breaks",
+  "check": ["up to 3 things to check before using this, or [] if none"]
 }}"""
 
 
@@ -1013,6 +1047,7 @@ Produce a JSON response (no markdown fences):
     "to": "recipient email (only when completed=true)",
     "subject": "subject line",
     "text": "full response to send back to the requester",
+    "check": ["up to 3 things the requester should check before using this - see below; [] if none"],
     "thread_id": "thread id or null"
   }},
   "insight_worthy": <true if you learned a reusable analysis pattern>,
@@ -1023,6 +1058,8 @@ Produce a JSON response (no markdown fences):
     "tags": ["data-analysis"]
   }}
 }}
+
+{check_rules}
 
 ## Tool Guide — when to use each action type
 
@@ -1328,6 +1365,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
         private_memory=_private_md or "(No private memory yet)",
         actions_taken=actions_str,
         action_results=results_str,
+        check_rules=CHECK_RULES,
     )
 
     try:
@@ -1560,6 +1598,7 @@ async def _write_reply(state: AgentState) -> str:
         actions_taken=actions_str,
         action_results=results_str,
         produced_nothing=_produced_nothing_note(state.actions_taken),
+        check_rules=CHECK_RULES,
     )
 
     try:
@@ -1619,6 +1658,7 @@ async def _write_reply(state: AgentState) -> str:
         subject = parsed.get("subject")
         if isinstance(subject, str) and subject.strip():
             state.context["_wrap_up_subject"] = subject.strip()
+        state.context["_reply_checks"] = _check_items(parsed.get("check"))
         return str(parsed["text"]).strip()
 
     # Prose without the wrapper still answers the question, and a reply is not
@@ -2713,6 +2753,9 @@ async def verify_deliverables(state: AgentState) -> AgentState:
         print(f"[agent] Deliverable check failed to run ({e}) — sending as-is", flush=True)
         return state
 
+    missing = _not_quoted_from_request(
+        missing, state.content, getattr(state, "enriched_content", None)
+    )
     if not missing:
         return state
 
@@ -2991,25 +3034,25 @@ async def finalize(state: AgentState) -> AgentState:
     # So: state the disagreement, name the file as the tiebreaker, and claim
     # nothing else. The file is what the code computed; the summary is the model
     # writing figures out a second time, which is the step that can drift.
+    #
+    # It now leads the "check before you use this" list rather than trailing the
+    # reply: it is the one item the platform has verified rather than the model
+    # volunteered, and the bottom of an email is where nobody reads.
+    checks = _check_items(final.get("check")) or list(state.context.get("_reply_checks") or [])
     if state.deliverable_gaps and result_text.strip():
         figures = ", ".join(str(g) for g in state.deliverable_gaps[:8])
-        if state.iteration >= state.max_iterations:
-            why = "I ran out of steps before I could reconcile them"
-
-        else:
-            why = "I could not reconcile them"
-        result_text = (
-            f"{result_text.rstrip()}\n\n---\n"
-            f"Worth checking before you rely on this: {figures} "
-            f"{'appear' if len(state.deliverable_gaps) > 1 else 'appears'} in my "
-            f"summary above but not in the file — {why}. The file is what the code "
-            f"actually computed, so where the two disagree, go with the file. Ask "
-            f"me and I'll redo it."
-        )
+        plural = len(state.deliverable_gaps) > 1
+        checks.insert(0, (
+            f"{figures} {'appear' if plural else 'appears'} in my summary but not "
+            f"in the file. The file is what the code actually computed, so where "
+            f"the two disagree, go with the file. Reply \"redo\" and I'll fix it."
+        ))
         print(
-            f"[agent] Delivering with a deliverable-gap note ({len(state.deliverable_gaps)} figures)",
+            f"[agent] Delivering with a deliverable-gap check ({len(state.deliverable_gaps)} figures)",
             flush=True,
         )
+    if checks and result_text.strip():
+        result_text = _with_check_section(result_text, checks)
 
     # A run that produced nothing, reported by the model in its own words. Those
     # words are reliably vaguer than the evidence: on 2026-08-13 benchmark task
@@ -3753,6 +3796,71 @@ def _rebuilt_figures(produced: str, given: str) -> list[tuple[str, str]]:
                 seen.add(raw)
                 break
     return out
+
+
+_MAX_CHECKS = 3
+
+
+def _check_items(value) -> list[str]:
+    """The model's "check" list as clean strings, whatever shape it arrived in."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    items = [" ".join(str(v).split()) for v in value if isinstance(v, (str, int, float))]
+    return [i for i in items if i and i.lower() not in ("none", "n/a", "nothing")][:_MAX_CHECKS]
+
+
+def _with_check_section(text: str, checks: list[str]) -> str:
+    """Put the check list under the reply's first paragraph, where it is read.
+
+    First paragraph rather than the very top, because the answer comes first -
+    the list qualifies it. A reply with no paragraph break gets the list after
+    its first line.
+    """
+    # One platform item may lead a full model list; show at most one more.
+    items = checks[:_MAX_CHECKS + 1]
+    section = "⚠ Check before you use this:\n" + "\n".join(
+        f"{i}. {item}" for i, item in enumerate(items, 1)
+    )
+    body = text.strip()
+    head, sep, rest = body.partition("\n\n")
+    if not sep:
+        head, sep, rest = body.partition("\n")
+    if not rest:
+        return f"{body}\n\n{section}"
+    return f"{head}\n\n{section}\n\n{rest}"
+
+
+def _not_quoted_from_request(missing: list, *request_texts: str | None) -> list:
+    """Drop figures the requester wrote themselves from a list of file gaps.
+
+    The file check asks whether each figure in the reply is in the delivered
+    file. A figure restated from the request - a threshold, a rate from a fee
+    schedule, a count they supplied - is an input, not a result, and was never
+    going to be in the file. On 2026-09-19 "more than 100 transactions", quoted
+    from the request's own rules, was flagged twice; the rewrites dropped the
+    explanation that made the answer checkable and added a figure that really
+    was absent, and a correct reply went out with "I could not reconcile them".
+
+    Compared by value, so "$1,250" and "1250.00" are the same figure. A figure
+    the requester did not write is checked exactly as before.
+    """
+    given: set[Decimal] = set()
+    for text in request_texts:
+        for _, val in _summary_figures_local(text or ""):
+            given.add(val)
+            given.add(abs(val))  # "SKU-1003" reads as -1003; the reply may say 1003
+    kept = []
+    for raw in missing:
+        try:
+            val = Decimal(str(raw).replace(",", "").rstrip("%"))
+        except InvalidOperation:
+            kept.append(raw)
+            continue
+        if val not in given:
+            kept.append(raw)
+    return kept
 
 
 def _summary_figures_local(text: str) -> list[tuple[str, Decimal]]:

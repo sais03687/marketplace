@@ -83,14 +83,16 @@ def test_several_figures_read_as_several():
 
 
 def test_the_note_comes_after_the_answer_not_before_it():
-    # A caveat that leads buries the thing that was asked for.
+    # A caveat that leads buries the thing that was asked for. It now sits in
+    # the check list under the first paragraph - after the answer, not at the
+    # bottom where nobody reads it.
     text = _finalize(_State(gaps=["6,108.57"]))
-    assert text.index("North grew") < text.index("Worth checking")
+    assert text.index("North grew") < text.index("Check before you use this")
 
 
 def test_no_gaps_means_no_note():
     text = _finalize(_State(gaps=[]))
-    assert "Worth checking" not in text
+    assert "Check before you use this" not in text
     assert "go with the file" not in text
 
 
