@@ -3884,12 +3884,13 @@ def _with_check_section(text: str, checks: list[str]) -> str:
         head, sep, rest = body.partition("\n")
     # "Revenue by customer (total 7,385.75):" introduces what follows it; the
     # list must not split a lead-in from its breakdown.
+    lead = head
     if head.rstrip().endswith(":") and rest:
-        more, sep2, rest = rest.partition("\n\n")
-        head = f"{head}{sep}{more}"
+        breakdown, _, rest = rest.partition("\n\n")
+        lead = f"{head}{sep}{breakdown}"
     if not rest:
         return f"{body}\n\n{section}"
-    return f"{head}\n\n{section}\n\n{rest}"
+    return f"{lead}\n\n{section}\n\n{rest}"
 
 
 def _not_quoted_from_request(missing: list, *request_texts: str | None) -> list:
