@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
 import { z } from "zod";
+import { reviewDueDate } from "@/lib/agentmind-embedding";
 
 const bodySchema = z.object({
   decision: z.enum(["APPROVED", "REJECTED"]),
@@ -56,6 +57,9 @@ export async function POST(
       reviewNote: note || null,
       reviewedBy: userId,
       reviewedAt: new Date(),
+      // Every lesson now reaches the pool through this route, so it is where the
+      // re-review clock starts. Only auto-approved rows used to get one.
+      reviewDueAt: decision === "APPROVED" ? reviewDueDate(contribution.type) : null,
     },
   });
 

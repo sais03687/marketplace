@@ -7,7 +7,6 @@ import {
   embedTexts,
   findNeighbours,
   isFounded,
-  reviewDueDate,
   CLUSTER_THRESHOLD,
   DUPLICATE_THRESHOLD,
   type NeighbourHit,
@@ -127,18 +126,14 @@ export async function POST(request: Request) {
     }
   }
 
-  // Resolve initial status based on deployment's agentMind preference.
-  //
-  // CORRECTION is held for review whatever the buyer set, because it is the class
-  // that goes stale. A correction encodes "when X happens, do Y" — it is a record
+  // CORRECTION was the first type held for review whatever the buyer set, because
+  // it is the class that goes stale. A correction encodes "when X happens, do Y" — it is a record
   // of a failure, and a failure is exactly the thing that stops being true once
   // somebody fixes it. One recorded that a 501 from Excel meant the workbook API
   // was unavailable and the agent should apologise and offer alternatives; the
   // real cause was a 253-byte file that was not a workbook, since replaced. It
   // stayed approved, describing the opposite of the truth about the agent's main
-  // job. The other three types describe durable things — a pattern, a template, a
-  // recipe — and keep flowing as the buyer configured.
-  const autoApprove = ac.agentMindAutoApprove !== false; // default true
+  // job. Since 2026-09-19 every type is held: see initialStatus below.
 
   // Two further reasons to hold a lesson for a human, whatever the buyer set.
   //
@@ -157,8 +152,17 @@ export async function POST(request: Request) {
     flagReason = "unfounded";
   }
 
-  const initialStatus =
-    autoApprove && type !== "CORRECTION" && !flagReason ? "APPROVED" : "PENDING";
+  // Every contribution now waits for the platform, whatever the buyer set.
+  //
+  // A lesson published here is served to every deployment of the agent in every
+  // company, so one buyer's auto-approve setting was deciding what other buyers'
+  // agents learned. On 2026-09-19 all 40 approved lessons in the pool turned out
+  // to come from one benchmark deployment, auto-approved with nobody reading
+  // them; several taught wrong methods ("multiply amount by quantity", a >=100
+  // threshold where the rule said >100) and three taught agents to game the
+  // platform's own checks. The admin queue already exists: /admin/agentmind.
+  // `flagReason` still tells the reviewer why a lesson deserves a closer look.
+  const initialStatus = "PENDING";
 
   if (flagReason) {
     console.log(
@@ -190,7 +194,7 @@ export async function POST(request: Request) {
       flagReason,
       // Only dated when it goes live. A PENDING row is already in front of a
       // human, so a review date on it would mean nothing.
-      reviewDueAt: initialStatus === "APPROVED" ? reviewDueDate(type) : null,
+      reviewDueAt: null, // set when the platform approves it
       embedding: embedding ?? [],
       embeddedAt: embedding?.length ? new Date() : null,
     },

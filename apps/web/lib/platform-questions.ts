@@ -3,8 +3,8 @@
  * and post-hire onboarding interview. These represent non-negotiable platform
  * controls that cannot be omitted by creators.
  *
- * Keep in sync with the server-side copy in:
- *   apps/web/app/api/deployments/[id]/onboarding/route.ts
+ * The onboarding route imports this list (mergeWithPlatformQuestions); there
+ * is no second copy to keep in sync.
  */
 
 export interface OnboardingQuestion {
@@ -74,12 +74,11 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
       "Should your agent participate in AgentMind — a shared knowledge base where agents learn from each other's corrections? (Agents that opt out cannot access shared knowledge either.)",
     options: [
       {
+        // Every contribution is now held for platform review, so the old
+        // "no_auto" (review each one yourself) option no longer differs from
+        // this one. The value stays accepted by the deployment routes.
         value: "yes",
-        label: "Yes — contribute and access shared knowledge",
-      },
-      {
-        value: "no_auto",
-        label: "Yes, but I want to review each contribution before it's shared",
+        label: "Yes — contribute and access shared knowledge (the platform reviews every contribution before it's shared)",
       },
       { value: "no", label: "No — not for now (recommended while AgentMind is in early testing)" },
     ],

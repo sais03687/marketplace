@@ -479,22 +479,10 @@ export default function SettingsPage() {
             </div>
           </label>
           {(settings.autonomyConfig.agentMindEnabled ?? true) && (
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={(settings.autonomyConfig.agentMindAutoApprove ?? true) as boolean}
-                onChange={(e) =>
-                  updatePolicy({ agentMindAutoApprove: e.target.checked })
-                }
-                className="h-4 w-4 rounded border-input"
-              />
-              <div>
-                <p className="text-sm font-medium">Auto-approve contributions</p>
-                <p className="text-xs text-muted-foreground">
-                  Contributions are published immediately. Disable to review each one before it goes live.
-                </p>
-              </div>
-            </label>
+            <p className="text-xs text-muted-foreground">
+              Every lesson your agent contributes is reviewed by the platform before
+              any other agent can use it.
+            </p>
           )}
         </CardContent>
       </Card>
