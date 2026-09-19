@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireOrg } from "@/lib/api-utils";
+import { redactSecrets } from "@/lib/redact";
 
 export async function GET(
   _request: Request,
@@ -33,5 +34,5 @@ export async function GET(
     deployment.agent.currentVersion !== null &&
     deployment.agentVersion !== deployment.agent.currentVersion;
 
-  return jsonSuccess({ ...deployment, updateAvailable });
+  return jsonSuccess(redactSecrets({ ...deployment, updateAvailable }));
 }

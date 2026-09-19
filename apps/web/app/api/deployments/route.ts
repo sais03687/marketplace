@@ -6,6 +6,7 @@ import {
   parseBody,
   requireOrg,
 } from "@/lib/api-utils";
+import { redactSecrets } from "@/lib/redact";
 import { getStripe } from "@/lib/stripe";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
@@ -56,7 +57,7 @@ export async function GET(request: Request) {
     orderBy: { createdAt: "desc" },
   });
 
-  return jsonSuccess(deployments);
+  return jsonSuccess(redactSecrets(deployments));
 }
 
 export async function POST(request: Request) {
