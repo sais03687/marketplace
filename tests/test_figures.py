@@ -104,32 +104,48 @@ def test_a_small_bare_integer_is_not_a_figure():
     assert [raw for raw, _ in adapter._summary_figures("across 3 regions, top 5")] == []
 
 
-# ── T01, 2026-09-19: a correct reply told its reader not to trust it ────────
 
-def _missing(monkeypatch, summary, cells):
-    """What verify_deliverables flags for this reply against this workbook."""
+# ── a rate is the same claim at either scale; a float repr is not a precision ─
+
+def _missing(monkeypatch, summary, values):
+    """What verify_deliverables flags for this reply against a file of values."""
     import asyncio
     import json
 
     async def fake_text(name, raw):
-        return json.dumps({"sheets": {"Summary": cells}})
+        return json.dumps({"sheets": {"Sheet1": [[v] for v in values]}})
 
     monkeypatch.setattr(adapter, "_file_text", fake_text)
     monkeypatch.setitem(adapter._SANDBOX_FILES, "f1", {"name": "t.xlsx", "bytes": b""})
     return asyncio.run(adapter.verify_deliverables(summary, ["f1"]))
 
 
-def test_a_rate_stated_as_a_percentage_is_backed_by_its_fraction(monkeypatch):
-    cells = [["North", 0.05], ["South", 0.09], ["Overall", 0.05327659574468085]]
-    assert _missing(monkeypatch, "North 5.00%, South 9.00%, overall 5.33%.", cells) == []
+@pytest.mark.parametrize("stated, stored", [
+    ("12.50%", 0.125),
+    ("0.8%", 0.008),
+    ("99.99%", 0.9999),
+    ("33.3%", 1 / 3),
+    ("100.00%", 1.0),
+])
+def test_a_percentage_is_backed_by_the_fraction_the_file_holds(monkeypatch, stated, stored):
+    assert _missing(monkeypatch, f"The rate came to {stated} for the period.", [stored]) == []
 
 
-def test_a_python_float_repr_matches_the_cell_excel_stored(monkeypatch):
-    # Seventeen significant digits in the reply, fifteen in the workbook.
-    cells = [["West", 0.12987012987013]]
-    assert _missing(monkeypatch, "West: 0.12987012987012986", cells) == []
+@pytest.mark.parametrize("value", [2 / 7, 1 / 3, 10 / 77, 12345.678901234567, 3.14159265358979])
+def test_a_float_echoed_at_full_repr_matches_what_a_spreadsheet_stores(monkeypatch, value):
+    # The reply writes Python's shortest repr (up to 17 significant digits); a
+    # spreadsheet keeps 15. Both are the same number.
+    stored = float(f"{value:.15g}")
+    assert _missing(monkeypatch, f"Result: {value!r}", [stored]) == []
 
 
-def test_a_percentage_the_file_does_not_hold_is_still_a_gap(monkeypatch):
-    cells = [["North", 0.05]]
-    assert _missing(monkeypatch, "North converted at 7.40%.", cells) == ["7.40"]
+@pytest.mark.parametrize("stated, stored", [
+    ("7.40%", 0.05),       # a different rate, not a rescaling
+    ("45.00%", 0.9),       # half the stored rate
+])
+def test_a_percentage_the_file_does_not_hold_is_still_a_gap(monkeypatch, stated, stored):
+    assert _missing(monkeypatch, f"Conversion was {stated}.", [stored]) == [stated.rstrip("%")]
+
+
+def test_a_long_decimal_that_differs_within_twelve_places_is_still_a_gap(monkeypatch):
+    assert _missing(monkeypatch, "Result: 0.123456789012", [0.123456789099]) == ["0.123456789012"]
