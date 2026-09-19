@@ -2019,11 +2019,16 @@ async def verified_problems(text: str) -> list[str]:
     except Exception as e:
         print(f"[adapter] review: headline check failed to run ({e})", flush=True)
         headline = []
+    # Worded not to take a side: the check knows the two disagree and cannot
+    # know which is wrong. A note that vouches for one will eventually vouch for
+    # the wrong one (2026-08-11).
     for h in headline[:1]:
         holds = ", ".join(h.get("summary_holds", [])[:4])
         problems.append(
             f"The headline figure {h.get('claimed')} is not on the file's Summary sheet"
-            + (f" (it holds {holds})" if holds else "") + ". Go with the file."
+            + (f" (it holds {holds})" if holds else "")
+            + ". I could not settle which is right, so check the Summary sheet before "
+            "relying on the figure above."
         )
 
     try:
@@ -2031,11 +2036,21 @@ async def verified_problems(text: str) -> list[str]:
     except Exception as e:
         print(f"[adapter] review: ranking check failed to run ({e})", flush=True)
         rankings = []
-    for r in rankings[:1]:
+    # Names every entry ahead of the claim - naming only the first reads as
+    # confusion rather than doubt - and does not declare the agent wrong: the
+    # check reads columns, not meaning, and the sentence may be about a narrower
+    # comparison than the whole column.
+    if rankings:
+        first = rankings[0]
+        ahead = "; ".join(
+            f"{r.get('row')} in {r.get('column') or 'the column'} ({r.get('beaten_by')})"
+            for r in rankings[:4]
+        )
         problems.append(
-            f"The reply calls {r.get('value')} the {r.get('word')}, but the file's "
-            f"{r.get('column') or 'column'} has {r.get('beaten_by')} ({r.get('row')}). "
-            f"Check which one is meant."
+            f"The reply calls {first.get('subject') or first.get('value')} the "
+            f"{first.get('word')}, but the file has entries ahead of it: {ahead}. The "
+            f"sentence may mean a narrower comparison than the whole column, so look "
+            f"at the file before relying on it."
         )
     return problems
 

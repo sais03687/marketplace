@@ -48,50 +48,70 @@ def _finalize(state):
 
 
 # ── the note claims only what was measured ─────────────────────────────────
+#
+# The note is the platform's now (adapter.verified_problems, rendered at the top
+# of the check list for every agent); the lessons below are unchanged.
 
-def test_the_note_does_not_vouch_for_the_summary():
-    text = _finalize(_State(gaps=["6,108.57", "0.98"]))
+import adapter
+
+
+def _platform_note(monkeypatch, gaps, text="North grew 6,108.57 per month.\n\nMethod: slope."):
+    async def missing(_t, file_ids=None):
+        return list(gaps)
+
+    async def nothing(_t, file_ids=None):
+        return []
+
+    monkeypatch.setattr(adapter, "verify_deliverables", missing)
+    monkeypatch.setattr(adapter, "check_headline_against_summary", nothing)
+    monkeypatch.setattr(adapter, "check_rankings_against_file", nothing)
+    adapter.begin_run("t-disagree", "trend please")
+    adapter.current_run_steps().append({"tool": "execute_python"})
+    asyncio.run(adapter.review_reply({"action": "reply_email", "text": text}))
+    return adapter.finalise_reply_text(text, [])
+
+
+def test_the_note_does_not_vouch_for_the_summary(monkeypatch):
+    text = _platform_note(monkeypatch, ["6,108.57", "0.98"])
     assert "figures above are right" not in text
     assert "are right" not in text
 
 
-def test_the_note_names_the_file_as_the_tiebreaker():
-    text = _finalize(_State(gaps=["6,108.57"]))
+def test_the_note_names_the_file_as_the_tiebreaker(monkeypatch):
+    text = _platform_note(monkeypatch, ["6,108.57"])
     assert "go with the file" in text
     assert "what the code actually computed" in text
 
 
-def test_the_note_does_not_promise_an_attachment():
+def test_the_note_does_not_promise_an_attachment(monkeypatch):
     # It said "the attached file" while the only copy was on SharePoint, so the
     # reader was pointed at something the mail did not contain.
-    text = _finalize(_State(gaps=["6,108.57"]))
-    assert "attached file" not in text
+    assert "attached file" not in _platform_note(monkeypatch, ["6,108.57"])
 
 
-def test_the_missing_figures_are_named():
-    text = _finalize(_State(gaps=["6,108.57", "-2,457.14"]))
+def test_the_missing_figures_are_named(monkeypatch):
+    text = _platform_note(monkeypatch, ["6,108.57", "-2,457.14"])
     assert "6,108.57" in text
     assert "-2,457.14" in text
 
 
-def test_one_figure_reads_as_one_figure():
-    assert "appears in my summary" in _finalize(_State(gaps=["6,108.57"]))
+def test_one_figure_reads_as_one_figure(monkeypatch):
+    assert "appears in my summary" in _platform_note(monkeypatch, ["6,108.57"])
 
 
-def test_several_figures_read_as_several():
-    assert "appear in my summary" in _finalize(_State(gaps=["6,108.57", "0.98"]))
+def test_several_figures_read_as_several(monkeypatch):
+    assert "appear in my summary" in _platform_note(monkeypatch, ["6,108.57", "0.98"])
 
 
-def test_the_note_comes_after_the_answer_not_before_it():
-    # A caveat that leads buries the thing that was asked for. It now sits in
-    # the check list under the first paragraph - after the answer, not at the
-    # bottom where nobody reads it.
-    text = _finalize(_State(gaps=["6,108.57"]))
-    assert text.index("North grew") < text.index("Check before you use this")
+def test_the_note_comes_after_the_answer_not_before_it(monkeypatch):
+    # A caveat that leads buries the thing that was asked for. It sits in the
+    # check list under the first paragraph - after the answer, above the detail.
+    text = _platform_note(monkeypatch, ["6,108.57"])
+    assert text.index("North grew") < text.index("Check before you use this") < text.index("Method:")
 
 
-def test_no_gaps_means_no_note():
-    text = _finalize(_State(gaps=[]))
+def test_no_gaps_means_no_note(monkeypatch):
+    text = _platform_note(monkeypatch, [])
     assert "Check before you use this" not in text
     assert "go with the file" not in text
 

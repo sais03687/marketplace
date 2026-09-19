@@ -273,28 +273,6 @@ def _finalize(state):
     return state.result["text"]
 
 
-def test_a_conflict_nobody_fixed_is_said_in_the_draft():
-    text = _finalize(_State(conflicts=CONFLICT))
-    assert "148,850" in text
-    assert "155300" in text
-
-
-def test_the_note_does_not_decide_which_side_is_right():
-    # The same lesson test_disagreement_note.py records: the check knows the two
-    # disagree and cannot know which is wrong. A note that vouches for one of
-    # them will eventually vouch for the wrong one.
-    text = _finalize(_State(conflicts=CONFLICT)).lower()
-    assert "could not settle" in text
-    for taking_a_side in ("the workbook is correct", "the figure above is wrong",
-                          "the summary is right"):
-        assert taking_a_side not in text
-
-
-def test_the_note_follows_the_answer():
-    text = _finalize(_State(conflicts=CONFLICT))
-    assert text.index("The total is 148,850.") < text.index("Before you rely on")
-
-
 def test_no_conflict_means_no_note():
     text = _finalize(_State())
     assert "Before you rely on" not in text
@@ -316,3 +294,44 @@ def test_the_hand_back_never_reaches_a_buyer():
     # It is addressed to the model in the second person; one reaching a buyer
     # reads as the agent talking to itself in front of them.
     assert '"HEADLINE CHECK",' in agent_src, "not filtered out of the rendered reply"
+
+
+def _platform_note(monkeypatch, conflicts, text="The total is 148,850.\n\nMethod: summed."):
+    """The note is the platform's now: adapter.verified_problems + the check list."""
+    import adapter
+
+    async def none(_t, file_ids=None):
+        return []
+
+    async def headline(_t, file_ids=None):
+        return list(conflicts)
+
+    monkeypatch.setattr(adapter, "verify_deliverables", none)
+    monkeypatch.setattr(adapter, "check_rankings_against_file", none)
+    monkeypatch.setattr(adapter, "check_headline_against_summary", headline)
+    adapter.begin_run("t-headline", "reconcile please")
+    adapter.current_run_steps().append({"tool": "execute_python"})
+    asyncio.run(adapter.review_reply({"action": "reply_email", "text": text}))
+    return adapter.finalise_reply_text(text, [])
+
+
+def test_a_conflict_nobody_fixed_is_said_in_the_draft(monkeypatch):
+    text = _platform_note(monkeypatch, CONFLICT)
+    assert "148,850" in text
+    assert "155300" in text
+
+
+def test_the_note_does_not_decide_which_side_is_right(monkeypatch):
+    # The same lesson test_disagreement_note.py records: the check knows the two
+    # disagree and cannot know which is wrong. A note that vouches for one of
+    # them will eventually vouch for the wrong one.
+    text = _platform_note(monkeypatch, CONFLICT).lower()
+    assert "could not settle" in text
+    for taking_a_side in ("the workbook is correct", "the figure above is wrong",
+                          "the summary is right", "go with the file"):
+        assert taking_a_side not in text
+
+
+def test_the_note_follows_the_answer(monkeypatch):
+    text = _platform_note(monkeypatch, CONFLICT)
+    assert text.index("The total is 148,850.") < text.index("Check before you use this") < text.index("Method:")

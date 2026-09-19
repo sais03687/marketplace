@@ -1663,7 +1663,63 @@ def _produced_nothing_note(actions_taken: list) -> str:
     )
 
 
-async def _write_reply(state: AgentState) -> str:
+def _feedback_block(feedback: dict) -> str:
+    """The platform's review of the previous reply, as the closing prompt reads it."""
+    problems = "\n".join(f"- {p}" for p in (feedback.get("problems") or [])) or "- (none listed)"
+    previous = str(feedback.get("previous_reply") or "")[:4000]
+    return (
+        "\n\n## The platform checked your previous reply against the files and the work done\n\n"
+        f"It found:\n{problems}\n\n"
+        f"Your previous reply was:\n---\n{previous}\n---\n\n"
+        f"{feedback.get('instructions') or ''}\n"
+        "Write the corrected reply in the same JSON form. Keep everything that was "
+        "right; change only what the problems above show to be wrong."
+    )
+
+
+async def _revise_from_feedback(tid: str, feedback: dict) -> dict | None:
+    """Rewrite the last reply on this thread from the platform's review, cheaply.
+
+    The platform re-invokes run_agent with context["platform_feedback"] when its
+    checks find a problem the reply still has. Redoing the task would cost a full
+    run and could lose work already done; the problems are almost always in the
+    wording - a figure restated wrongly, a headline the Summary sheet does not
+    hold - so this reloads the finished run's state from the checkpoint and asks
+    for the reply again, with the problems in front of the model. One model call.
+
+    None when there is no finished run to revise; the caller then runs normally.
+    """
+    graph = await get_graph()
+    snap = await graph.aget_state({"configurable": {"thread_id": tid}})
+    values = getattr(snap, "values", None)
+    if isinstance(values, AgentState):
+        values = values.model_dump()
+    if not isinstance(values, dict) or not isinstance(values.get("result"), dict):
+        return None
+    fields = {k: v for k, v in values.items() if k in AgentState.model_fields}
+    try:
+        state = AgentState(**fields)
+    except Exception as e:
+        print(f"[agent] could not rebuild state to revise ({e}) - running normally", flush=True)
+        return None
+
+    print(f"[agent] revising the reply from platform feedback (round {feedback.get('round')})", flush=True)
+    text = await _write_reply(state, feedback=feedback)
+    if not text:
+        return None
+    revised = dict(state.result)
+    revised["text"] = text
+    revised["action"] = revised.get("action") if revised.get("action") in ("send_email", "reply_email") else "reply_email"
+    checks = _check_items(state.context.get("_reply_checks"))
+    if checks:
+        revised["check"] = checks
+    subject = state.context.pop("_wrap_up_subject", "")
+    if subject:
+        revised["subject"] = subject
+    return revised
+
+
+async def _write_reply(state: AgentState, feedback: dict | None = None) -> str:
     """Ask the model for the closing reply, and for nothing else.
 
     A separate call rather than another turn of the ReAct loop, because the loop
@@ -1688,6 +1744,8 @@ async def _write_reply(state: AgentState) -> str:
         produced_nothing=_produced_nothing_note(state.actions_taken),
         check_rules=CHECK_RULES,
     )
+    if feedback:
+        prompt += _feedback_block(feedback)
 
     try:
         response = await _ainvoke_json(prompt, timeout=60, schema=REPLY_SCHEMA)
@@ -3109,42 +3167,12 @@ async def finalize(state: AgentState) -> AgentState:
             flush=True,
         )
 
-    # A gap the agent could not close. Say so, at the end and after the work —
-    # the requester wanted an answer, not a status report, and a caveat that
-    # leads is the shape of the reply that got complained about on 2026-08-10.
-    # The check establishes one fact: these figures are in the summary and not in
-    # the file. It cannot tell which side is wrong, and it used to claim it could
-    # — "the figures above are right, but the attached file is missing…". On
-    # 2026-08-11 that sentence was published over a summary whose three slopes
-    # were all wrong and a workbook whose three slopes were all right, so it
-    # vouched for the bad numbers and cast doubt on the good ones.
-    #
-    # So: state the disagreement, name the file as the tiebreaker, and claim
-    # nothing else. The file is what the code computed; the summary is the model
-    # writing figures out a second time, which is the step that can drift.
-    #
-    # It now leads the "check before you use this" list rather than trailing the
-    # reply: it is the one item the platform has verified rather than the model
-    # volunteered, and the bottom of an email is where nobody reads.
+    # The check list is the platform's now: it renders it for every agent, with
+    # the problems it verified itself - a figure missing from the file, a
+    # headline the Summary sheet does not hold, a ranking its column beats -
+    # ahead of these. This agent hands over only what it knows and the platform
+    # cannot: the choices it made. See review_reply in the adapter.
     checks = _check_items(final.get("check")) or list(state.context.get("_reply_checks") or [])
-    checks = _label_unverified(
-        checks, state.action_results, state.content,
-        getattr(state, "enriched_content", None), result_text,
-    )
-    if state.deliverable_gaps and result_text.strip():
-        figures = ", ".join(str(g) for g in state.deliverable_gaps[:8])
-        plural = len(state.deliverable_gaps) > 1
-        checks.insert(0, (
-            f"{figures} {'appear' if plural else 'appears'} in my summary but not "
-            f"in the file. The file is what the code actually computed, so where "
-            f"the two disagree, go with the file. Reply \"redo\" and I'll fix it."
-        ))
-        print(
-            f"[agent] Delivering with a deliverable-gap check ({len(state.deliverable_gaps)} figures)",
-            flush=True,
-        )
-    if checks and result_text.strip():
-        result_text = _with_check_section(result_text, checks)
 
     # A run that produced nothing, reported by the model in its own words. Those
     # words are reliably vaguer than the evidence: on 2026-08-13 benchmark task
@@ -3204,81 +3232,11 @@ async def finalize(state: AgentState) -> AgentState:
             flush=True,
         )
 
-    # A ranking the file disagrees with, still standing after the hand-backs.
-    # Named as a disagreement rather than an error: the check reads columns, not
-    # meaning, and the sentence may be about a narrower comparison than the one
-    # it can see. What it can say for certain is which figures are in the file,
-    # so it says that and lets the reader judge.
-    if state.ranking_unfixable and state.ranking_conflicts and result_text.strip():
-        c = state.ranking_conflicts[0]
-        if c.get("subject"):
-            # Every column it loses in, not the first — the first is often one
-            # nobody ranks on, and "2026-04 is ahead in Size" alone reads as a
-            # confused caveat rather than a real doubt about the ranking.
-            ahead = ", ".join(
-                f"{x.get('row')} in {x.get('column')}"
-                for x in state.ranking_conflicts[:3] if x.get("row")
-            )
-            middle = (
-                f"I call {c['subject']} the {c.get('word')}, and other rows in "
-                f"the file are ahead of it — {ahead}"
-            )
-        else:
-            where = f" in {c['column']}" if c.get("column") else ""
-            who = f" ({c['row']})" if c.get("row") else ""
-            middle = (
-                f"I call {c.get('value')} the {c.get('word')}, and the file also "
-                f"holds {c.get('beaten_by')}{who}{where}"
-            )
-        result_text = (
-            f"{result_text.rstrip()}\n\n---\n"
-            f"One thing to check before you rely on the ranking above: {middle}. "
-            "Either I am ranking on something narrower than those figures or the "
-            "ranking is wrong — I could not settle it, so please look at the file "
-            "before quoting the comparison."
-        )
-        print(
-            f"[agent] Delivering with a ranking note "
-            f"({len(state.ranking_conflicts)} claim(s))",
-            flush=True,
-        )
-
-    # ── The headline the summary sheet disagreed with, and nobody fixed ──────
-    #
-    # Detecting the conflict is not the same as resolving it. On 2026-08-17 the
-    # check fired correctly on a re-run of D01 — the reply claimed totals of
-    # 148,850 and 146,800 where the workbook's own Summary sheet held 155,300,
-    # 151,450 and 3,850 — and the hand-back did nothing, because the run had
-    # already printed "out of steps after 12 action(s)". The conflict was found,
-    # the correction was requested, there was no budget left to make it, and the
-    # wrong draft went to the approval queue looking exactly like a right one.
-    #
-    # So the last resort is the same one the ranking check uses: say it in the
-    # message. The approval portal shows the complete draft, so this puts the
-    # disagreement in front of the person deciding whether to send it. It also
-    # survives a buyer whose policy is "never ask", where there is no portal and
-    # no other place a warning could go.
-    #
-    # The condition is the conflict list itself rather than a spent-attempts
-    # flag: wrap_up clears it on entry and re-checks, so anything still here at
-    # finalize was never resolved, whichever budget ran out first.
-    if state.headline_conflicts and result_text.strip():
-        c = state.headline_conflicts[0]
-        holds = ", ".join(c.get("summary_holds", [])) or "different figures"
-        result_text = (
-            f"{result_text.rstrip()}\n\n---\n"
-            f"Before you rely on the figure above: the first number in this "
-            f"message is {c.get('claimed')}, and the Summary sheet of the workbook "
-            f"I am attaching holds {holds}. Those disagree and I could not settle "
-            "which is right, so please open the workbook before quoting the number "
-            "in this message."
-        )
-        print(
-            f"[agent] Delivering with a headline note "
-            f"({len(state.headline_conflicts)} claim(s))",
-            flush=True,
-        )
-
+    # A ranking or headline the file disagrees with, still standing after the
+    # hand-backs above, used to be appended here as a note. The platform now
+    # re-checks every reply and puts what survives at the top of the check list,
+    # where the approver and the reader both see it; a second copy here would
+    # say the same thing twice, at the bottom where nobody reads.
     state.result = {
         "action": result_action,
         "to": final.get("to"),
@@ -3288,8 +3246,26 @@ async def finalize(state: AgentState) -> AgentState:
         "task_type": "data-analysis",
         "risk_assessment": analysis.get("risk_assessment", {}),
         "action_results": state.action_results,
+        # For the platform: the choices it should show the reader, and which of
+        # the run's files are the answer (the ones this run uploaded). Absent
+        # uploads, the platform attaches every non-scratch file it produced.
+        "check": checks,
+        **({"deliverables": _uploaded_names(state.actions_taken)} if _uploaded_names(state.actions_taken) else {}),
     }
     return state
+
+
+def _uploaded_names(actions_taken: list) -> list[str]:
+    """File names this run uploaded - the deliverables, as the agent sees them."""
+    names = []
+    for a in actions_taken or []:
+        a = str(a)
+        for prefix in ("Upload: ", "OneDrive upload: "):
+            if a.startswith(prefix):
+                name = a[len(prefix):].strip()
+                if name and name not in names:
+                    names.append(name)
+    return names
 
 
 def _check_private_leak(content: str, private_text: str, threshold: int = 5) -> bool:
@@ -3903,70 +3879,6 @@ def _check_items(value) -> list[str]:
     return [i for i in items if i and i.lower() not in ("none", "n/a", "nothing")][:_MAX_CHECKS]
 
 
-def _label_unverified(items: list[str], *sources) -> list[str]:
-    """Mark figures in the model's check items that nothing in the run produced.
-
-    The check list is added after the file checks run, so a number in it has
-    been verified by nobody. On 2026-09-19 an item said keeping a duplicate
-    order "would double Beta Ltd's revenue to $35,401.00" - it would have added
-    16,800 - and another put a return's effect at 7,791.50 against a true 7,500.
-    A figure the run computed, the request supplied or the checked reply states
-    is left alone; any other is labelled rather than removed, because the
-    alternative it describes is still worth raising.
-    """
-    known: list[Decimal] = []
-    for src in sources:
-        text = src if isinstance(src, str) else json.dumps(src, default=str)
-        known.extend(v for _, v in _summary_figures_local(text))
-
-    def _backed(raw: str, val: Decimal) -> bool:
-        places = len(raw.split(".")[1]) if "." in raw else 0
-        q = Decimal(1).scaleb(-places)
-        for k in known:
-            try:
-                if abs(k).quantize(q) == abs(val) or abs(k * 100).quantize(q) == abs(val):
-                    return True
-            except InvalidOperation:
-                continue
-        return False
-
-    out = []
-    for item in items:
-        figures = [
-            (raw, val) for raw, val in _summary_figures_local(item)
-            if "." in raw or abs(val) >= 10
-        ]
-        if any(not _backed(raw, val) for raw, val in figures):
-            item = f"{item.rstrip('.')} (figure not calculated - ask me to run it)."
-        out.append(item)
-    return out
-
-
-def _with_check_section(text: str, checks: list[str]) -> str:
-    """Put the check list under the reply's first paragraph, where it is read.
-
-    First paragraph rather than the very top, because the answer comes first -
-    the list qualifies it. A reply with no paragraph break gets the list after
-    its first line.
-    """
-    # One platform item may lead a full model list; show at most one more.
-    items = checks[:_MAX_CHECKS + 1]
-    section = "⚠ Check before you use this:\n" + "\n".join(
-        f"{i}. {item}" for i, item in enumerate(items, 1)
-    )
-    body = text.strip()
-    head, sep, rest = body.partition("\n\n")
-    if not sep:
-        head, sep, rest = body.partition("\n")
-    # "Revenue by customer (total 7,385.75):" introduces what follows it; the
-    # list must not split a lead-in from its breakdown.
-    lead = head
-    if head.rstrip().endswith(":") and rest:
-        breakdown, _, rest = rest.partition("\n\n")
-        lead = f"{head}{sep}{breakdown}"
-    if not rest:
-        return f"{body}\n\n{section}"
-    return f"{lead}\n\n{section}\n\n{rest}"
 
 
 def _not_quoted_from_request(missing: list, *request_texts: str | None) -> list:
@@ -4435,6 +4347,12 @@ async def run_agent(
         if the graph was interrupted waiting for approval.
     """
     tid = thread_id or "default"
+
+    # A revision request from the platform's review: rewrite, don't redo.
+    if isinstance(context.get("platform_feedback"), dict):
+        revised = await _revise_from_feedback(tid, context["platform_feedback"])
+        if revised is not None:
+            return revised
 
     # Hand the platform's Graph transport to the tool module. Done per call rather
     # than at import because the adapter owns the credential and decides when to

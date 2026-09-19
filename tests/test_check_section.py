@@ -22,12 +22,6 @@ def test_the_earlier_thread_counts_as_the_request():
     assert agent._not_quoted_from_request(["480"], "Redo it please.", "Earlier: target was 480.") == []
 
 
-def test_the_list_sits_under_the_answer_not_above_it():
-    text = agent._with_check_section("Revenue was 7,385.75.\n\nMethod: summed amount.", ["I read amount as the order total."])
-    assert text.index("Revenue was") < text.index("Check before you use this") < text.index("Method:")
-    assert "1. I read amount as the order total." in text
-
-
 @pytest.mark.parametrize("value", [None, [], "", ["none"], ["  "], {"a": 1}])
 def test_nothing_to_flag_means_no_list(value):
     assert agent._check_items(value) == []
@@ -35,32 +29,6 @@ def test_nothing_to_flag_means_no_list(value):
 
 def test_the_list_is_capped():
     assert len(agent._check_items([f"item {i}" for i in range(6)])) == agent._MAX_CHECKS
-
-
-def test_the_list_does_not_split_a_lead_in_from_its_breakdown():
-    text = agent._with_check_section(
-        "Revenue by customer (total 7,385.75):\n\nGamma 2,605.00\nBeta 2,550.25\n\nMethod: summed.",
-        ["I removed one duplicate."])
-    assert text.index("Gamma 2,605.00") < text.index("Check before you use this") < text.index("Method:")
-
-
-def test_a_figure_nothing_computed_is_labelled_not_asserted():
-    items = agent._label_unverified(
-        ["Keeping the duplicate would raise Beta Ltd to $35,401.00."],
-        ["stdout: beta 2550.25 total 7385.75"], "orders csv", None, "Total 7,385.75")
-    assert "not calculated" in items[0]
-
-
-def test_a_figure_the_run_computed_is_left_alone():
-    items = agent._label_unverified(
-        ["If 1005 is a return, the total is $5,510.75."],
-        ["stdout: total_if_return 5510.75"], "1005,Gamma Inc,-4", None, "Total 7,385.75")
-    assert items == ["If 1005 is a return, the total is $5,510.75."]
-
-
-def test_a_percentage_of_a_computed_fraction_is_backed():
-    items = agent._label_unverified(["Conversion was 5.33% overall."], ["rate 0.0532765"], "", None, "")
-    assert "not calculated" not in items[0]
 
 
 @pytest.mark.parametrize("params, ok", [

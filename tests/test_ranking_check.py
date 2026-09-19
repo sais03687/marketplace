@@ -226,18 +226,6 @@ def test_the_subject_is_said_once_however_many_columns_it_loses_in():
     assert "Size" in rendered and "M1_retention%" in rendered
 
 
-def test_the_buyers_note_names_every_row_ahead_of_the_claim():
-    # Naming only the first would caveat a ranking with "2026-04 is ahead in
-    # Size", which reads as confusion rather than as a real doubt.
-    state = _State(budget=0, text="The best performing cohort is 2026-03.")
-    state.ranking_conflicts = _conflicts(
-        "The best performing cohort is 2026-03.", DELIVERED)
-    state.ranking_unfixable = True
-    asyncio.run(agent.finalize(state))
-    assert "2026-04 in Size" in state.result["text"]
-    assert "2026-02 in M1_retention%" in state.result["text"]
-
-
 def test_a_figure_claim_still_takes_the_figure_path():
     # When a number is quoted it pins the column, which is strictly better
     # evidence than a row name. The label path must not pre-empt it.
@@ -418,24 +406,6 @@ def test_a_chat_measures_it_but_does_not_loop(checked):
     assert agent.route_after_verify(state) == "finalize"
 
 
-def test_a_claim_that_survives_the_budget_is_flagged_to_the_reader(checked):
-    state = _verify(_State(budget=0))
-    asyncio.run(agent.finalize(state))
-    text = state.result["text"]
-    assert "62.00" in text and "65" in text
-    assert text.index("holding up best") < text.index("---"), "the caveat leads"
-
-
-def test_the_note_does_not_declare_the_agent_wrong(checked):
-    # It read columns, not meaning. A file cannot say which comparison was
-    # intended, and claiming otherwise is how the deliverable note went wrong on
-    # 2026-08-11 — vouching for the side that happened to be incorrect.
-    text = (lambda s: (asyncio.run(agent.finalize(s)), s.result["text"])[1])(_verify(_State(budget=0)))
-    lowered = text.lower()
-    assert "narrower" in lowered or "either" in lowered
-    assert "look at the file" in lowered
-
-
 def test_a_broken_check_never_holds_up_a_correct_answer():
     async def _explodes(text, file_ids=None):
         raise RuntimeError("sandbox is down")
@@ -507,3 +477,44 @@ def test_every_fire_is_logged_with_what_it_saw(capsys):
         adapter._SANDBOX_FILES.update(inbound)
     src = __import__("io").open(adapter.__file__, encoding="utf-8").read()
     assert "[ranking-check] FIRED" in src, "a fire that leaves no trace cannot be judged later"
+
+
+# ── the reader's note is the platform's now ──────────────────────────────────
+
+def _platform_note(monkeypatch, text, grids):
+    async def none(_t, file_ids=None):
+        return []
+
+    async def ranked(t, file_ids=None):
+        return adapter._ranking_conflicts(t, grids)
+
+    monkeypatch.setattr(adapter, "verify_deliverables", none)
+    monkeypatch.setattr(adapter, "check_headline_against_summary", none)
+    monkeypatch.setattr(adapter, "check_rankings_against_file", ranked)
+    adapter.begin_run("t-ranking", "which cohort is holding up best?")
+    adapter.current_run_steps().append({"tool": "execute_python"})
+    asyncio.run(adapter.review_reply({"action": "reply_email", "text": text}))
+    return adapter.finalise_reply_text(text, [])
+
+
+def test_the_buyers_note_names_every_row_ahead_of_the_claim(monkeypatch):
+    # Naming only the first would caveat a ranking with "2026-04 is ahead in
+    # Size", which reads as confusion rather than as a real doubt.
+    text = _platform_note(monkeypatch, "The best performing cohort is 2026-03.\n\nDetail follows.", DELIVERED)
+    assert "2026-04 in Size" in text
+    assert "2026-02 in M1_retention%" in text
+
+
+def test_a_claim_that_survives_the_budget_is_flagged_to_the_reader(monkeypatch):
+    text = _platform_note(monkeypatch, "2026-03 is holding up best at 62.00%.\n\nDetail follows.", TRIANGLE)
+    assert "62.00" in text and "65" in text
+    assert text.index("holding up best") < text.index("Check before you use this"), "the caveat leads"
+
+
+def test_the_note_does_not_declare_the_agent_wrong(monkeypatch):
+    # It read columns, not meaning. A file cannot say which comparison was
+    # intended, and claiming otherwise is how the deliverable note went wrong on
+    # 2026-08-11 — vouching for the side that happened to be incorrect.
+    lowered = _platform_note(monkeypatch, "2026-03 is holding up best at 62.00%.\n\nDetail.", TRIANGLE).lower()
+    assert "narrower" in lowered or "either" in lowered
+    assert "look at the file" in lowered
