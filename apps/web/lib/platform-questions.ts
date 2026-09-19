@@ -75,15 +75,20 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
     options: [
       {
         value: "yes",
-        label: "Yes — contribute and access shared knowledge (recommended)",
+        label: "Yes — contribute and access shared knowledge",
       },
       {
         value: "no_auto",
         label: "Yes, but I want to review each contribution before it's shared",
       },
-      { value: "no", label: "No — opt out entirely" },
+      { value: "no", label: "No — not for now (recommended while AgentMind is in early testing)" },
     ],
-    default: "yes",
+    // Off by default. On 2026-09-19 every lesson in the pool turned out to come
+    // from our own benchmark deployment, auto-approved with nobody reviewing
+    // them, and several taught wrong methods to every agent that read them. The
+    // pool was cleared; opting in stays one click away, but a new hire should
+    // run the configuration that was actually tested - which had it off.
+    default: "no",
     memoryKey: "org.agentmind_enabled",
     required: true,
   },
