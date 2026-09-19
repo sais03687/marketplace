@@ -154,3 +154,21 @@ def test_a_json_mode_rejection_falls_back_to_the_plain_client(monkeypatch):
     assert [c[0] for c in m.calls] == ["json", "plain"]
     assert m.calls[0][1]["response_format"] == {"type": "json_object"}
     assert agent._json_mode is False, "a model that rejected JSON mode is not asked again"
+
+
+def test_a_response_cut_off_for_length_is_retried_not_a_crash(monkeypatch):
+    class LengthFinishReasonError(Exception):
+        pass
+
+    class Model:
+        def bind(self, **kw):
+            class Bound:
+                async def ainvoke(self, prompt):
+                    raise LengthFinishReasonError("length limit was reached")
+            return Bound()
+
+    monkeypatch.setattr(agent, "llm", Model())
+    monkeypatch.setattr(agent, "_json_mode", True)
+    s = AgentState(content="Build the retention triangle.")
+    s = asyncio.run(agent.reason_and_act(s))
+    assert s.context.get("_retry_after_bad_format") is True

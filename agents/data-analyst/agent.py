@@ -19,6 +19,7 @@ Graph flow (ReAct loop):
 import os
 import re
 import json
+from types import SimpleNamespace
 import time
 import asyncio
 import base64
@@ -172,7 +173,10 @@ llm = ChatOpenAI(
     model=_llm_model,
     api_key=_llm_api_key,
     base_url=_llm_base_url,
-    max_tokens=4096,
+    # Room for a long code cell in one action. At 4096 a retention-triangle step
+    # was cut off, and in schema mode a cut-off answer is an exception, not text
+    # (2026-09-19) - see _ainvoke_json.
+    max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "16000")),
 )
 
 # The same model, told to answer in JSON and nothing else.
@@ -287,6 +291,14 @@ async def _ainvoke_json(prompt: str, timeout: float, schema: dict | None = None)
         except Exception as e:
             if isinstance(e, asyncio.TimeoutError):
                 raise  # slowness is the caller's retry, not a reason to drop JSON mode
+            # A structured answer that hit the token limit raises here instead of
+            # returning the partial text (openai's LengthFinishReasonError). It is
+            # an unreadable turn, not a failed run: on 2026-09-19 it escaped this
+            # function and a whole task ended in "something went wrong". Returning
+            # no content sends it through the format retry like any other.
+            if type(e).__name__ == "LengthFinishReasonError":
+                print("[agent] response hit the length limit - treating it as unreadable", flush=True)
+                return SimpleNamespace(content="")
             # A 4xx here is the provider refusing the parameter, not a transient
             # fault; asking again with it would fail the same way every time.
             status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
@@ -1457,7 +1469,8 @@ async def reason_and_act(state: AgentState) -> AgentState:
             "single JSON object the response format requires. Nothing in it was "
             "carried out - no tool ran and no file was made. Reply with only that "
             "JSON object, with no text before or after it, and put the next action "
-            "you want in its action field."
+            "you want in its action field. If it was cut off for length, keep the "
+            "next one shorter: fewer lines of code, printing only the figures you need."
         )
 
     # Format actions taken so far
