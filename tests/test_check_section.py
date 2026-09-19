@@ -35,3 +35,10 @@ def test_nothing_to_flag_means_no_list(value):
 
 def test_the_list_is_capped():
     assert len(agent._check_items([f"item {i}" for i in range(6)])) == agent._MAX_CHECKS
+
+
+def test_the_list_does_not_split_a_lead_in_from_its_breakdown():
+    text = agent._with_check_section(
+        "Revenue by customer (total 7,385.75):\n\nGamma 2,605.00\nBeta 2,550.25\n\nMethod: summed.",
+        ["I removed one duplicate."])
+    assert text.index("Gamma 2,605.00") < text.index("Check before you use this") < text.index("Method:")

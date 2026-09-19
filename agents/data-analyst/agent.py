@@ -175,6 +175,53 @@ llm = ChatOpenAI(
     max_tokens=4096,
 )
 
+# The same model, told to answer in JSON and nothing else.
+#
+# Every turn of this agent is a JSON object naming the next action, and asking
+# for that in the prompt is a request the model can decline: on 2026-09-19 a
+# model answered in markdown three times in one run, and the run fell back to
+# pasting a truncated table at the buyer. JSON mode moves the format from the
+# prompt into the decoder, so any other output cannot be produced at all.
+#
+# `require_parameters` makes OpenRouter route only to providers that honour
+# response_format; without it a request can land on one that ignores it. Models
+# or providers that cannot do JSON mode reject the request, and the first such
+# rejection switches this process back to the plain client for good - the
+# format retry in reason_and_act still covers that path. STRUCTURED_OUTPUT=none
+# turns it off for an agent whose model is known not to support it.
+_json_mode = os.environ.get("STRUCTURED_OUTPUT", "json").strip().lower() != "none"
+
+
+def _usable_turn(obj) -> bool:
+    """Does a parsed reasoning response carry anything the loop can act on?"""
+    return isinstance(obj, dict) and bool({"action", "final_response", "completed"} & set(obj))
+
+
+async def _ainvoke_json(prompt: str, timeout: float):
+    """Call the model in JSON mode, falling back to the plain client if unsupported."""
+    global _json_mode
+    # Bound per call, from whatever `llm` is now, so anything that swaps the
+    # client (a test, a future per-run model) is not bypassed by a copy made at
+    # import.
+    if _json_mode and hasattr(llm, "bind"):
+        llm_json = llm.bind(
+            response_format={"type": "json_object"},
+            extra_body={"provider": {"require_parameters": True}},
+        )
+        try:
+            return await asyncio.wait_for(llm_json.ainvoke(prompt), timeout=timeout)
+        except Exception as e:
+            if isinstance(e, asyncio.TimeoutError):
+                raise  # slowness is the caller's retry, not a reason to drop JSON mode
+            # A 4xx here is the provider refusing the parameter, not a transient
+            # fault; asking again with it would fail the same way every time.
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status is None or not (400 <= int(status) < 500) or status in (401, 402, 408, 429):
+                raise
+            print(f"[agent] JSON mode rejected ({status}: {str(e)[:160]}) - using the plain client", flush=True)
+            _json_mode = False
+    return await asyncio.wait_for(llm.ainvoke(prompt), timeout=timeout)
+
 # ─── Load behavioral docs ────────────────────────────────────────────────────
 
 
@@ -1369,7 +1416,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
     )
 
     try:
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=_LLM_TIMEOUT_S)
+        response = await _ainvoke_json(prompt, timeout=_LLM_TIMEOUT_S)
     except asyncio.TimeoutError:
         # The model went quiet. The run did not.
         #
@@ -1444,13 +1491,21 @@ async def reason_and_act(state: AgentState) -> AgentState:
         # the point. Never let a parse failure become an unhandled exception.
         state.analysis = None
 
+    # Parseable is not the same as usable. JSON mode guarantees an object, not
+    # our fields: on 2026-09-19 six of six gpt-oss-120b calls in JSON mode
+    # returned valid objects keyed "heading" and "plan" with no action in them.
+    # An object that names neither a next action, a reply, nor completion
+    # carries nothing this loop can act on - the same as prose.
+    if not _usable_turn(state.analysis):
+        state.analysis = None
+
     if not isinstance(state.analysis, dict):
         import re
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
                 parsed = json.loads(match.group())
-                if isinstance(parsed, dict):
+                if _usable_turn(parsed):
                     state.analysis = parsed
             except Exception:
                 pass
@@ -1602,7 +1657,7 @@ async def _write_reply(state: AgentState) -> str:
     )
 
     try:
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=60)
+        response = await _ainvoke_json(prompt, timeout=60)
     except Exception as e:
         # Timeout, rate limit, provider error — all the same from here, and all
         # recoverable: the caller tries once more and then composes from the
@@ -3827,6 +3882,11 @@ def _with_check_section(text: str, checks: list[str]) -> str:
     head, sep, rest = body.partition("\n\n")
     if not sep:
         head, sep, rest = body.partition("\n")
+    # "Revenue by customer (total 7,385.75):" introduces what follows it; the
+    # list must not split a lead-in from its breakdown.
+    if head.rstrip().endswith(":") and rest:
+        more, sep2, rest = rest.partition("\n\n")
+        head = f"{head}{sep}{more}"
     if not rest:
         return f"{body}\n\n{section}"
     return f"{head}\n\n{section}\n\n{rest}"

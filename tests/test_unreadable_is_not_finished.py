@@ -115,3 +115,42 @@ def test_the_note_reaches_the_closing_prompt(monkeypatch):
     s = AgentState(content="Work out the fees.", actions_taken=["SharePoint list: root"])
     asyncio.run(agent._write_reply(s))
     assert "No code ran and no file was created" in model.prompts[0]
+
+
+@pytest.mark.parametrize("obj", [
+    '{"heading": "# Plan", "plan": "sum the column"}',
+    '{"answer": 465.5}',
+    '{}',
+])
+def test_valid_json_without_our_fields_is_asked_again(monkeypatch, obj):
+    # JSON mode guarantees an object, not the fields the loop needs.
+    s, _ = _reason(monkeypatch, obj)
+    assert s.context.get("_retry_after_bad_format") is True
+
+
+def test_a_json_mode_rejection_falls_back_to_the_plain_client(monkeypatch):
+    import asyncio as _a
+
+    class Rejected(Exception):
+        status_code = 400
+
+    class Model:
+        calls = []
+        def bind(self, **kw):
+            outer = self
+            class Bound:
+                async def ainvoke(self, prompt):
+                    outer.calls.append(("json", kw))
+                    raise Rejected("response_format not supported")
+            return Bound()
+        async def ainvoke(self, prompt):
+            self.calls.append(("plain", None))
+            return SimpleNamespace(content="{}")
+
+    m = Model()
+    monkeypatch.setattr(agent, "llm", m)
+    monkeypatch.setattr(agent, "_json_mode", True)
+    _a.run(agent._ainvoke_json("hi", timeout=5))
+    assert [c[0] for c in m.calls] == ["json", "plain"]
+    assert m.calls[0][1]["response_format"] == {"type": "json_object"}
+    assert agent._json_mode is False, "a model that rejected JSON mode is not asked again"
