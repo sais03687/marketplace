@@ -19,7 +19,6 @@ Graph flow (ReAct loop):
 import os
 import re
 import json
-from types import SimpleNamespace
 import time
 import asyncio
 import base64
@@ -179,31 +178,16 @@ llm = ChatOpenAI(
     max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "16000")),
 )
 
-# The same model, told to answer in JSON and nothing else.
-#
-# Every turn of this agent is a JSON object naming the next action, and asking
-# for that in the prompt is a request the model can decline: on 2026-09-19 a
-# model answered in markdown three times in one run, and the run fell back to
-# pasting a truncated table at the buyer. JSON mode moves the format from the
-# prompt into the decoder, so any other output cannot be produced at all.
-#
-# `require_parameters` makes OpenRouter route only to providers that honour
-# response_format; without it a request can land on one that ignores it. Models
-# or providers that cannot do JSON mode reject the request, and the first such
-# rejection switches this process back to the plain client for good - the
-# format retry in reason_and_act still covers that path. STRUCTURED_OUTPUT=none
-# turns it off for an agent whose model is known not to support it.
-_structured = os.environ.get("STRUCTURED_OUTPUT", "auto").strip().lower()
-_json_mode = _structured != "none"
+# The same model, told to answer in JSON and nothing else - through the
+# platform's shared helper (platform_llm.py, shipped next to adapter.py in every
+# agent image), which picks the structured mode per vendor, routes only to
+# providers that honour it, falls back if one refuses it, and turns a cut-off
+# answer into an unreadable turn instead of a crash. Every turn of this agent is
+# a JSON object naming the next action; asking for that only in the prompt let a
+# model answer in markdown three times in one run (2026-09-19).
+from platform_llm import StructuredLLM, decode_json_strings, has_any  # noqa: E402
 
-# Which of the two structured modes to ask for. Measured on 2026-09-19 through
-# OpenRouter: Anthropic models ignore json_object entirely (Sonnet 5 answered in
-# markdown) but honour json_schema; gpt-oss-120b honours json_object on every
-# provider tried, while one provider returned garbage ("-1.1e2") in schema mode.
-# "auto" picks per vendor; STRUCTURED_OUTPUT=schema|json forces one.
-_use_schema = _structured == "schema" or (
-    _structured == "auto" and _llm_model.startswith("anthropic/")
-)
+_structured = StructuredLLM(_llm_model)
 
 # Schema mode closes every object: a field it does not list is dropped, and an
 # object with no listed properties comes back empty - Sonnet returned
@@ -251,62 +235,18 @@ REPLY_SCHEMA = {
 
 def _decode_string_params(analysis: dict) -> bool:
     """Turn schema mode's JSON-string params back into an object. False if unreadable."""
-    action = analysis.get("action")
-    if not isinstance(action, dict) or not isinstance(action.get("params"), str):
-        return True
-    raw = action["params"].strip() or "{}"
-    try:
-        decoded = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return False
-    if not isinstance(decoded, dict):
-        return False
-    action["params"] = decoded
-    return True
+    return decode_json_strings(analysis, ["action.params"])
 
 
 def _usable_turn(obj) -> bool:
     """Does a parsed reasoning response carry anything the loop can act on?"""
-    return isinstance(obj, dict) and bool({"action", "final_response", "completed"} & set(obj))
+    return has_any(obj, ("action", "final_response", "completed"))
 
 
 async def _ainvoke_json(prompt: str, timeout: float, schema: dict | None = None):
-    """Call the model in JSON mode, falling back to the plain client if unsupported."""
-    global _json_mode
-    # Bound per call, from whatever `llm` is now, so anything that swaps the
-    # client (a test, a future per-run model) is not bypassed by a copy made at
-    # import.
-    if _json_mode and hasattr(llm, "bind"):
-        fmt = (
-            {"type": "json_schema", "json_schema": {"name": "agent_output", "strict": False, "schema": schema}}
-            if _use_schema and schema
-            else {"type": "json_object"}
-        )
-        llm_json = llm.bind(
-            response_format=fmt,
-            extra_body={"provider": {"require_parameters": True}},
-        )
-        try:
-            return await asyncio.wait_for(llm_json.ainvoke(prompt), timeout=timeout)
-        except Exception as e:
-            if isinstance(e, asyncio.TimeoutError):
-                raise  # slowness is the caller's retry, not a reason to drop JSON mode
-            # A structured answer that hit the token limit raises here instead of
-            # returning the partial text (openai's LengthFinishReasonError). It is
-            # an unreadable turn, not a failed run: on 2026-09-19 it escaped this
-            # function and a whole task ended in "something went wrong". Returning
-            # no content sends it through the format retry like any other.
-            if type(e).__name__ == "LengthFinishReasonError":
-                print("[agent] response hit the length limit - treating it as unreadable", flush=True)
-                return SimpleNamespace(content="")
-            # A 4xx here is the provider refusing the parameter, not a transient
-            # fault; asking again with it would fail the same way every time.
-            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
-            if status is None or not (400 <= int(status) < 500) or status in (401, 402, 408, 429):
-                raise
-            print(f"[agent] JSON mode rejected ({status}: {str(e)[:160]}) - using the plain client", flush=True)
-            _json_mode = False
-    return await asyncio.wait_for(llm.ainvoke(prompt), timeout=timeout)
+    """The model in structured mode. `llm` is read per call, so swapping it is honoured."""
+    return await _structured.ainvoke(llm, prompt, timeout=timeout, schema=schema)
+
 
 # ─── Load behavioral docs ────────────────────────────────────────────────────
 

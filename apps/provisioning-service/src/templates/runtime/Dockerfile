@@ -15,6 +15,7 @@ RUN if [ -f creator/requirements.txt ]; then \
 
 # Copy platform adapter to WORKDIR root (NOT inside creator/)
 COPY adapter.py .
+COPY platform_llm.py .
 COPY platform-requirements.txt .
 
 # Copy creator code into subdirectory (already copied above for deps — idempotent)

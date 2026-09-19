@@ -172,6 +172,7 @@ export async function POST(request: Request) {
 
     const RESERVED_FILES = [
       "adapter.py",
+      "platform_llm.py",
       "Dockerfile",
       "platform-requirements.txt",
     ];

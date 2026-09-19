@@ -155,7 +155,7 @@ function assembleBuildContext(
   injectApprovalBlock(creatorDir);
 
   // 4. Remove any reserved files from creator/ that could conflict
-  for (const reserved of ["adapter.py", "Dockerfile", "platform-requirements.txt"]) {
+  for (const reserved of ["adapter.py", "platform_llm.py", "Dockerfile", "platform-requirements.txt"]) {
     const p = join(creatorDir, reserved);
     if (existsSync(p)) rmSync(p);
   }

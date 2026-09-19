@@ -149,11 +149,11 @@ def test_a_json_mode_rejection_falls_back_to_the_plain_client(monkeypatch):
 
     m = Model()
     monkeypatch.setattr(agent, "llm", m)
-    monkeypatch.setattr(agent, "_json_mode", True)
+    monkeypatch.setattr(agent._structured, "mode", "json")
     _a.run(agent._ainvoke_json("hi", timeout=5))
     assert [c[0] for c in m.calls] == ["json", "plain"]
     assert m.calls[0][1]["response_format"] == {"type": "json_object"}
-    assert agent._json_mode is False, "a model that rejected JSON mode is not asked again"
+    assert agent._structured.mode == "none", "a model that rejected JSON mode is not asked again"
 
 
 def test_a_response_cut_off_for_length_is_retried_not_a_crash(monkeypatch):
@@ -168,7 +168,7 @@ def test_a_response_cut_off_for_length_is_retried_not_a_crash(monkeypatch):
             return Bound()
 
     monkeypatch.setattr(agent, "llm", Model())
-    monkeypatch.setattr(agent, "_json_mode", True)
+    monkeypatch.setattr(agent._structured, "mode", "json")
     s = AgentState(content="Build the retention triangle.")
     s = asyncio.run(agent.reason_and_act(s))
     assert s.context.get("_retry_after_bad_format") is True

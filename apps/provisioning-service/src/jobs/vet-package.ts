@@ -108,7 +108,7 @@ const SECRET_PATTERNS: { re: RegExp; label: string }[] = [
   { re: /xoxb-\d{11}-\d{11}-[A-Za-z0-9]{24}/,        label: "Slack bot token" },
 ];
 
-const RESERVED_FILES = ["adapter.py", "Dockerfile", "platform-requirements.txt"];
+const RESERVED_FILES = ["adapter.py", "platform_llm.py", "Dockerfile", "platform-requirements.txt"];
 const SHADOWED_MODULES = [
   "fastapi.py", "uvicorn.py", "httpx.py", "pydantic.py",
   "json.py", "os.py", "sys.py", "subprocess.py", "socket.py",
