@@ -1951,6 +1951,153 @@ def run_checks(reply_text: str) -> list[str]:
     return list(meta.get("platform_checks") or []) + agent_items
 
 
+# ─── Platform review of every reply ───────────────────────────────────────────
+#
+# Before a reply goes to approval or out of the door, the platform checks what
+# it can check from evidence rather than from the model's account of itself:
+# what ran, what was produced, what the file holds, what was asked. A problem
+# goes back to the agent as `context["platform_feedback"]` for up to two
+# revisions; what survives is shown to the reader at the top of the check list.
+# An agent that ignores the feedback returns the same reply, and that is fine -
+# the reader is still told.
+
+_MAX_REVISIONS = 2
+
+# A sentence claiming the run made or ran something. Negated sentences ("I could
+# not build the workbook") are excluded below, because saying what did not
+# happen is exactly the honest reply.
+_CLAIMS_WORK_RE = re.compile(
+    r"\b(attached|uploaded|I (?:built|created|made|saved|generated|wrote|put together|"
+    r"calculated|computed|ran)|is (?:attached|on SharePoint|uploaded)|"
+    r"(?:in|see|open) the (?:attached |uploaded )?(?:workbook|spreadsheet|file|chart|notebook))\b",
+    re.IGNORECASE,
+)
+_NEGATED_RE = re.compile(
+    r"\b(not|no|nothing|none|neither|nor|without|never|couldn't|could not|can't|cannot|"
+    r"didn't|did not|wasn't|was not|unable|"
+    r"failed|haven't|have not)\b", re.IGNORECASE)
+
+
+def _claims_work(text: str) -> bool:
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        if _CLAIMS_WORK_RE.search(sentence) and not _NEGATED_RE.search(sentence):
+            return True
+    return False
+
+
+async def verified_problems(text: str) -> list[str]:
+    """What the platform can show is wrong with this reply, one sentence each."""
+    problems: list[str] = []
+    if not (text or "").strip():
+        return problems
+
+    # Work claimed, none done. On 2026-09-19 a run whose only action was a
+    # forced folder listing wrote "the workbook itself is built and uploaded"
+    # and named a file an earlier run had left behind.
+    if _claims_work(text) and not current_run_steps() and not current_run_files():
+        problems.append(
+            "This reply describes a file or a calculation, but nothing was computed "
+            "or produced for this request. Don't rely on its figures until it's redone."
+        )
+        return problems  # no file to check the rest against
+
+    try:
+        missing = await verify_deliverables(text)
+    except Exception as e:
+        print(f"[adapter] review: file check failed to run ({e})", flush=True)
+        missing = []
+    if missing:
+        figures = ", ".join(str(m) for m in missing[:6])
+        problems.append(
+            f"{figures} {'appear' if len(missing) > 1 else 'appears'} in my summary but not "
+            f"in the file. The file is what the code actually computed, so where the two "
+            f"disagree, go with the file. Reply \"redo\" and I'll fix it."
+        )
+
+    try:
+        headline = await check_headline_against_summary(text)
+    except Exception as e:
+        print(f"[adapter] review: headline check failed to run ({e})", flush=True)
+        headline = []
+    for h in headline[:1]:
+        holds = ", ".join(h.get("summary_holds", [])[:4])
+        problems.append(
+            f"The headline figure {h.get('claimed')} is not on the file's Summary sheet"
+            + (f" (it holds {holds})" if holds else "") + ". Go with the file."
+        )
+
+    try:
+        rankings = await check_rankings_against_file(text)
+    except Exception as e:
+        print(f"[adapter] review: ranking check failed to run ({e})", flush=True)
+        rankings = []
+    for r in rankings[:1]:
+        problems.append(
+            f"The reply calls {r.get('value')} the {r.get('word')}, but the file's "
+            f"{r.get('column') or 'column'} has {r.get('beaten_by')} ({r.get('row')}). "
+            f"Check which one is meant."
+        )
+    return problems
+
+
+def _feedback_for(problems: list[str], previous: str, round_no: int) -> dict:
+    return {
+        "round": round_no,
+        "problems": problems,
+        "previous_reply": previous,
+        "instructions": (
+            "The platform checked your reply against what this run actually did and "
+            "produced, and found the problems listed. Fix the reply so it agrees with "
+            "the files and the work done - usually by correcting the text, not by "
+            "redoing the work. If a problem is not a real error, say why in the reply."
+        ),
+    }
+
+
+async def review_reply(result: dict, revise=None) -> dict:
+    """Check a reply, let the agent revise it, and record what is still wrong.
+
+    `revise(feedback)` re-runs the agent with `context["platform_feedback"]`;
+    omitted on paths that cannot re-run it (a resume after approval), where the
+    problems are still shown to the reader.
+    """
+    text = (result.get("text") or "").strip()
+    if not text:
+        # A blank reply is never sent. The requester is told it did not finish.
+        result["text"] = (
+            "I wasn't able to finish this request, and nothing was sent to anyone "
+            "else. Please send it again; if it fails a second time, the problem is "
+            "on my side rather than in what you asked for."
+        )
+        return result
+
+    problems = await verified_problems(text)
+    rounds = 0
+    while problems and revise is not None and rounds < _MAX_REVISIONS:
+        rounds += 1
+        print(f"[adapter] review: {len(problems)} problem(s) - revision {rounds}/{_MAX_REVISIONS}", flush=True)
+        try:
+            revised = await revise(_feedback_for(problems, text, rounds))
+        except Exception as e:
+            print(f"[adapter] review: revision failed ({e}) - keeping the reply", flush=True)
+            break
+        if (
+            not isinstance(revised, dict)
+            or revised.get("status") == "__interrupted__"
+            or revised.get("action") not in ("send_email", "reply_email")
+            or not (revised.get("text") or "").strip()
+        ):
+            break
+        record_agent_output(revised)
+        result, text = revised, revised["text"].strip()
+        problems = await verified_problems(text)
+
+    current_run_meta()["platform_checks"] = problems[:2]
+    if problems:
+        print(f"[adapter] review: delivering with {len(problems)} verified problem(s) shown", flush=True)
+    return result
+
+
 def finalise_reply_text(text: str, attachments: list[dict] | None) -> str:
     """Everything the platform has to say about the message it is about to send.
 
@@ -5638,6 +5785,13 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
         if channel == "teams":
             await _deliver_teams_result(reply_text, result, channel_ctx)
         elif channel == "email":
+            # The same platform review as the first pass, without the revision
+            # round: the full request is not held here to re-run the agent on,
+            # so what it finds goes to the reader in the check list instead.
+            if isinstance(result, dict) and result.get("action") in ("send_email", "reply_email"):
+                record_agent_output(result)
+                result = await review_reply({**result, "text": result.get("text") or reply_text})
+                reply_text = result.get("text") or reply_text
             await _deliver_email_result(reply_text, result, channel_ctx, resolution)
         else:
             print(f"[adapter] Unknown channel '{channel}' — cannot deliver post-resume result", flush=True)
@@ -6610,23 +6764,26 @@ async def _handle_message(message: str, context: dict):
             record_sandbox_step(tool, arguments, mcp_result)
             return await _read_back_summary(_register_sandbox_files(mcp_result))
 
+        async def _invoke_agent(ctx: dict):
+            return await run_agent(
+                content=message,
+                context=ctx,
+                contribute_fn=contribute_knowledge,
+                search_fn=search_knowledge,
+                use_fn=report_usage,
+                graph_fn=graph_request,
+                thread_id=thread_id,
+                **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
+                file_resolver_fn=resolve_sandbox_file,
+                file_registrar_fn=_register_inbound_file,
+                file_describer_fn=describe_file_shape,
+                verify_fn=verify_deliverables,
+                ranking_fn=check_rankings_against_file,
+                headline_fn=check_headline_against_summary,
+            )
+
         print(f"[adapter] Running agent graph...", flush=True)
-        result = await run_agent(
-            content=message,
-            context=context,
-            contribute_fn=contribute_knowledge,
-            search_fn=search_knowledge,
-            use_fn=report_usage,
-            graph_fn=graph_request,
-            thread_id=thread_id,
-            **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
-            file_resolver_fn=resolve_sandbox_file,
-            file_registrar_fn=_register_inbound_file,
-            file_describer_fn=describe_file_shape,
-            verify_fn=verify_deliverables,
-            ranking_fn=check_rankings_against_file,
-            headline_fn=check_headline_against_summary,
-        )
+        result = await _invoke_agent(context)
 
         if not isinstance(result, dict):
             print(f"[adapter] run_agent returned non-dict ({type(result).__name__}) — skipping", flush=True)
@@ -6692,6 +6849,19 @@ async def _handle_message(message: str, context: dict):
                 flush=True,
             )
             action = result["action"] = "reply_email"
+
+        # ── Platform review ──────────────────────────────────────────────────
+        # Every reply is checked against what this run did and produced before
+        # it reaches approval or the requester, whatever the agent's own code
+        # checked. See review_reply.
+        if action in ("send_email", "reply_email"):
+            record_agent_output(result)
+
+            async def _revise(feedback: dict):
+                return await _invoke_agent({**context, "platform_feedback": feedback})
+
+            result = await review_reply(result, _revise)
+            action = result.get("action", action)
 
         # ── Email-reply approval resolution ─────────────────────────────────
         if action == "resolve_approval":

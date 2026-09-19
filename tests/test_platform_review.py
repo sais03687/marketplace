@@ -128,3 +128,105 @@ def test_every_send_path_gets_the_list_through_finalise():
 def test_no_items_means_no_list():
     _run()
     assert "Check before you use this" not in adapter.finalise_reply_text("Answer.\n\nMore.", [])
+
+
+# ── claimed work ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "The workbook is attached with the totals.",
+    "I built the summary and uploaded it to SharePoint.",
+    "See the attached chart for the trend.",
+    "I calculated the fees per merchant.",
+])
+def test_a_reply_claiming_work_is_recognised(text):
+    assert adapter._claims_work(text)
+
+
+@pytest.mark.parametrize("text", [
+    "I could not build the workbook because the file was unreadable.",
+    "Nothing was attached - I need the source data first.",
+    "Total revenue is 7,385.75 across 6 orders.",
+    "",
+])
+def test_an_honest_or_plain_reply_is_not_a_claim(text):
+    assert not adapter._claims_work(text)
+
+
+def test_claimed_work_with_nothing_run_is_a_problem():
+    _run(thread="t-claim")
+    problems = asyncio.run(adapter.verified_problems("The workbook is attached with the totals."))
+    assert problems and "nothing was computed" in problems[0]
+
+
+def test_claimed_work_after_real_work_is_not():
+    _run(thread="t-claim2")
+    adapter.current_run_steps().append({"tool": "execute_python"})
+    assert asyncio.run(adapter.verified_problems("The workbook is attached.")) == []
+
+
+# ── the revision round ───────────────────────────────────────────────────────
+
+def _fake_problems(monkeypatch, bad_texts):
+    async def fake(text):
+        return ["figure X is not in the file"] if text in bad_texts else []
+    monkeypatch.setattr(adapter, "verified_problems", fake)
+
+
+def test_a_revision_that_fixes_the_reply_is_sent_clean(monkeypatch):
+    _run(thread="t-rev1")
+    _fake_problems(monkeypatch, {"bad reply"})
+    seen = []
+
+    async def revise(feedback):
+        seen.append(feedback)
+        return {"action": "reply_email", "text": "good reply", "check": ["I rounded to cents."]}
+
+    out = asyncio.run(adapter.review_reply({"action": "reply_email", "text": "bad reply"}, revise))
+    assert out["text"] == "good reply"
+    assert seen[0]["problems"] == ["figure X is not in the file"] and seen[0]["previous_reply"] == "bad reply"
+    assert adapter.current_run_meta()["platform_checks"] == []
+    assert adapter.current_run_meta()["checks"] == ["I rounded to cents."]
+
+
+def test_an_agent_that_ignores_feedback_is_asked_twice_then_the_reader_is_told(monkeypatch):
+    _run(thread="t-rev2")
+    _fake_problems(monkeypatch, {"bad reply"})
+    calls = []
+
+    async def revise(feedback):
+        calls.append(feedback["round"])
+        return {"action": "reply_email", "text": "bad reply"}
+
+    asyncio.run(adapter.review_reply({"action": "reply_email", "text": "bad reply"}, revise))
+    assert calls == [1, 2]
+    assert adapter.current_run_meta()["platform_checks"] == ["figure X is not in the file"]
+
+
+@pytest.mark.parametrize("revised", [
+    {"status": "__interrupted__"},
+    {"action": "none", "text": ""},
+    "not a dict",
+])
+def test_an_unusable_revision_keeps_the_original_reply(monkeypatch, revised):
+    _run(thread="t-rev3")
+    _fake_problems(monkeypatch, {"bad reply"})
+
+    async def revise(feedback):
+        return revised
+
+    out = asyncio.run(adapter.review_reply({"action": "reply_email", "text": "bad reply"}, revise))
+    assert out["text"] == "bad reply"
+    assert adapter.current_run_meta()["platform_checks"] == ["figure X is not in the file"]
+
+
+def test_without_a_revise_function_problems_are_shown_not_retried(monkeypatch):
+    _run(thread="t-rev4")
+    _fake_problems(monkeypatch, {"bad reply"})
+    asyncio.run(adapter.review_reply({"action": "reply_email", "text": "bad reply"}))
+    assert adapter.current_run_meta()["platform_checks"] == ["figure X is not in the file"]
+
+
+def test_a_blank_reply_is_never_sent_blank():
+    _run(thread="t-rev5")
+    out = asyncio.run(adapter.review_reply({"action": "reply_email", "text": "  "}))
+    assert "wasn't able to finish" in out["text"]
