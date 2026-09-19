@@ -132,6 +132,8 @@ _RUN_DEADLINE_S = float(os.environ.get("LLM_RUN_DEADLINE_S", "600"))
 # like that, retrying the call is almost always the right move and abandoning the
 # task is almost never.
 _MAX_TIMEOUTS = int(os.environ.get("LLM_MAX_TIMEOUTS", "2"))
+# Re-asks for a response that was not the required JSON, per run.
+_MAX_FORMAT_RETRIES = 2
 
 def _resolve_llm_model() -> str:
     """Which model this agent runs, with a file that outranks the environment.
@@ -602,6 +604,7 @@ class AgentState(BaseModel):
     # equivalent counter used to be incremented inside the router, where the
     # assignment was discarded and the guard it fed never fired.
     none_streak: int = 0
+    format_retries: int = 0
     # The last action emitted, as type plus arguments, and how many times it has
     # been emitted unchanged in a row. Distinct from none_streak: that counts a
     # model refusing to act, this counts one acting to no effect.
@@ -767,7 +770,7 @@ and nothing left to do.
 ## What the work produced
 
 {action_results}
-
+{produced_nothing}
 ---
 
 Write the reply.
@@ -1288,6 +1291,15 @@ async def reason_and_act(state: AgentState) -> AgentState:
             "Never claim anything the results above do not support."
         )
 
+    if state.context.get("_retry_after_bad_format"):
+        message_content += (
+            "\n\n[SYSTEM] Your previous response could not be read: it was not the "
+            "single JSON object the response format requires. Nothing in it was "
+            "carried out - no tool ran and no file was made. Reply with only that "
+            "JSON object, with no text before or after it, and put the next action "
+            "you want in its action field."
+        )
+
     # Format actions taken so far
     actions_str = "None yet" if not state.actions_taken else "\n".join(
         f"- Step {i+1}: {a}" for i, a in enumerate(state.actions_taken)
@@ -1372,6 +1384,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
         return state
 
     state.context.pop("_retry_after_timeout", None)
+    state.context.pop("_retry_after_bad_format", None)
     text = response.content if hasattr(response, "content") else str(response)
     print(f"[agent] LLM response (first 500 chars): {text[:500]}", flush=True)
 
@@ -1403,6 +1416,27 @@ async def reason_and_act(state: AgentState) -> AgentState:
                     state.analysis = parsed
             except Exception:
                 pass
+        # Unreadable is not finished. This fallback used to be the only branch, and
+        # it reads a response it could not parse as "completed, no action" - so a
+        # model that answered in prose ended the run on the spot. On 2026-09-19 a
+        # run wrote a sound plan as markdown twice, neither parsed, nothing was
+        # ever calculated, and the closing pass reported the plan as done.
+        # Asked again with the reason, the model has a chance to act; the budget
+        # keeps a model that cannot produce the format from looping.
+        if (
+            not isinstance(state.analysis, dict)
+            and state.format_retries < _MAX_FORMAT_RETRIES
+            and not state.context.get("_wrapping_up")
+        ):
+            state.format_retries += 1
+            print(
+                f"[agent] response was not the JSON object the format requires "
+                f"({state.format_retries}/{_MAX_FORMAT_RETRIES}) - asking again",
+                flush=True,
+            )
+            state.context["_retry_after_bad_format"] = True
+            state.analysis = {}
+            return state
         if not isinstance(state.analysis, dict):
             state.analysis = {"completed": True, "action": {"type": "none"},
                               "final_response": {"action": "none"}, "reasoning": text}
@@ -1468,6 +1502,41 @@ async def reason_and_act(state: AgentState) -> AgentState:
     return state
 
 
+# Labels execute_action records for work that computes or delivers something.
+# Anything else in the log - a folder listing, a search, a read - gathers.
+_COMPUTE_LABEL = "MCP python-sandbox/execute_python"
+_DELIVER_PREFIXES = ("Upload:", "OneDrive upload:", "Excel write", "Excel append")
+
+
+def _produced_nothing_note(actions_taken: list) -> str:
+    """Say so, in the platform's voice, when the run computed and delivered nothing.
+
+    The closing pass writes from the plan it remembers as readily as from the
+    work that happened. On 2026-09-19 a run whose only action was a forced
+    folder listing told the requester "the workbook itself is built and
+    uploaded" and named a file an earlier run had left behind - the plan,
+    reported as done. The action list was in the prompt and did not stop it; a
+    list is something to read, and a claim is something to check. So the
+    absence is stated outright, from the log rather than from the model.
+
+    Only the case the log settles: no sandbox code ran and nothing was written
+    or uploaded, so no file can exist. Code that ran without an upload may still
+    have produced an attachment, and that is left to the checks that read files.
+    """
+    labels = [str(a) for a in actions_taken or []]
+    computed = any(l.startswith(_COMPUTE_LABEL) and "FAILED" not in l for l in labels)
+    delivered = any(l.startswith(_DELIVER_PREFIXES) for l in labels)
+    if computed or delivered:
+        return ""
+    return (
+        "\nNo code ran and no file was created, written or uploaded in this run. "
+        "Nothing was calculated. Do not say that a workbook or file was built, "
+        "uploaded or attached, and do not point them to one: any file you can see "
+        "in a listing is from earlier work, not this request. Say plainly what was "
+        "not done and why, and what you need to finish it.\n"
+    )
+
+
 async def _write_reply(state: AgentState) -> str:
     """Ask the model for the closing reply, and for nothing else.
 
@@ -1490,6 +1559,7 @@ async def _write_reply(state: AgentState) -> str:
         request=(state.content or "(no request text available)")[:4000],
         actions_taken=actions_str,
         action_results=results_str,
+        produced_nothing=_produced_nothing_note(state.actions_taken),
     )
 
     try:
@@ -1701,7 +1771,7 @@ def route_after_reasoning(state: AgentState) -> str:
     # once `actions_taken` is non-empty, so a timeout on the first call — which
     # is what ended the churn task on 2026-08-18 with nothing produced and an
     # empty reply queued for approval — ended the run instead of retrying it.
-    if state.context.get("_retry_after_timeout"):
+    if state.context.get("_retry_after_timeout") or state.context.get("_retry_after_bad_format"):
         return "reason_and_act"
 
     if state.analysis.get("completed", False):
