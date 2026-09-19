@@ -42,3 +42,35 @@ def test_the_list_does_not_split_a_lead_in_from_its_breakdown():
         "Revenue by customer (total 7,385.75):\n\nGamma 2,605.00\nBeta 2,550.25\n\nMethod: summed.",
         ["I removed one duplicate."])
     assert text.index("Gamma 2,605.00") < text.index("Check before you use this") < text.index("Method:")
+
+
+def test_a_figure_nothing_computed_is_labelled_not_asserted():
+    items = agent._label_unverified(
+        ["Keeping the duplicate would raise Beta Ltd to $35,401.00."],
+        ["stdout: beta 2550.25 total 7385.75"], "orders csv", None, "Total 7,385.75")
+    assert "not calculated" in items[0]
+
+
+def test_a_figure_the_run_computed_is_left_alone():
+    items = agent._label_unverified(
+        ["If 1005 is a return, the total is $5,510.75."],
+        ["stdout: total_if_return 5510.75"], "1005,Gamma Inc,-4", None, "Total 7,385.75")
+    assert items == ["If 1005 is a return, the total is $5,510.75."]
+
+
+def test_a_percentage_of_a_computed_fraction_is_backed():
+    items = agent._label_unverified(["Conversion was 5.33% overall."], ["rate 0.0532765"], "", None, "")
+    assert "not calculated" not in items[0]
+
+
+@pytest.mark.parametrize("params, ok", [
+    ('{"server": "python-sandbox", "tool": "execute_python"}', True),
+    ("", True),
+    ("not json", False),
+    ('["a list"]', False),
+])
+def test_schema_mode_string_params_are_decoded(params, ok):
+    analysis = {"action": {"type": "mcp_call", "params": params}}
+    assert agent._decode_string_params(analysis) is ok
+    if ok:
+        assert isinstance(analysis["action"]["params"], dict)

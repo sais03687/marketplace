@@ -189,7 +189,76 @@ llm = ChatOpenAI(
 # rejection switches this process back to the plain client for good - the
 # format retry in reason_and_act still covers that path. STRUCTURED_OUTPUT=none
 # turns it off for an agent whose model is known not to support it.
-_json_mode = os.environ.get("STRUCTURED_OUTPUT", "json").strip().lower() != "none"
+_structured = os.environ.get("STRUCTURED_OUTPUT", "auto").strip().lower()
+_json_mode = _structured != "none"
+
+# Which of the two structured modes to ask for. Measured on 2026-09-19 through
+# OpenRouter: Anthropic models ignore json_object entirely (Sonnet 5 answered in
+# markdown) but honour json_schema; gpt-oss-120b honours json_object on every
+# provider tried, while one provider returned garbage ("-1.1e2") in schema mode.
+# "auto" picks per vendor; STRUCTURED_OUTPUT=schema|json forces one.
+_use_schema = _structured == "schema" or (
+    _structured == "auto" and _llm_model.startswith("anthropic/")
+)
+
+# Schema mode closes every object: a field it does not list is dropped, and an
+# object with no listed properties comes back empty - Sonnet returned
+# "params": {} for every action until params became a string holding JSON.
+# So every field the loop reads is listed here, and params travels encoded.
+_STR = {"type": "string"}
+_STRS = {"type": "array", "items": {"type": "string"}}
+TURN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reasoning": _STR,
+        "plan": _STR,
+        "completed": {"type": "boolean"},
+        "action": {
+            "type": "object",
+            "properties": {
+                "type": _STR,
+                "params": {"type": "string", "description": "The action's params object, JSON-encoded as a string."},
+            },
+            "required": ["type", "params"],
+        },
+        "risk_assessment": {
+            "type": "object",
+            "properties": {k: {"type": "number"} for k in ("stakes", "ambiguity", "reversibility", "combined")},
+        },
+        "needs_approval": {"type": "boolean"},
+        "final_response": {
+            "type": "object",
+            "properties": {"action": _STR, "to": _STR, "subject": _STR, "text": _STR, "thread_id": _STR, "check": _STRS},
+        },
+        "insight_worthy": {"type": "boolean"},
+        "insight": {
+            "type": "object",
+            "properties": {"type": _STR, "title": _STR, "content": _STR, "tags": _STRS},
+        },
+    },
+    "required": ["reasoning", "action", "completed"],
+}
+REPLY_SCHEMA = {
+    "type": "object",
+    "properties": {"subject": _STR, "text": _STR, "check": _STRS},
+    "required": ["text"],
+}
+
+
+def _decode_string_params(analysis: dict) -> bool:
+    """Turn schema mode's JSON-string params back into an object. False if unreadable."""
+    action = analysis.get("action")
+    if not isinstance(action, dict) or not isinstance(action.get("params"), str):
+        return True
+    raw = action["params"].strip() or "{}"
+    try:
+        decoded = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(decoded, dict):
+        return False
+    action["params"] = decoded
+    return True
 
 
 def _usable_turn(obj) -> bool:
@@ -197,15 +266,20 @@ def _usable_turn(obj) -> bool:
     return isinstance(obj, dict) and bool({"action", "final_response", "completed"} & set(obj))
 
 
-async def _ainvoke_json(prompt: str, timeout: float):
+async def _ainvoke_json(prompt: str, timeout: float, schema: dict | None = None):
     """Call the model in JSON mode, falling back to the plain client if unsupported."""
     global _json_mode
     # Bound per call, from whatever `llm` is now, so anything that swaps the
     # client (a test, a future per-run model) is not bypassed by a copy made at
     # import.
     if _json_mode and hasattr(llm, "bind"):
+        fmt = (
+            {"type": "json_schema", "json_schema": {"name": "agent_output", "strict": False, "schema": schema}}
+            if _use_schema and schema
+            else {"type": "json_object"}
+        )
         llm_json = llm.bind(
-            response_format={"type": "json_object"},
+            response_format=fmt,
             extra_body={"provider": {"require_parameters": True}},
         )
         try:
@@ -822,7 +896,9 @@ anything that could change the answer or how they should use it:
 - A part of the request you could not do, and what you would need to do it.
 
 Each item is one or two short sentences: what you did, why it matters, and what
-they can reply to change it. At most 3 items, most important first. Do not list
+they can reply to change it. Only quote an alternative figure you actually
+computed in this run; otherwise describe the effect in words ("Gamma's total
+would drop by that order's amount") and offer to calculate it. At most 3 items, most important first. Do not list
 routine steps, restate the answer, or add general advice to double-check. If
 nothing qualifies, send [] - an empty list is the normal case for a clear request
 with clean data, and a list that always has something in it stops being read.
@@ -1416,7 +1492,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
     )
 
     try:
-        response = await _ainvoke_json(prompt, timeout=_LLM_TIMEOUT_S)
+        response = await _ainvoke_json(prompt, timeout=_LLM_TIMEOUT_S, schema=TURN_SCHEMA)
     except asyncio.TimeoutError:
         # The model went quiet. The run did not.
         #
@@ -1497,6 +1573,10 @@ async def reason_and_act(state: AgentState) -> AgentState:
     # An object that names neither a next action, a reply, nor completion
     # carries nothing this loop can act on - the same as prose.
     if not _usable_turn(state.analysis):
+        state.analysis = None
+    # Schema mode sends params as a JSON string; one that does not decode is as
+    # unreadable as prose, and gets the same second chance.
+    if isinstance(state.analysis, dict) and not _decode_string_params(state.analysis):
         state.analysis = None
 
     if not isinstance(state.analysis, dict):
@@ -1657,7 +1737,7 @@ async def _write_reply(state: AgentState) -> str:
     )
 
     try:
-        response = await _ainvoke_json(prompt, timeout=60)
+        response = await _ainvoke_json(prompt, timeout=60, schema=REPLY_SCHEMA)
     except Exception as e:
         # Timeout, rate limit, provider error — all the same from here, and all
         # recoverable: the caller tries once more and then composes from the
@@ -3094,6 +3174,10 @@ async def finalize(state: AgentState) -> AgentState:
     # reply: it is the one item the platform has verified rather than the model
     # volunteered, and the bottom of an email is where nobody reads.
     checks = _check_items(final.get("check")) or list(state.context.get("_reply_checks") or [])
+    checks = _label_unverified(
+        checks, state.action_results, state.content,
+        getattr(state, "enriched_content", None), result_text,
+    )
     if state.deliverable_gaps and result_text.strip():
         figures = ", ".join(str(g) for g in state.deliverable_gaps[:8])
         plural = len(state.deliverable_gaps) > 1
@@ -3864,6 +3948,45 @@ def _check_items(value) -> list[str]:
         return []
     items = [" ".join(str(v).split()) for v in value if isinstance(v, (str, int, float))]
     return [i for i in items if i and i.lower() not in ("none", "n/a", "nothing")][:_MAX_CHECKS]
+
+
+def _label_unverified(items: list[str], *sources) -> list[str]:
+    """Mark figures in the model's check items that nothing in the run produced.
+
+    The check list is added after the file checks run, so a number in it has
+    been verified by nobody. On 2026-09-19 an item said keeping a duplicate
+    order "would double Beta Ltd's revenue to $35,401.00" - it would have added
+    16,800 - and another put a return's effect at 7,791.50 against a true 7,500.
+    A figure the run computed, the request supplied or the checked reply states
+    is left alone; any other is labelled rather than removed, because the
+    alternative it describes is still worth raising.
+    """
+    known: list[Decimal] = []
+    for src in sources:
+        text = src if isinstance(src, str) else json.dumps(src, default=str)
+        known.extend(v for _, v in _summary_figures_local(text))
+
+    def _backed(raw: str, val: Decimal) -> bool:
+        places = len(raw.split(".")[1]) if "." in raw else 0
+        q = Decimal(1).scaleb(-places)
+        for k in known:
+            try:
+                if abs(k).quantize(q) == abs(val) or abs(k * 100).quantize(q) == abs(val):
+                    return True
+            except InvalidOperation:
+                continue
+        return False
+
+    out = []
+    for item in items:
+        figures = [
+            (raw, val) for raw, val in _summary_figures_local(item)
+            if "." in raw or abs(val) >= 10
+        ]
+        if any(not _backed(raw, val) for raw, val in figures):
+            item = f"{item.rstrip('.')} (figure not calculated - ask me to run it)."
+        out.append(item)
+    return out
 
 
 def _with_check_section(text: str, checks: list[str]) -> str:
