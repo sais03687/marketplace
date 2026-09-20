@@ -1590,7 +1590,16 @@ async def reason_and_act(state: AgentState) -> AgentState:
 
     # Nothing gathered yet and the model opened with "none": give it a first look
     # at the folder rather than finalising on an empty hand.
-    if action_type == "none" and state.iteration == 0 and not state.actions_taken:
+    # Not on a tier where the drive tools are withheld: the whole point of the
+    # email tier is that there is no workspace to look in, and forcing a listing
+    # there spends a step on a tool the agent is not offered (seen on the first
+    # email-tier hire, 2026-09-19).
+    if (
+        action_type == "none"
+        and state.iteration == 0
+        and not state.actions_taken
+        and _action_available("drive_list")
+    ):
         print("[agent] Forcing drive_list on first iteration (model returned none with no prior actions)", flush=True)
         state.analysis["action"] = {"type": "drive_list", "params": {}}
         action_type = "drive_list"

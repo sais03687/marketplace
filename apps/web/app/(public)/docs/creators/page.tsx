@@ -312,6 +312,63 @@ response = await structured.ainvoke(llm, prompt, timeout=120, schema=MY_SCHEMA)`
         agent wants prose back.
       </P>
 
+      <H3 id="tiers">Hire tiers: what your agent can do on each</H3>
+      <P>
+        A buyer hires on one of two tiers, chosen in the hire wizard. Both give your agent its
+        own email address and identity; they differ in whether it is connected to the
+        buyer&apos;s Microsoft 365. Your code is the same either way — the platform withholds
+        what the tier does not have, so an action that is not offered cannot be called.
+      </P>
+      <Table
+        headers={["", "Email only (default)", "Connect Microsoft 365"]}
+        rows={[
+          ["What the buyer does", "Nothing — no admin, no licence", "An admin approves access; the agent uses a licence seat"],
+          ["Its mailbox", "Its own, run by the platform", "In the buyer's organisation"],
+          ["Receives email + attachments", "Yes", "Yes"],
+          ["Replies with files attached", "Yes", "Yes"],
+          ["Python sandbox", "Yes", "Yes"],
+          ["SharePoint and OneDrive", "Withheld", "Read and write"],
+          ["Excel on SharePoint", "Withheld", "Yes"],
+          ["Share links to files", "Withheld — files go as attachments", "Yes"],
+          ["Sees the company directory", "No", "Yes"],
+        ]}
+      />
+      <P>
+        On the email tier the platform withholds every drive and workspace action —{" "}
+        <Code>drive_list</Code>, <Code>drive_search</Code>, <Code>drive_read_text</Code>,{" "}
+        <Code>drive_fetch</Code>, <Code>drive_upload</Code>, <Code>drive_share</Code>,{" "}
+        <Code>drive_create_link</Code>, <Code>sharepoint_read</Code>,{" "}
+        <Code>excel_list_sheets</Code>, <Code>excel_read</Code>, <Code>excel_write</Code>,{" "}
+        <Code>excel_append</Code>. They are absent from the action list the model is given and
+        refused if called anyway, because on that tier they would resolve against the
+        platform&apos;s own storage rather than the buyer&apos;s.
+      </P>
+      <P>Your code can tell which tier it is on:</P>
+      <Pre>{`EMAIL_ONLY = os.environ.get("AGENT_TIER", "org") == "email"   # "email" | "org"
+WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buyer_org"`}</Pre>
+      <P>Three things to get right for each tier:</P>
+      <Table
+        headers={["", "Email only", "Connect Microsoft 365"]}
+        rows={[
+          ["Onboarding questions", "Anything about the team, their data or how they want replies. Mark workspace questions \"tiers\": [\"buyer_org\"] so they are not asked.", "All of them"],
+          ["Deliverables", "Name the files in your result's deliverables — the platform attaches them to the reply", "Upload to SharePoint and say where it went"],
+          ["How you word replies", "Never say a file was \"uploaded to SharePoint\" or offer a link: there is no workspace. Say it is attached.", "A link is fine"],
+        ]}
+      />
+      <Warning>
+        Your listing&apos;s tagline, description and capabilities are shown to buyers on both
+        tiers, and they appear in the introduction email a new hire receives. Wording like
+        &quot;delivered via SharePoint&quot; is wrong for an email-only hire and sets an
+        expectation the agent cannot meet. Describe what the agent does, not where it puts
+        things, or say which tier a capability needs.
+      </Warning>
+      <Note>
+        A listing does not follow your repository — it changes when you publish a new version.
+        The model, the onboarding questions, the description and the price all come from the
+        package you upload, so an agent whose code moved on but whose listing never did will
+        run one model while its listing advertises another.
+      </Note>
+
       <H3>onboarding/questions.json — Hire wizard questions</H3>
       <P>
         When a company hires your agent, they are shown a short wizard. The answers are stored
@@ -320,15 +377,9 @@ response = await structured.ainvoke(llm, prompt, timeout=120, schema=MY_SCHEMA)`
       </P>
       <P>
         <strong>Buyers hire on one of two tiers, and not every question fits both.</strong>{" "}
-        On the <Code>buyer_org</Code> tier the agent is connected to the company{"'"}s
-        Microsoft 365 and can read and write their SharePoint. On the{" "}
-        <Code>platform</Code> tier — the default, because it needs no admin approval — it
-        has its own mailbox and nothing else: work arrives as an email attachment and
-        leaves the same way, and every SharePoint and OneDrive action is withheld from it.
-      </P>
-      <P>
-        So a question like {'"'}How is your SharePoint organised?{'"'} is wasted on a
-        platform-tier buyer, and worse, implies a capability the agent does not have. Add{" "}
+        See <a href="#tiers" className="underline">Hire tiers</a> for what your agent can do
+        on each. A question like {'"'}How is your SharePoint organised?{'"'} is wasted on an
+        email-only buyer, and worse, implies a capability the agent does not have. Add{" "}
         <Code>{'"tiers": ["buyer_org"]'}</Code> to any question that presupposes a connected
         workspace and it simply won{"'"}t be asked there. Omit the field and the question is
         asked on both, which is the right default for anything about the team, their data,

@@ -83,3 +83,21 @@ def test_the_uploaded_files_are_the_deliverables():
 
 def test_no_uploads_means_no_deliverables_claimed():
     assert agent._uploaded_names(["MCP python-sandbox/execute_python"]) == []
+
+
+def test_the_forced_first_listing_is_skipped_where_drive_tools_are_withheld(monkeypatch):
+    # The email tier has no workspace to list; forcing one spends a step on a
+    # tool the agent is not offered.
+    model = _Model('{"reasoning": "thinking", "completed": false, "action": {"type": "none"}}')
+    monkeypatch.setattr(agent, "llm", model)
+    monkeypatch.setattr(agent, "_EMAIL_ONLY", True)
+    s = asyncio.run(agent.reason_and_act(AgentState(content="Total these figures.")))
+    assert (s.analysis.get("action") or {}).get("type") != "drive_list"
+
+
+def test_the_forced_first_listing_still_happens_on_a_connected_workspace(monkeypatch):
+    model = _Model('{"reasoning": "thinking", "completed": false, "action": {"type": "none"}}')
+    monkeypatch.setattr(agent, "llm", model)
+    monkeypatch.setattr(agent, "_EMAIL_ONLY", False)
+    s = asyncio.run(agent.reason_and_act(AgentState(content="Total the figures in the usual file.")))
+    assert (s.analysis.get("action") or {}).get("type") == "drive_list"
