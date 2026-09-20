@@ -678,6 +678,7 @@ class AgentState(BaseModel):
     # assignment was discarded and the guard it fed never fired.
     none_streak: int = 0
     format_retries: int = 0
+    no_action_nudges: int = 0
     # The last action emitted, as type plus arguments, and how many times it has
     # been emitted unchanged in a row. Distinct from none_streak: that counts a
     # model refusing to act, this counts one acting to no effect.
@@ -1413,6 +1414,18 @@ async def reason_and_act(state: AgentState) -> AgentState:
             "next one shorter: fewer lines of code, printing only the figures you need."
         )
 
+    if state.context.get("_retry_after_no_action"):
+        message_content += (
+            "\n\n[SYSTEM] Your first response took no action, and nothing has run yet, "
+            "so there is nothing to write a reply from. Everything this task needs is "
+            "already here: the data is in the request above, or in the files attached "
+            "to it, which are staged in the sandbox at /tmp/input/ and listed with the "
+            "request. Choose the action that starts the work - usually running the "
+            "calculation in the sandbox. If the request genuinely cannot be answered "
+            "with what you have, say so in a reply that names what is missing, rather "
+            "than taking no action."
+        )
+
     # Format actions taken so far
     actions_str = "None yet" if not state.actions_taken else "\n".join(
         f"- Step {i+1}: {a}" for i, a in enumerate(state.actions_taken)
@@ -1499,6 +1512,7 @@ async def reason_and_act(state: AgentState) -> AgentState:
 
     state.context.pop("_retry_after_timeout", None)
     state.context.pop("_retry_after_bad_format", None)
+    state.context.pop("_retry_after_no_action", None)
     text = response.content if hasattr(response, "content") else str(response)
     print(f"[agent] LLM response (first 500 chars): {text[:500]}", flush=True)
 
@@ -1603,6 +1617,31 @@ async def reason_and_act(state: AgentState) -> AgentState:
         print("[agent] Forcing drive_list on first iteration (model returned none with no prior actions)", flush=True)
         state.analysis["action"] = {"type": "drive_list", "params": {}}
         action_type = "drive_list"
+
+    # The same protection where there is no drive to list.
+    #
+    # Forcing a listing did two jobs: it gave the run a first look at the
+    # buyer's files, and - by putting an action on the board - it kept a run
+    # that opened with "no action" from falling straight through to a reply with
+    # nothing done, because the re-reason branch in the router needs an action to
+    # have happened. On the email tier the first job is meaningless and the
+    # second still matters, so the run is sent back to reason once, told where
+    # its data actually is. Once per run: a model that declines twice is handled
+    # by none_streak.
+    elif (
+        action_type == "none"
+        and not state.analysis.get("completed", False)
+        and state.iteration == 0
+        and not state.actions_taken
+        and state.no_action_nudges == 0
+    ):
+        state.no_action_nudges += 1
+        state.context["_retry_after_no_action"] = True
+        print(
+            "[agent] first turn chose no action and nothing has run - asking again "
+            "with a pointer to the data",
+            flush=True,
+        )
 
     # How many turns in a row the model has declined to act while claiming the task
     # is unfinished. Re-reasoning once or twice recovers a malformed action; beyond
@@ -1966,7 +2005,11 @@ def route_after_reasoning(state: AgentState) -> str:
     # once `actions_taken` is non-empty, so a timeout on the first call — which
     # is what ended the churn task on 2026-08-18 with nothing produced and an
     # empty reply queued for approval — ended the run instead of retrying it.
-    if state.context.get("_retry_after_timeout") or state.context.get("_retry_after_bad_format"):
+    if (
+        state.context.get("_retry_after_timeout")
+        or state.context.get("_retry_after_bad_format")
+        or state.context.get("_retry_after_no_action")
+    ):
         return "reason_and_act"
 
     if state.analysis.get("completed", False):

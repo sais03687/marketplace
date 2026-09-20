@@ -101,3 +101,48 @@ def test_the_forced_first_listing_still_happens_on_a_connected_workspace(monkeyp
     monkeypatch.setattr(agent, "_EMAIL_ONLY", False)
     s = asyncio.run(agent.reason_and_act(AgentState(content="Total the figures in the usual file.")))
     assert (s.analysis.get("action") or {}).get("type") == "drive_list"
+
+
+def _first_turn(monkeypatch, email_only, *responses):
+    model = _Model(*responses)
+    monkeypatch.setattr(agent, "llm", model)
+    monkeypatch.setattr(agent, "_EMAIL_ONLY", email_only)
+    s = asyncio.run(agent.reason_and_act(AgentState(content="Total the attached figures.")))
+    return s, model
+
+
+NO_ACTION = '{"reasoning": "I will summarise", "completed": false, "action": {"type": "none"}}'
+
+
+def test_a_first_turn_with_no_action_is_asked_again_where_there_is_no_drive(monkeypatch):
+    # Forcing a listing used to keep such a run from replying with nothing done;
+    # the email tier has no listing to force, so it is asked again instead.
+    s, _ = _first_turn(monkeypatch, True, NO_ACTION)
+    assert s.context.get("_retry_after_no_action") is True
+    assert agent.route_after_reasoning(s) == "reason_and_act"
+
+
+def test_the_second_ask_points_at_the_data(monkeypatch):
+    s, _ = _first_turn(monkeypatch, True, NO_ACTION)
+    s2, model = _first_turn(monkeypatch, True, NO_ACTION)
+    s2.context.update(s.context)
+    s2.no_action_nudges = 1
+    model2 = _Model('{"reasoning": "ok", "completed": false, "action": {"type": "mcp_call", "params": {}}}')
+    monkeypatch.setattr(agent, "llm", model2)
+    asyncio.run(agent.reason_and_act(s2))
+    assert "/tmp/input/" in model2.prompts[0]
+    assert "nothing has run yet" in model2.prompts[0]
+
+
+def test_it_nudges_once_not_forever(monkeypatch):
+    model = _Model(NO_ACTION)
+    monkeypatch.setattr(agent, "llm", model)
+    monkeypatch.setattr(agent, "_EMAIL_ONLY", True)
+    s = AgentState(content="Total the attached figures.", no_action_nudges=1)
+    s = asyncio.run(agent.reason_and_act(s))
+    assert "_retry_after_no_action" not in s.context
+
+
+def test_a_first_turn_that_acts_is_left_alone(monkeypatch):
+    s, _ = _first_turn(monkeypatch, True, '{"completed": false, "action": {"type": "mcp_call", "params": {"server": "python-sandbox"}}}')
+    assert "_retry_after_no_action" not in s.context
