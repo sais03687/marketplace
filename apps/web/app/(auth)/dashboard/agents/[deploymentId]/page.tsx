@@ -49,6 +49,15 @@ interface Deployment {
   status: string;
   onboardingState: string;
   lastHeartbeatAt: string | null;
+  /**
+   * The last time a message this agent sent bounced. Set from the delivery
+   * failure notice that comes back to the agent's mailbox, which is the only
+   * place the truth about delivery shows up — a send is logged the moment it is
+   * queued, long before any of it reaches anyone.
+   */
+  lastDeliveryFailureAt: string | null;
+  lastDeliveryFailureTo: string | null;
+  lastDeliveryFailureReason: string | null;
   pauseReason: string | null;
   autoUpdate: boolean;
   agent: Agent;
@@ -213,6 +222,15 @@ export default function AgentOverviewPage({
     setConfirmPause(false);
   };
 
+  // Only the buyer can clear this. Nothing on the platform knows that delivery
+  // has started working again — the next send is accepted for queueing exactly
+  // as the bounced one was — so the person who can look in their own inbox is
+  // the one who decides the warning is stale.
+  const dismissDeliveryFailure = async () => {
+    await fetch(`/api/deployments/${deploymentId}/delivery-failure`, { method: "DELETE" });
+    await fetchData();
+  };
+
   const handleFire = async () => {
     setActing(true);
     try {
@@ -297,6 +315,41 @@ export default function AgentOverviewPage({
           </Badge>
         </div>
       </div>
+
+      {/* Undelivered mail. Loud on purpose: what goes missing is usually the
+          thing being waited for — an approval request, or the answer itself —
+          and the agent's silence looks identical to it having nothing to say. */}
+      {deployment.lastDeliveryFailureAt && (
+        <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-900">
+          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-medium">
+              An email from this agent could not be delivered
+              {deployment.lastDeliveryFailureTo
+                ? ` to ${deployment.lastDeliveryFailureTo}`
+                : ""}
+            </p>
+            <p className="mt-0.5 text-red-700">
+              {timeAgo(deployment.lastDeliveryFailureAt)}
+              {deployment.lastDeliveryFailureReason
+                ? ` · ${deployment.lastDeliveryFailureReason}`
+                : ""}
+            </p>
+            <p className="mt-1 text-red-700">
+              Anything it sent then — an answer, or a request for your approval —
+              did not reach you. Check your spam folder, and look at the agent&apos;s
+              Approvals tab for anything still waiting.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={dismissDeliveryFailure}
+            className="shrink-0 text-xs underline text-red-700 hover:text-red-900"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Pause reason banner */}
       {isPaused && deployment.pauseReason && (

@@ -629,6 +629,71 @@ function isBounceMessage(msg, fromAddr) {
 }
 
 /**
+ * Who did not receive the message, and what did the receiving server say?
+ *
+ * Read out of the notice's own text rather than any one provider's layout:
+ * Exchange writes "Recipient Address:" and "Error:", a standard RFC 3464 report
+ * writes "Final-Recipient:" and "Diagnostic-Code:", and other mailers write
+ * neither, so a bare address and a bare status code are the last resort. Every
+ * field is optional — a bounce nobody can parse is still a bounce worth showing,
+ * so this never fails, it only returns less.
+ */
+function describeBounce(msg) {
+  const text = htmlToPlainText(String(msg?.body?.content || ""))
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const address =
+    /Recipient Address:\s*([^\s,;<]+@[^\s,;<]+)/i.exec(text) ||
+    /Final-Recipient:\s*(?:rfc822;)?\s*([^\s,;<]+@[^\s,;<]+)/i.exec(text) ||
+    /Your message to\s+([^\s,;<]+@[^\s,;<]+)/i.exec(text);
+
+  const diagnostic =
+    /Diagnostic-Code:\s*(?:smtp;)?\s*([^]{0,300}?)(?:\s+(?:Final-Recipient|Reporting-MTA|Action:|Status:)|$)/i.exec(text) ||
+    /\bError:\s*([^]{0,300}?)(?:\s+(?:Message rejected by|Notification Details|Message Hops)|$)/i.exec(text) ||
+    /\b([45]\.\d\.\d\s[^]{0,200}?)(?:\s+(?:Message rejected by|Notification Details|Message Hops)|$)/i.exec(text);
+
+  return {
+    to: address ? address[1] : "",
+    // Collapsed to one line: this is shown to a buyer, who needs to know their
+    // mail is not arriving and roughly why, not to read an SMTP transcript.
+    reason: diagnostic ? diagnostic[1].trim().slice(0, 500) : "",
+  };
+}
+
+/**
+ * Tell the platform the mail did not arrive.
+ *
+ * The bounce is dropped a few lines below — correctly, it is not a task — and
+ * that used to be the end of it: the send was logged as "Sent" when Graph queued
+ * it, and nothing the buyer can see ever said otherwise. Their agent simply went
+ * quiet. Best-effort, and never allowed to interrupt the poll: failing to record
+ * a failure must not also cost the messages behind it.
+ */
+async function reportDeliveryFailure(msg) {
+  if (!DEPLOYMENT_ID || !APPROVAL_TOKEN) return;
+  const { to, reason } = describeBounce(msg);
+  try {
+    const res = await fetch(
+      `${MARKETPLACE_URL}/api/deployments/${DEPLOYMENT_ID}/delivery-failure`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${APPROVAL_TOKEN}`,
+        },
+        body: JSON.stringify({ to, reason }),
+      },
+    );
+    if (!res.ok) {
+      console.error(`  [bounce] could not record delivery failure: ${res.status}`);
+    }
+  } catch (err) {
+    console.error(`  [bounce] could not record delivery failure: ${err.message}`);
+  }
+}
+
+/**
  * Is this a reply to an approval notification?
  *
  * Matches the subject buildApprovalNotificationEmail produces
@@ -1049,6 +1114,9 @@ async function poll() {
         console.log(
           `  [bounce] From: ${fromFormatted} | Subject: ${msg.subject} — delivery failure, not forwarded`,
         );
+        // Not forwarded to the agent, but not swallowed either: the buyer is the
+        // one who needs to know a message of theirs never landed.
+        await reportDeliveryFailure(msg);
         // Marked read so it is not re-examined every poll. It stays in the mailbox,
         // where the owner can still see that a message did not get through.
         await markAsRead(token, msgId);

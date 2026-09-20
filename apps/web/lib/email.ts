@@ -174,60 +174,25 @@ export function buildIntroductionEmail({
     .slice(0, 6)
     .map(
       (c) =>
-        `<li style="margin:0 0 8px;font-size:14px;color:#3f3f46;"><strong style="color:#18181b;">${c.name}</strong> — ${c.description}</li>`
+        `<li style="margin:0 0 6px;"><strong>${c.name}</strong> — ${c.description}</li>`
     )
     .join("\n");
 
-  const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8" /></head>
-<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
-    <tr>
-      <td align="center">
-        <table width="560" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;padding:32px;border:1px solid #e4e4e7;">
-          <tr>
-            <td>
-              <h1 style="margin:0 0 16px;font-size:20px;font-weight:600;color:#18181b;">
-                ${greeting}
-              </h1>
-              <p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">
-                I'm <strong>${agentName}</strong>, your new AI employee. I've been set up and I'm ready to start working with you and your team.
-              </p>
-              ${
-                capabilities.length > 0
-                  ? `<p style="margin:0 0 8px;font-size:14px;font-weight:600;color:#18181b;">Here's what I can help with:</p>
-              <ul style="margin:0 0 16px;padding-left:20px;">${capList}</ul>`
-                  : ""
-              }
-              <p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">
-                You can reach me anytime by emailing
-                <a href="mailto:${agentEmail}" style="color:#2563eb;text-decoration:none;font-weight:500;">${agentEmail}</a>.
-                Just send me a task, question, or request and I'll get to work.
-              </p>
-              <p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">
-                For anything that seems risky or ambiguous, I'll ask for your approval before proceeding. Over time, as we build trust, I'll handle more on my own.
-              </p>
-              ${googleServiceAccountEmail ? `<p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">
-                <strong style="color:#18181b;">Google Workspace:</strong> My service account address is
-                <code style="background:#f4f4f5;padding:2px 5px;border-radius:4px;font-size:13px;">${googleServiceAccountEmail}</code>.
-                Share any Google Drive files, Sheets, or Docs with that address and I'll be able to read and edit them directly.
-              </p>` : ""}
-              <p style="margin:0 0 0;font-size:14px;color:#3f3f46;line-height:1.6;">
-                What would you like me to focus on first?
-              </p>
-              <p style="margin:24px 0 0;font-size:12px;color:#a1a1aa;">
-                This message was sent by the Marketplace platform on behalf of ${agentName}.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`.trim();
+  const html = emailShell(`
+    <p style="margin:0 0 16px;">${greeting}</p>
+    <p style="margin:0 0 16px;">I'm ${agentName}, your new AI employee. I've been set up and I'm ready to start working with you and your team.</p>
+    ${
+      capabilities.length > 0
+        ? `<p style="margin:0 0 8px;">Here's what I can help with:</p>
+    <ul style="margin:0 0 16px;padding-left:20px;">${capList}</ul>`
+        : ""
+    }
+    <p style="margin:0 0 16px;">You can reach me anytime by emailing <a href="mailto:${agentEmail}" style="color:#1d4ed8;">${agentEmail}</a>. Just send me a task, question, or request and I'll get to work.</p>
+    <p style="margin:0 0 16px;">For anything that seems risky or ambiguous, I'll ask for your approval before proceeding. Over time, as we build trust, I'll handle more on my own.</p>
+    ${googleServiceAccountEmail ? `<p style="margin:0 0 16px;">Google Workspace: my service account address is ${googleServiceAccountEmail}. Share any Google Drive files, Sheets, or Docs with that address and I'll be able to read and edit them directly.</p>` : ""}
+    <p style="margin:0 0 16px;">What would you like me to focus on first?</p>
+    <p style="margin:0;color:#71717a;font-size:13px;">Sent by the Marketplace platform on behalf of ${agentName}.</p>
+  `);
 
   return { subject, html };
 }
@@ -252,56 +217,29 @@ export function buildVettingDecisionEmail({
   creatorDashboardUrl = "https://marketplace.agentmind.to/creator",
 }: BuildVettingDecisionEmailParams): { subject: string; html: string } {
   const approved = decision === "MANUALLY_APPROVED" || decision === "PASSED";
+  // No leading glyph. A subject that opens with ✓ or ✗ reads as bulk mail to a
+  // filter, and this domain has no reputation to spare.
   const subject = approved
-    ? `✓ Approved: ${agentName} v${version} is now live`
-    : `✗ Rejected: ${agentName} v${version} needs changes`;
+    ? `Approved: ${agentName} v${version} is now live`
+    : `Changes needed: ${agentName} v${version}`;
 
-  const headerColor = approved ? "#16a34a" : "#dc2626";
-  const headerText = approved ? "Package approved" : "Package rejected";
   const bodyText = approved
     ? `Your agent <strong>${agentName}</strong> v${version} has been reviewed and approved. It is now live on the Marketplace and available for buyers to hire.`
     : `Your agent <strong>${agentName}</strong> v${version} was reviewed but did not pass. Please review the feedback below, make the necessary changes, and re-upload a new version.`;
 
   const feedbackBlock = feedback
-    ? `<div style="margin:16px 0;background-color:#f4f4f5;border-left:3px solid ${headerColor};padding:12px 16px;border-radius:0 6px 6px 0;">
-        <p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.05em;">Reviewer feedback</p>
-        <p style="margin:0;font-size:14px;color:#3f3f46;line-height:1.6;">${feedback}</p>
-       </div>`
+    ? `<p style="margin:0 0 16px;padding-left:12px;border-left:2px solid #d4d4d8;color:#3f3f46;">
+         <strong>Reviewer feedback:</strong> ${feedback}
+       </p>`
     : "";
 
-  const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8" /></head>
-<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
-    <tr>
-      <td align="center">
-        <table width="560" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;border:1px solid #e4e4e7;overflow:hidden;">
-          <tr>
-            <td style="background-color:${headerColor};padding:16px 32px;">
-              <p style="margin:0;font-size:14px;font-weight:600;color:#ffffff;">${headerText}</p>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:28px 32px;">
-              <p style="margin:0 0 16px;font-size:14px;color:#3f3f46;line-height:1.6;">${bodyText}</p>
-              ${feedbackBlock}
-              ${!approved ? `<p style="margin:16px 0;font-size:14px;color:#3f3f46;line-height:1.6;">Once you have made your changes, go to <strong>Creator → Versions</strong> and upload a new version with a bumped version number.</p>` : ""}
-              <a href="${creatorDashboardUrl}" style="display:inline-block;margin-top:8px;background-color:#18181b;color:#ffffff;font-size:14px;font-weight:500;text-decoration:none;padding:10px 20px;border-radius:6px;">
-                Go to Creator Dashboard
-              </a>
-              <p style="margin:24px 0 0;font-size:12px;color:#a1a1aa;">
-                Agent: ${agentName} &middot; Version: ${version}
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`.trim();
+  const html = emailShell(`
+    <p style="margin:0 0 16px;">${bodyText}</p>
+    ${feedbackBlock}
+    ${!approved ? `<p style="margin:0 0 16px;">Once you have made your changes, go to Creator → Versions and upload a new version with a bumped version number.</p>` : ""}
+    <p style="margin:0 0 16px;"><a href="${creatorDashboardUrl}" style="color:#1d4ed8;">Open the creator dashboard</a></p>
+    <p style="margin:0;color:#71717a;font-size:13px;">Agent: ${agentName} &middot; Version: ${version}</p>
+  `);
 
   return { subject, html };
 }
@@ -335,6 +273,31 @@ function escapeHtml(value: string): string {
 }
 
 /**
+ * The frame every platform email shares.
+ *
+ * Deliberately dull. These used to be campaign-shaped — a grey canvas, a white
+ * card, a coloured header band, pill buttons — which is the look of bulk mail,
+ * and on 2026-09-20 Gmail started rejecting this domain outright with 5.7.1
+ * "likely unsolicited mail". A new sending domain has no reputation to spend on
+ * looking designed. This is a letter: one column, ordinary text, ordinary links.
+ *
+ * It does not on its own fix deliverability — authentication and sending
+ * history do that — but it stops the mail arguing for its own rejection.
+ */
+function emailShell(inner: string): string {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /></head>
+<body style="margin:0;padding:16px;background-color:#ffffff;">
+  <div style="max-width:600px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.5;color:#18181b;">
+${inner}
+  </div>
+</body>
+</html>`.trim();
+}
+
+/**
  * Builds the subject and inline-styled HTML body for an approval notification.
  *
  * Carries Approve and Reject buttons rather than asking the buyer to reply. A
@@ -364,52 +327,23 @@ export function buildApprovalNotificationEmail({
 
   const ctaHref = portalUrl || "/dashboard";
 
-  const button = (href: string, label: string, background: string) =>
-    `<a href="${escapeHtml(href)}" style="display:inline-block;background-color:${background};color:#ffffff;font-size:14px;font-weight:500;text-decoration:none;padding:10px 20px;border-radius:6px;margin:0 8px 8px 0;">${label}</a>`;
+  const link = (href: string, label: string) =>
+    `<a href="${escapeHtml(href)}" style="color:#1d4ed8;">${label}</a>`;
 
   // Falls back to the portal link alone when no signed links were supplied, so a
   // caller that has not been updated still produces a usable email.
   const actions = approveUrl && rejectUrl
-    ? button(approveUrl, "Approve", "#15803d") +
-      button(rejectUrl, "Reject", "#b91c1c") +
-      button(ctaHref, "Edit", "#52525b")
-    : button(ctaHref, "Review &amp; Approve", "#18181b");
+    ? `${link(approveUrl, "Approve")} &nbsp;·&nbsp; ${link(rejectUrl, "Reject")} &nbsp;·&nbsp; ${link(ctaHref, "Edit it first")}`
+    : link(ctaHref, "Review and approve");
 
-  const html = `
-<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8" /></head>
-<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
-    <tr>
-      <td align="center">
-        <table width="560" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;padding:32px;border:1px solid #e4e4e7;">
-          <tr>
-            <td>
-              <h1 style="margin:0 0 16px;font-size:20px;font-weight:600;color:#18181b;">
-                ${safeAgentName} needs your approval
-              </h1>
-              <p style="margin:0 0 8px;font-size:14px;color:#71717a;">
-                <strong style="color:#18181b;">Task type:</strong> ${safeTaskType}
-              </p>
-              <p style="margin:0 0 24px;font-size:14px;color:#3f3f46;background-color:#f4f4f5;padding:12px;border-radius:6px;line-height:1.5;">
-                ${truncatedPreview}
-              </p>
-              ${actions}
-              <p style="margin:16px 0 0;font-size:12px;color:#a1a1aa;">
-                Use the buttons above — replying to this email will not approve anything.
-              </p>
-              <p style="margin:12px 0 0;font-size:12px;color:#a1a1aa;">
-                You are receiving this because an agent you hired requires approval to proceed. If you did not expect this, you can safely ignore this email.
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`.trim();
+  const html = emailShell(`
+    <p style="margin:0 0 12px;">${safeAgentName} needs your approval before it goes ahead.</p>
+    <p style="margin:0 0 12px;color:#52525b;">Task: ${safeTaskType}</p>
+    <p style="margin:0 0 16px;padding-left:12px;border-left:2px solid #d4d4d8;color:#3f3f46;">${truncatedPreview}</p>
+    <p style="margin:0 0 16px;">${actions}</p>
+    <p style="margin:0 0 8px;color:#52525b;font-size:13px;">Use the links above — replying to this email will not approve anything.</p>
+    <p style="margin:0;color:#71717a;font-size:13px;">You are receiving this because an agent you hired needs your approval to proceed.</p>
+  `);
 
   return { subject, html };
 }

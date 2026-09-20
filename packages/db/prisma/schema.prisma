@@ -147,6 +147,16 @@ model Deployment {
   lastHeartbeatAt               DateTime?
   lastHeartbeatOk               Boolean?
   heartbeatAlertedAt            DateTime?
+  // Mail the agent sent that never arrived. Graph accepting a message means it
+  // was queued, nothing more; the bounce comes back minutes later to the agent's
+  // own mailbox, where the poller drops it because a bounce is not a task. Until
+  // this existed that was the end of it - the log said "Sent", the buyer saw
+  // nothing, and the agent simply looked silent. Observed 2026-09-20, when Gmail
+  // began rejecting this domain outright and an approval request, a task reply
+  // and a creator notice all disappeared without a trace anyone could see.
+  lastDeliveryFailureAt         DateTime?
+  lastDeliveryFailureTo         String?
+  lastDeliveryFailureReason     String?
   approvalWebhookToken          String                  @default(cuid())
   managerEmail                  String?                         @map("weeklyDigestEmail")
   allowedEmails                 Json                    @default("[]")
