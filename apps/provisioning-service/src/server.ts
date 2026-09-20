@@ -32,6 +32,7 @@ import { ConnectorClient, MicrosoftAppCredentials } from "botframework-connector
 import { prisma } from "@marketplace/db";
 import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeTenantLicensing } from "./clients/microsoft-workspace.js";
 import { config } from "./config.js";
+import { sendViaResend, resendConfigured } from "./clients/resend.js";
 import { agentTokenFor, agentTokenMatches, hooksTokenFor } from "./utils/agent-token.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
@@ -238,6 +239,71 @@ export function isEmailAllowed(email: string, list: Allowlist): boolean {
 // ─── Temp file store for serving images/files in Teams messages ───────────
 // Files expire after 1 hour. Keyed by random ID.
 const _tempFiles = new Map<string, { data: Buffer; contentType: string; expiresAt: number }>();
+
+/**
+ * The name a mailbox sends under, e.g. "Data Analyst Test".
+ *
+ * Graph put this on the envelope for us. Sending directly means supplying it, and
+ * without it every agent would suddenly write to its buyer as a raw address —
+ * a visible downgrade, and a small trust cost on mail whose whole job is to look
+ * like it came from a colleague. Cached for the process: a display name changes
+ * about as often as the agent is renamed, and this is on the path of every send.
+ */
+const _displayNames = new Map<string, string>();
+
+async function mailboxDisplayName(address: string): Promise<string | undefined> {
+  const key = address.toLowerCase();
+  if (_displayNames.has(key)) return _displayNames.get(key);
+  if (!config.microsoftTenantId) return undefined;
+  try {
+    const token = await mintTokenForTenant(config.microsoftTenantId);
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(address)}?$select=displayName`,
+      { headers: { Authorization: `Bearer ${token.access_token}` } },
+    );
+    if (!res.ok) return undefined;
+    const name = ((await res.json()) as { displayName?: string }).displayName;
+    if (name) _displayNames.set(key, name);
+    return name;
+  } catch {
+    // Never worth failing a send over. Worst case the mail goes out under its
+    // address, which is what it did before this existed.
+    return undefined;
+  }
+}
+
+/**
+ * The Message-ID and References of the message being replied to.
+ *
+ * Graph's /messages/{id}/reply handled threading invisibly. Sending directly
+ * means carrying In-Reply-To ourselves, and these are the only place to read it
+ * from — the internal id Graph uses is not the id the rest of the mail world
+ * threads on.
+ */
+async function threadHeadersFor(
+  mailbox: string,
+  messageId: string,
+): Promise<{ inReplyTo?: string; references?: string }> {
+  if (!config.microsoftTenantId) return {};
+  try {
+    const token = await mintTokenForTenant(config.microsoftTenantId);
+    const res = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageId,internetMessageHeaders`,
+      { headers: { Authorization: `Bearer ${token.access_token}` } },
+    );
+    if (!res.ok) return {};
+    const msg = (await res.json()) as {
+      internetMessageId?: string;
+      internetMessageHeaders?: Array<{ name?: string; value?: string }>;
+    };
+    const refs = (msg.internetMessageHeaders ?? []).find(
+      (h) => String(h?.name || "").toLowerCase() === "references",
+    )?.value;
+    return { inReplyTo: msg.internetMessageId, references: refs };
+  } catch {
+    return {};
+  }
+}
 
 function storeTempFile(base64: string, contentType: string): string {
   const id = crypto.randomUUID();
@@ -785,11 +851,41 @@ export function startProxyServer() {
           const tenantId = deployment.buyerMicrosoftTenantId || config.microsoftTenantId;
           if (!tenantId) return send(res, 500, { error: "No Microsoft tenant configured" });
 
+          // Normalise recipients to array of Graph emailAddress objects
+          const toArray = Array.isArray(to) ? to : [to];
+
+          // Resend when configured. A reply keeps its thread by carrying
+          // In-Reply-To, which Graph's reply endpoint used to add for us — read
+          // from the message being answered just below.
+          if (resendConfigured()) {
+            const thread = replyToMessageId
+              ? await threadHeadersFor(agentEmail, replyToMessageId)
+              : {};
+            const replySubject = subject || "Re:";
+            const sent = await sendViaResend({
+              from: agentEmail,
+              fromName: await mailboxDisplayName(agentEmail),
+              to: toArray,
+              cc,
+              subject: replySubject,
+              body: emailBody,
+              bodyType,
+              attachments,
+              inReplyTo: thread.inReplyTo,
+              references: thread.references,
+            });
+            if (sent.ok) {
+              console.log(
+                `[outlook-send] Sent "${replySubject}" to ${toArray.join(", ")} as ${agentEmail} via Resend${sent.id ? ` (${sent.id})` : ""}`,
+              );
+              return send(res, 200, { success: true, id: sent.id });
+            }
+            console.error(`[outlook-send] Resend failed, falling back to Graph: ${sent.error}`);
+          }
+
           const tokenData = await mintTokenForTenant(tenantId);
           const accessToken = tokenData.access_token;
 
-          // Normalise recipients to array of Graph emailAddress objects
-          const toArray = Array.isArray(to) ? to : [to];
           const toRecipients = toArray.map((addr) => ({ emailAddress: { address: addr } }));
           const ccRecipients = (cc ?? []).map((addr) => ({ emailAddress: { address: addr } }));
 
@@ -906,6 +1002,26 @@ export function startProxyServer() {
             console.error("[platform-send] PLATFORM_MAILBOX is not set — cannot send platform mail");
             return send(res, 503, { error: "PLATFORM_MAILBOX not configured" });
           }
+          // Resend when it is configured; Graph is the fallback, and stays the
+          // whole path when it is not. See clients/resend.ts for why.
+          if (resendConfigured()) {
+            const sent = await sendViaResend({
+              from,
+              fromName: await mailboxDisplayName(from),
+              to: [to],
+              subject,
+              body: emailBody,
+              bodyType,
+            });
+            if (sent.ok) {
+              console.log(`[platform-send] Sent "${subject}" to ${to} as ${from} via Resend${sent.id ? ` (${sent.id})` : ""}`);
+              return send(res, 200, { success: true, id: sent.id });
+            }
+            // Falls through to Graph rather than failing: a misconfigured key
+            // must not be the reason a creator never hears a decision.
+            console.error(`[platform-send] Resend failed, falling back to Graph: ${sent.error}`);
+          }
+
           if (!config.microsoftTenantId) {
             return send(res, 500, { error: "No Microsoft tenant configured" });
           }
