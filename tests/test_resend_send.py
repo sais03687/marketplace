@@ -93,3 +93,38 @@ def test_the_client_stands_alone():
     src = CLIENT.read_text(encoding="utf-8")
     assert 'from "../config.js"' not in src
     assert "process.env.RESEND_API_KEY" in src
+
+
+def test_a_reply_is_titled_after_what_it_answers():
+    # Graph's reply endpoint built "Re: <subject>" for us, and the adapter sends
+    # no subject at all on a reply. Falling back to a bare "Re:" shipped on
+    # 2026-09-20 and the reply opened its own conversation in Gmail, which groups
+    # on the subject as well as the References chain.
+    src = SERVER.read_text(encoding="utf-8")
+    assert "function replySubjectFor" in src
+    start = src.index('req.url === "/internal/outlook-send"')
+    handler = src[start:start + 6000]
+    assert "replySubjectFor(thread.subject)" in handler
+    assert '|| "Re:";' not in handler, "a reply must not fall back to a bare Re:"
+
+
+def test_the_subject_of_the_answered_message_is_fetched():
+    src = SERVER.read_text(encoding="utf-8")
+    start = src.index("async function threadHeadersFor")
+    body = src[start:src.index("\n}\n", start)]
+    assert "subject" in body, "the subject must come back with the threading headers"
+
+
+def test_re_is_not_stacked():
+    # "Re: Re: Re:" is what happens when a reply to a reply re-prefixes blindly.
+    src = SERVER.read_text(encoding="utf-8")
+    start = src.index("function replySubjectFor")
+    body = src[start:src.index("\n}\n", start)]
+    assert "/^re:/i" in body
+
+
+def test_a_reply_that_cannot_thread_says_so():
+    # Silence here is what made this cost a whole test run to find: the send
+    # succeeded, the mail arrived, and only the threading was wrong.
+    src = SERVER.read_text(encoding="utf-8")
+    assert "this will start a new thread" in src

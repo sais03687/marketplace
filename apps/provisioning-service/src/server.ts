@@ -273,36 +273,53 @@ async function mailboxDisplayName(address: string): Promise<string | undefined> 
 }
 
 /**
- * The Message-ID and References of the message being replied to.
+ * What it takes to make a reply read as a reply: the Message-ID and References
+ * of what is being answered, and its subject.
  *
- * Graph's /messages/{id}/reply handled threading invisibly. Sending directly
- * means carrying In-Reply-To ourselves, and these are the only place to read it
- * from — the internal id Graph uses is not the id the rest of the mail world
- * threads on.
+ * Graph's /messages/{id}/reply did all of this invisibly — it set In-Reply-To
+ * and it built "Re: <subject>". Sending directly means both are ours, and the
+ * subject matters as much as the header: Gmail groups a conversation on the
+ * References chain *and* the subject, so a reply titled only "Re:" opens a
+ * second thread even when its headers are right. Observed 2026-09-20, when the
+ * first reply sent this way arrived as its own conversation.
  */
 async function threadHeadersFor(
   mailbox: string,
   messageId: string,
-): Promise<{ inReplyTo?: string; references?: string }> {
+): Promise<{ inReplyTo?: string; references?: string; subject?: string }> {
   if (!config.microsoftTenantId) return {};
   try {
     const token = await mintTokenForTenant(config.microsoftTenantId);
     const res = await fetch(
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageId,internetMessageHeaders`,
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageId,internetMessageHeaders,subject`,
       { headers: { Authorization: `Bearer ${token.access_token}` } },
     );
-    if (!res.ok) return {};
+    if (!res.ok) {
+      console.error(`[outlook-send] could not read thread headers: ${res.status}`);
+      return {};
+    }
     const msg = (await res.json()) as {
       internetMessageId?: string;
+      subject?: string;
       internetMessageHeaders?: Array<{ name?: string; value?: string }>;
     };
     const refs = (msg.internetMessageHeaders ?? []).find(
       (h) => String(h?.name || "").toLowerCase() === "references",
     )?.value;
-    return { inReplyTo: msg.internetMessageId, references: refs };
-  } catch {
+    return { inReplyTo: msg.internetMessageId, references: refs, subject: msg.subject };
+  } catch (err: any) {
+    console.error(`[outlook-send] could not read thread headers: ${err.message}`);
     return {};
   }
+}
+
+/**
+ * "Re: <subject>", without stacking a second Re: on a subject that has one.
+ */
+function replySubjectFor(subject?: string): string {
+  const clean = (subject || "").trim();
+  if (!clean) return "Re:";
+  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;
 }
 
 function storeTempFile(base64: string, contentType: string): string {
@@ -861,7 +878,14 @@ export function startProxyServer() {
             const thread = replyToMessageId
               ? await threadHeadersFor(agentEmail, replyToMessageId)
               : {};
-            const replySubject = subject || "Re:";
+            // The caller supplies no subject on a reply — Graph used to invent
+            // it — so it is built from the message being answered.
+            const replySubject = subject || replySubjectFor(thread.subject);
+            if (replyToMessageId && !thread.inReplyTo) {
+              console.error(
+                `[outlook-send] replying without In-Reply-To: this will start a new thread`,
+              );
+            }
             const sent = await sendViaResend({
               from: agentEmail,
               fromName: await mailboxDisplayName(agentEmail),
