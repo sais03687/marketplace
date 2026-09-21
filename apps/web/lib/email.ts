@@ -319,9 +319,23 @@ export function buildApprovalNotificationEmail({
   // anyone who replies instead of using the buttons. Keep them in step.
   const subject = `Action needed: ${agentName} needs approval for ${taskType}`;
 
-  const truncatedPreview = escapeHtml(
-    draftPreview.length > 200 ? draftPreview.slice(0, 200) + "..." : draftPreview,
-  );
+  // The buyer is being asked to approve this, so they have to be able to read
+  // it. At 200 characters the preview stopped inside the agent's opening
+  // sentence — before any figure, any file name, any caveat — which asks someone
+  // to consent to something they have not been shown. 2,000 is enough for a
+  // normal agent reply to arrive whole, and a genuinely long one is cut at a
+  // line break with the remainder named rather than silently dropped.
+  const LIMIT = 2000;
+  let preview = draftPreview;
+  let trimmedNote = "";
+  if (draftPreview.length > LIMIT) {
+    const cut = draftPreview.slice(0, LIMIT);
+    const lastBreak = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(". "));
+    preview = lastBreak > LIMIT / 2 ? cut.slice(0, lastBreak + 1) : cut;
+    const remaining = draftPreview.length - preview.length;
+    trimmedNote = `\n\n[${remaining} more characters — open it to read the rest before approving]`;
+  }
+  const truncatedPreview = escapeHtml(preview + trimmedNote).replace(/\n/g, "<br>");
   const safeAgentName = escapeHtml(agentName);
   const safeTaskType = escapeHtml(taskType);
 

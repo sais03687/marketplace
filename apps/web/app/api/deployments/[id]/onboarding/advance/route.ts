@@ -41,14 +41,32 @@ export async function POST(
     include: { capabilities: { select: { name: true, description: true } } },
   });
 
+  // The agent introduces itself with what it can actually do *here*.
+  //
+  // The capability list is the creator's advertisement for the agent, written
+  // for the org tier. On the email tier the platform withholds every drive and
+  // workspace action, so sending that list unfiltered had a new hire open by
+  // promising SharePoint and shared links it would then refuse — the worst
+  // possible first impression, and a promise the buyer had no way to check
+  // until they asked for one of those things.
+  const emailTier = deployment.workspaceScope === "platform";
+  const WORKSPACE_WORDS =
+    /\b(sharepoint|onedrive|google drive|\bdrive\b|excel|spreadsheet on|share[sd]? (?:a |the )?link|workspace|file server)\b/i;
+  const capabilities = (agent?.capabilities ?? []).filter(
+    (c) => !emailTier || !WORKSPACE_WORDS.test(`${c.name} ${c.description}`),
+  );
+
   // Send introduction email from the agent's own inbox
   if (deployment.managerEmail && deployment.agentEmail) {
     const { subject, html } = buildIntroductionEmail({
       agentName: deployment.agentName,
       agentEmail: deployment.agentEmail,
-      capabilities: agent?.capabilities ?? [],
-      googleServiceAccountEmail:
-        (deployment as any).deploymentServiceAccountEmail ?? undefined,
+      capabilities,
+      // Same reason: "share your Drive files with this address" is an offer the
+      // email tier cannot honour, since drive actions are withheld there.
+      googleServiceAccountEmail: emailTier
+        ? undefined
+        : ((deployment as any).deploymentServiceAccountEmail ?? undefined),
     });
 
     await sendNotificationEmail({

@@ -183,11 +183,18 @@ export async function POST(
       console.log(`[vet-decision] Auto-resumed ${pausedDeployments.length} paused deployment(s)`);
     }
 
-    // ── Auto-update active deployments with autoUpdate: true ─────────────────
+    // ── Auto-update deployments with autoUpdate: true ────────────────────────
+    //
+    // ONBOARDING counts as well as ACTIVE. The setting says "apply new versions
+    // from the creator as they are approved" with no caveat, and the update job
+    // has always accepted both states — only this query was narrower, so a hire
+    // still being set up silently kept the version it was provisioned with and
+    // nothing said the setting had not applied to it. A hire mid-setup is if
+    // anything the one that most wants the newest package.
     const autoUpdateDeployments = await prisma.deployment.findMany({
       where: {
         agentId: version.agentId,
-        status: "ACTIVE",
+        status: { in: ["ACTIVE", "ONBOARDING"] },
         autoUpdate: true,
         agentVersion: { not: version.version },
       },

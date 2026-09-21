@@ -851,6 +851,7 @@ function buildAgentMessage({
   conversation,
   awaitingDecision,
   knowledge,
+  managerEmail,
 }) {
   const parts = [];
 
@@ -874,11 +875,33 @@ function buildAgentMessage({
     );
   }
 
+  // Who the manager is, stated by the platform rather than inferred.
+  //
+  // Without this the agent had only the team list the buyer typed at hire time,
+  // and that list is not updated when the manager's address is changed in
+  // Settings — they are separate fields and nothing reconciles them. So an agent
+  // whose buyer had changed their address kept challenging mail from their real
+  // manager as coming from an unknown sender, on every task, having correctly
+  // spotted a mismatch the platform itself had created. Observed three times on
+  // 2026-09-20 before anyone worked out which of the two fields was stale.
+  //
+  // Stated as a fact and matched here rather than left to the agent, because
+  // comparing two addresses is not a judgement call.
+  const managerLine = (() => {
+    const mgr = String(managerEmail || "").trim();
+    if (!mgr) return "";
+    const sender = /<([^>]+)>/.exec(from || "")?.[1] || from || "";
+    const isManager = sender.trim().toLowerCase() === mgr.toLowerCase();
+    return isManager
+      ? `\nThis sender IS your manager, ${mgr}, on the platform's record.`
+      : `\nYour manager on the platform's record is ${mgr}; this is someone else.`;
+  })();
+
   // Last, and deliberately so: the only actionable section, sitting closest to
   // the instructions that follow it.
   parts.push(
     "## THE REQUEST — this is the only thing to act on\n\n" +
-      `From: ${from}\n` +
+      `From: ${from}${managerLine}\n` +
       `Subject: ${subject || "(none)"}\n` +
       `Thread: ${threadId || "(none)"}\n\n` +
       (request || "").trim(),
@@ -938,6 +961,7 @@ async function forwardToGateway(message, attachments) {
     conversation,
     awaitingDecision: approvalContext,
     knowledge: agentMindResult.text,
+    managerEmail: allowlistCache.managerEmail,
   });
 
   const payload = {
@@ -1349,10 +1373,15 @@ console.log(`Token:    ${OUTLOOK_TOKEN_URL}`);
 console.log(`Interval: ${POLL_INTERVAL_S}s`);
 
 if (AGENT_ID && DEPLOYMENT_ID) {
-  console.log(`[agentmind] Enabled (agent: ${AGENT_ID}, deployment: ${DEPLOYMENT_ID.slice(0, 8)}...)`);
+  // "Enabled" was a claim this process is not in a position to make. Whether
+  // AgentMind returns anything is decided by the marketplace, from the buyer's
+  // own setting and what is in the pool; all that is true here is that the
+  // query will be sent. Reading "Enabled" while the buyer had it switched off
+  // made the logs evidence for something that was not happening.
+  console.log(`[agentmind] Will query (agent: ${AGENT_ID}, deployment: ${DEPLOYMENT_ID.slice(0, 8)}...) — the marketplace decides whether anything comes back`);
   console.log(`[approval-sync] Enabled (marketplace: ${MARKETPLACE_URL})`);
 } else {
-  console.log(`[agentmind] Disabled (no AGENT_ID/DEPLOYMENT_ID)`);
+  console.log(`[agentmind] Not queried (no AGENT_ID/DEPLOYMENT_ID)`);
 }
 
 if (driveEnabled) {
