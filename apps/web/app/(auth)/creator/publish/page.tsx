@@ -16,6 +16,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import JSZip from "jszip";
+import Link from "next/link";
 import { VALID_RUNTIMES, validateManifest } from "@marketplace/agent-package-schema";
 
 interface ManifestData {
@@ -142,8 +143,33 @@ export default function PublishPage() {
         results.push({
           file: f,
           valid: exists,
-          message: exists ? "Found" : "Missing",
+          // Zipping the folder rather than its contents puts everything one
+          // level down, where the platform does not look. It reads as a
+          // missing file, which sends the creator looking for the wrong thing.
+          message: exists
+            ? "Found"
+            : zip.file(new RegExp(`(^|/)${f.replace(".", "\\.")}$`)).length > 0
+              ? "Found inside a folder — zip the files themselves, not the folder holding them"
+              : "Missing",
         });
+      }
+
+      // The two functions the platform imports when the container starts. A
+      // package missing one of them builds, uploads, passes review and then
+      // fails at boot, which costs a whole vetting round to learn.
+      const agentFile = zip.file("agent.py");
+      if (agentFile) {
+        const src = await agentFile.async("string");
+        for (const fn of ["run_agent", "resume_agent"]) {
+          const defined = new RegExp(`def\\s+${fn}\\s*\\(`).test(src);
+          results.push({
+            file: `agent.py → ${fn}()`,
+            valid: defined,
+            message: defined
+              ? "Defined"
+              : `Not defined — the platform imports ${fn} at startup and the container will not boot without it`,
+          });
+        }
       }
 
       // Parse manifest
@@ -284,6 +310,21 @@ export default function PublishPage() {
               <Upload className="h-8 w-8 text-muted-foreground" />
               <p className="mt-3 font-medium">Drop your agent package here</p>
               <p className="text-sm text-muted-foreground">or click to browse</p>
+              {/* What a package is, said here rather than only in the docs. This
+                  page was reachable with no idea what to drop on it. */}
+              <p className="mt-4 max-w-md text-center text-xs text-muted-foreground">
+                A <span className="font-mono">.zip</span> containing{" "}
+                <span className="font-mono">marketplace.json</span> and{" "}
+                <span className="font-mono">agent.py</span> at the top level —
+                zip the files, not the folder holding them.{" "}
+                <span className="font-mono">agent.py</span> must define both{" "}
+                <span className="font-mono">run_agent</span> and{" "}
+                <span className="font-mono">resume_agent</span>.{" "}
+                <Link href="/docs/creators" className="underline hover:text-foreground">
+                  How to build one
+                </Link>
+                .
+              </p>
               <input
                 type="file"
                 accept=".zip"

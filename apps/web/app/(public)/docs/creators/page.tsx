@@ -792,7 +792,46 @@ zip -r my-agent-1.0.0.zip . -x "*.DS_Store" -x "__pycache__/*"
 Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
       </Step>
 
-      <Step n={2} title="Upload via the Creator dashboard">
+      <Step n={2} title="Check it imports before you upload">
+        <P>
+          Everything at the top level of <Code>agent.py</Code> runs when the container
+          starts, before a single request reaches you. A mistake there — a misread
+          signature, a missing dependency, a <Code>KeyError</Code> on an environment
+          variable — stops the container from booting, and the sandbox is the slowest
+          place to discover it. The check below takes a second and catches all three.
+        </P>
+        <P>
+          If your agent imports <Code>platform_llm</Code>, that module ships in the
+          image rather than in your package, so stand it in for the length of the
+          check. Everything else your agent imports comes from your own{" "}
+          <Code>requirements.txt</Code> and should already be installed:
+        </P>
+        <Pre>{`# Outside the folder you zip: platform_llm.py is a reserved name at the
+# top level of a package, and nothing you only need for this check belongs
+# in the upload.
+mkdir -p ../stubs
+cat > ../stubs/platform_llm.py <<'EOF'
+class StructuredLLM:
+    def __init__(self, model: str, setting=None):
+        assert isinstance(model, str), "StructuredLLM takes a model name, not a client"
+    async def ainvoke(self, llm, prompt, *, timeout, schema=None): ...
+EOF
+
+LLM_MODEL=openai/gpt-oss-120b LLM_BASE_URL=https://example.invalid LLM_API_KEY=x \\
+PYTHONPATH=../stubs python -c "
+import agent
+assert callable(agent.run_agent), 'run_agent is missing'
+assert callable(agent.resume_agent), 'resume_agent is missing'
+print('imports clean; both entry points present')
+"`}</Pre>
+        <P>
+          It does not call your agent or reach the model — it only proves the module
+          loads and both entry points exist. Run it from inside your package folder,
+          with the stubs one level up, so nothing it creates ends up in the ZIP.
+        </P>
+      </Step>
+
+      <Step n={3} title="Upload via the Creator dashboard">
         <P>
           Navigate to <strong>Creator → Publish</strong> and drag your ZIP onto the upload
           area, or use the API:
@@ -806,7 +845,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
         </P>
       </Step>
 
-      <Step n={3} title="Vetting">
+      <Step n={4} title="Vetting">
         <P>
           Every package is reviewed by the platform team before going live. The review includes
           an <strong>automated sandbox</strong> that boots your Docker image and fires a set of
@@ -910,7 +949,7 @@ Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
         </Warning>
       </Step>
 
-      <Step n={4} title="Going live">
+      <Step n={5} title="Going live">
         <P>
           Once approved, your agent status changes to <Code>LIVE</Code> and it appears in the
           marketplace. Buyers can hire it immediately.
