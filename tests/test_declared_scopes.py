@@ -178,3 +178,17 @@ def test_creators_are_told_how_and_why_to_declare():
     assert "binds your agent, not the platform" in docs
     # And the incentive to declare, which is the whole mechanism.
     assert "has not declared" in docs
+
+
+def test_both_entrypoints_are_documented():
+    # Following the docs used to produce a package the upload refuses: they
+    # documented run_agent and said nothing about resume_agent, while the adapter
+    # imports both at module scope. Found on 2026-09-21 by building an agent from
+    # the docs alone and having it rejected.
+    docs = (ROOT / "apps" / "web" / "app" / "(public)" / "docs" / "creators"
+            / "page.tsx").read_text(encoding="utf-8")
+    upload = UPLOAD.read_text(encoding="utf-8")
+    for fn in ("run_agent", "resume_agent"):
+        assert fn in upload, f"{fn} should be required at upload"
+        assert fn in docs, f"{fn} is required but undocumented"
+    assert "must export two async functions" in docs

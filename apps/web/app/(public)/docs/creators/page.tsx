@@ -194,7 +194,12 @@ export default function CreatorDocsPage() {
         that itself, from the domains Microsoft confirms the buyer&apos;s tenant owns.
       </Note>
 
-      <P>Your <Code>agent.py</Code> must export a <Code>run_agent</Code> async function:</P>
+      <P>
+        Your <Code>agent.py</Code> must export two async functions:{" "}
+        <Code>run_agent</Code>, below, and <Code>resume_agent</Code>, which follows it.
+        The platform imports both at startup and an agent missing either will not
+        publish.
+      </P>
       <Pre>{`import os
 from typing import Any, Callable, Awaitable
 
@@ -240,6 +245,44 @@ async def run_agent(
         <Code>needs_approval</Code> flag and your <Code>risk_assessment</Code> scores against
         the deployment's policy. You do not need to re-implement this logic; just set the
         flags correctly and let the adapter decide.
+      </Note>
+
+      <H3 id="resume-agent">resume_agent — required, even if you never pause</H3>
+      <Warning>
+        <strong>
+          <Code>agent.py</Code> must define <Code>resume_agent</Code> as well as{" "}
+          <Code>run_agent</Code>.
+        </strong>{" "}
+        The adapter does <Code>from creator.agent import run_agent, resume_agent</Code> at
+        module scope, so a package missing either one cannot start at all. The upload
+        refuses it there rather than letting you discover it from a vetting sandbox whose
+        only symptom is that the container never became healthy.
+      </Warning>
+      <P>
+        It is called when a decision your run was waiting on comes back — the buyer
+        approved a draft, edited it, or rejected it — so the run continues from where it
+        stopped instead of starting over. An agent that never queues anything still has to
+        define it, and it can be this short:
+      </P>
+      <Pre>{`async def resume_agent(thread_id: str, resolution: dict, **tool_fns) -> dict:
+    """Continue a run that paused for a human decision.
+
+    Required even in an agent that never pauses: the platform imports it at
+    startup. tool_fns carries the same helpers run_agent was given.
+    """
+    status = str(resolution.get("status", "")).upper()
+    if status in ("APPROVED", "EDITED"):
+        return {"action": "none"}      # nothing further to send
+    return {
+        "action": "reply_email",
+        "text": "That was not approved, so I have not sent it.",
+        "needs_approval": False,
+    }`}</Pre>
+      <Note>
+        <Code>thread_id</Code> identifies the run that paused and <Code>resolution</Code>{" "}
+        carries the decision, including any text the buyer edited. The tool functions arrive
+        again in <Code>**tool_fns</Code> because a function cannot be checkpointed — the
+        process that resumes may not be the one that paused.
       </Note>
 
       <H3>What the platform does with your reply</H3>
