@@ -62,8 +62,12 @@ def test_the_platform_credential_is_not_carried_to_the_redirect_target():
 
 def test_redirects_are_not_switched_on_for_every_call():
     # The one-line version of this fix, and the reason it was not used.
-    i = SRC.index("async def graph_request")
-    body = SRC[i:i + 4000]
+    #
+    # Reads the whole function like its neighbours rather than the first 4,000
+    # characters after it: that window was a proxy for "the function", and adding
+    # four lines near the top pushed the client construction out of range and
+    # failed a test about redirects for a reason that had nothing to do with them.
+    body = _graph_request_source()
     assert "httpx.AsyncClient(timeout=30.0)" in body
     assert "follow_redirects=True) as client" not in body
 

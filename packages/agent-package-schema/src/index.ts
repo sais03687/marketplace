@@ -7,9 +7,10 @@ export type {
   OnboardingQuestion,
   AgentTest,
   AgentPackage,
+  GraphScope,
 } from "./types.js";
 
-export { VALID_INTEGRATIONS } from "./types.js";
+export { VALID_INTEGRATIONS, GRAPH_SCOPES, GRAPH_SCOPE_LABELS } from "./types.js";
 export { VALID_RUNTIMES } from "./validate.js";
 
 export {

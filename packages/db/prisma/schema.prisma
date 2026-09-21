@@ -64,6 +64,14 @@ model Agent {
   updatedAt           DateTime                @updatedAt
   memoryTemplate      String?
   onboardingQuestions Json?
+  // What the agent declared it reaches in the buyer's Microsoft 365, from the
+  // manifest's graphScopes. Shown on the listing before anyone pays and enforced
+  // in the container.
+  //
+  // Null and empty mean different things and the listing says which: null is an
+  // agent that declared nothing — every agent published before this existed — and
+  // an empty list is one that declared it needs nothing at all.
+  graphScopes         Json?
   creator             Creator                 @relation(fields: [creatorId], references: [id])
   versions            AgentVersion[]
   capabilities        Capability[]

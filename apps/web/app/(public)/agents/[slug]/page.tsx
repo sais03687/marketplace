@@ -4,7 +4,8 @@ import { CapabilityBadge } from "@/components/marketplace/capability-badge";
 import { HireButton } from "@/components/hire/hire-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle } from "lucide-react";
+import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle, KeyRound } from "lucide-react";
+import { GRAPH_SCOPE_LABELS, type GraphScope } from "@marketplace/agent-package-schema";
 import { formatPrice } from "@/lib/utils";
 import Link from "next/link";
 
@@ -60,6 +61,14 @@ export default async function AgentListingPage({
   if (!agent) {
     notFound();
   }
+
+  // Null and an empty list are different claims, so the column's null is kept
+  // rather than flattened to []. Null is an agent that never declared — every
+  // one published before the field existed. [] is an agent that declared it
+  // needs nothing in the buyer's tenant.
+  const declaredScopes: GraphScope[] | null = Array.isArray(agent.graphScopes)
+    ? (agent.graphScopes as GraphScope[])
+    : null;
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -298,6 +307,37 @@ export default async function AgentListingPage({
                   <CapabilityBadge key={cap.id} name={cap.name} />
                 ))}
               </div>
+            </div>
+
+            {/* What the agent reaches, before anyone pays.
+                Shown in the buyer's language, never as Graph scope strings: a
+                permission list the reader cannot evaluate is decoration. An
+                agent that declared nothing says so here rather than appearing
+                to ask for nothing, which is the difference that matters. */}
+            <div className="rounded-lg border p-4">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <KeyRound className="h-4 w-4" />
+                What this agent can reach
+              </div>
+              {declaredScopes === null ? (
+                <p className="text-sm text-muted-foreground">
+                  This agent has not declared what it accesses. It can use anything the
+                  platform is permitted to do in your Microsoft 365, and every action it
+                  takes still follows your approval policy.
+                </p>
+              ) : declaredScopes.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Nothing in your Microsoft 365. It works only from what you email it.
+                </p>
+              ) : (
+                <ul className="space-y-1 text-sm text-muted-foreground">
+                  {declaredScopes.map((scope) => (
+                    <li key={scope}>
+                      · {GRAPH_SCOPE_LABELS[scope] ?? scope}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </div>

@@ -74,7 +74,62 @@ export interface MarketplaceManifest {
   // output. "auto" (default) picks per vendor; "none" is for an agent that
   // wants prose back, such as a chat agent. Passed in as STRUCTURED_OUTPUT.
   structuredOutput?: "auto" | "json" | "schema" | "none";
+  /**
+   * What this agent reaches in the buyer's Microsoft 365, declared up front.
+   *
+   * Two jobs. It is shown on the listing before anyone pays, in plain language,
+   * so a buyer can compare an agent that wants files and mail against one that
+   * wants to edit their directory. And the adapter enforces it: a Graph call
+   * outside the declaration is refused, naming the scope that was missing, so a
+   * creator meets it in the vetting sandbox rather than in someone's tenant.
+   *
+   * Optional, and omitting it changes no behaviour — every agent published
+   * before this existed still runs. What omitting it does do is say so on the
+   * listing, which is the point: declaring is cheap and looks better than not.
+   *
+   * These are not Graph scope strings. `Files.ReadWrite.All` means nothing to a
+   * buyer, and a permission list nobody can read is decoration. Passed to the
+   * container as GRAPH_SCOPES.
+   */
+  graphScopes?: GraphScope[];
 }
+
+/**
+ * The vocabulary for `graphScopes`, deliberately small.
+ *
+ * Each entry maps to actions the adapter already classifies, so enforcement is
+ * the gate that exists rather than a second one alongside it. A finer-grained
+ * list would be more precise and less legible, and the buyer reading it is the
+ * point.
+ */
+export const GRAPH_SCOPES = [
+  "mail.read",
+  "mail.send",
+  "files.read",
+  "files.write",
+  "files.share",
+  "excel.read",
+  "excel.write",
+  "calendar.read",
+  "calendar.write",
+  "directory.read",
+] as const;
+
+export type GraphScope = (typeof GRAPH_SCOPES)[number];
+
+/** What a buyer is shown for each scope. Never the raw Graph permission. */
+export const GRAPH_SCOPE_LABELS: Record<GraphScope, string> = {
+  "mail.read": "Read email sent to it",
+  "mail.send": "Send email as itself",
+  "files.read": "Read files in your workspace",
+  "files.write": "Create and update files",
+  "files.share": "Share files with other people",
+  "excel.read": "Read your spreadsheets",
+  "excel.write": "Write to your spreadsheets",
+  "calendar.read": "See your calendar",
+  "calendar.write": "Create and change calendar events",
+  "directory.read": "Look up people in your organisation",
+};
 
 // ─── Onboarding ──────────────────────────────────────────────────────────────
 

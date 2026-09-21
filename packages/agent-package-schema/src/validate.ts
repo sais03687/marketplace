@@ -1,5 +1,5 @@
 import type { AgentCategory, MarketplaceManifest } from "./types.js";
-import { VALID_INTEGRATIONS } from "./types.js";
+import { VALID_INTEGRATIONS, GRAPH_SCOPES } from "./types.js";
 import { MODEL_TIERS, canonicalTier } from "./models.js";
 
 export interface ValidationError {
@@ -155,6 +155,27 @@ export function validateManifest(m: unknown): ValidationError[] {
   if (manifest.structuredOutput !== undefined &&
       !["auto", "json", "schema", "none"].includes(manifest.structuredOutput as string)) {
     errors.push({ field: "structuredOutput", message: "structuredOutput must be one of: auto, json, schema, none" });
+  }
+
+  // Declared Microsoft 365 access (optional).
+  //
+  // Refused rather than ignored when it is malformed: this list is shown to
+  // buyers as what the agent reaches and enforced by the adapter, so a typo that
+  // silently dropped a scope would understate the agent on its own listing and
+  // then refuse it at runtime.
+  if (manifest.graphScopes !== undefined) {
+    if (!Array.isArray(manifest.graphScopes)) {
+      errors.push({ field: "graphScopes", message: "graphScopes must be an array" });
+    } else {
+      for (const scope of manifest.graphScopes as unknown[]) {
+        if (typeof scope !== "string" || !(GRAPH_SCOPES as readonly string[]).includes(scope)) {
+          errors.push({
+            field: "graphScopes",
+            message: `unknown scope ${JSON.stringify(scope)} — must be one of: ${GRAPH_SCOPES.join(", ")}`,
+          });
+        }
+      }
+    }
   }
 
   // Runtime config (optional)

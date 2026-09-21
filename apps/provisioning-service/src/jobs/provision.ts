@@ -477,6 +477,11 @@ export async function provisionJob(
     // The manifest's structuredOutput, read by platform_llm.StructuredLLM.
     STRUCTURED_OUTPUT:
       typeof manifest?.structuredOutput === "string" ? manifest.structuredOutput : "auto",
+    // What this agent declared it reaches in the buyer's Microsoft 365. Empty
+    // means it declared nothing, which the adapter treats as "as before" rather
+    // than "nothing allowed" — an agent published before this existed must keep
+    // working. The listing says which of the two it is.
+    GRAPH_SCOPES: Array.isArray(manifest?.graphScopes) ? manifest.graphScopes.join(",") : "",
     ...(brokerOn ? { LLM_BROKER_URL: config.llmBrokerContainerUrl } : {}),
     APPROVAL_POLICY: approvalPolicy,
     APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,

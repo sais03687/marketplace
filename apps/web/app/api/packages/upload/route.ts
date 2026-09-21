@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { Prisma } from "@prisma/client";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { validateApiKey } from "@/lib/api-key-auth";
 import { validateManifest, canonicalTier } from "@marketplace/agent-package-schema";
@@ -373,6 +374,11 @@ export async function POST(request: Request) {
             runtime,
             onboardingQuestions: onboardingQuestions ?? undefined,
             memoryTemplate: memoryTemplate ?? undefined,
+            // Declared on every publish, so a version that drops a scope narrows
+            // what the listing claims rather than leaving the old claim standing.
+            // Prisma.DbNull, not undefined: undefined means "leave as it was",
+            // which would keep a stale declaration after the creator removed it.
+            graphScopes: manifest.graphScopes ?? Prisma.DbNull,
             // If the agent was suspended (deleted by creator), revive it to IN_REVIEW.
             // For LIVE/IN_REVIEW agents keep the current status — the new version must
             // be approved before it becomes the active version.
@@ -395,6 +401,7 @@ export async function POST(request: Request) {
             currentVersion: version,
             onboardingQuestions: onboardingQuestions ?? undefined,
             memoryTemplate: memoryTemplate ?? undefined,
+            graphScopes: manifest.graphScopes ?? Prisma.DbNull,
           },
         });
 

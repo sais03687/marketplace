@@ -4726,6 +4726,71 @@ async def _ms_token() -> str:
     return data["access_token"]
 
 
+# What the agent declared it reaches, from the manifest's graphScopes.
+#
+# Empty means the manifest declared nothing, and nothing is enforced — every
+# agent published before this field existed has to keep working. The listing is
+# where that shows: an agent that declares nothing says so where buyers look,
+# which is the pressure to declare rather than a refusal at runtime.
+_DECLARED_SCOPES = {
+    s.strip() for s in os.environ.get("GRAPH_SCOPES", "").split(",") if s.strip()
+}
+
+
+def _required_scope(method: str, path: str) -> str | None:
+    """Which declared scope a Graph call needs, or None if it maps to no scope.
+
+    Ordered most specific first: a mailbox lives under /users/{id}/messages, so
+    matching /users before /messages would file the whole mailbox as a directory
+    read and let an agent that asked to look people up read everyone's mail.
+    """
+    p = path.lower()
+    m = method.upper()
+    writing = m in ("POST", "PATCH", "PUT", "DELETE")
+
+    if "/workbook/" in p:
+        return "excel.write" if writing else "excel.read"
+    if "/drive" in p or "/driveitem" in p:
+        if "/invite" in p or "/createlink" in p or "/permissions" in p:
+            return "files.share"
+        return "files.write" if writing else "files.read"
+    if "/sendmail" in p or "/reply" in p or "/replyall" in p or "/forward" in p:
+        return "mail.send"
+    if "/messages" in p or "/mailfolders" in p:
+        return "mail.send" if writing else "mail.read"
+    if "/events" in p or "/calendar" in p:
+        return "calendar.write" if writing else "calendar.read"
+    if "/users" in p or "/people" in p or "/contacts" in p or "/directoryobjects" in p:
+        return "directory.read" if not writing else None
+    return None
+
+
+def _enforce_declared_scope(method: str, path: str) -> None:
+    """Refuse a Graph call the agent never said it would make.
+
+    A refusal here is not an approval prompt. The buyer chose this agent partly
+    on what its listing said it reaches, and a call outside that is not something
+    they can meaningfully consent to in the moment — they would be approving a
+    capability the agent advertised it did not need.
+
+    Unmapped paths pass. The vocabulary is deliberately small, so a genuinely
+    novel Graph call — Planner, To Do — has no scope to match; those are still
+    caught, because an unclassified *write* already requires a human.
+    """
+    if not _DECLARED_SCOPES:
+        return
+    scope = _required_scope(method, path)
+    if scope is None or scope in _DECLARED_SCOPES:
+        return
+    raise ActionRefused(
+        f"This agent did not declare {scope}, so it cannot make that call "
+        f"({method} {path.split('?')[0]}). Its listing tells the buyer it reaches "
+        f"{', '.join(sorted(_DECLARED_SCOPES))} and nothing else. Add {scope} to "
+        f"graphScopes in marketplace.json and publish a new version if the agent "
+        f"genuinely needs it."
+    )
+
+
 def _classify_graph_call(method: str, path: str) -> str | None:
     """Name the action a Graph request performs, or None if it only reads.
 
@@ -4851,6 +4916,11 @@ async def graph_request(
     anything that mutates or shares is classified and checked, and blocks on a
     human when the buyer's policy says so.
     """
+    # Before anything else, including the approval policy: a call the agent never
+    # declared is refused outright, so it can never become a prompt asking the
+    # buyer to permit a capability the listing told them was not needed.
+    _enforce_declared_scope(method, path)
+
     action = _classify_graph_call(method, path)
 
     if action:

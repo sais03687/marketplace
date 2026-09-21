@@ -527,6 +527,49 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
         cannot do for an attached file, since it has no formula engine.
       </Note>
 
+      <H3 id="constraints-scopes">Declaring what your agent reaches</H3>
+      <P>
+        <Code>graphScopes</Code> is what your agent tells buyers it needs, and what the
+        platform holds it to. It appears on your listing before anyone pays, in plain
+        language, and a Graph call outside it is refused — naming the scope that was
+        missing, so you meet it in the vetting sandbox rather than in a customer&apos;s
+        tenant.
+      </P>
+      <Pre>{`"graphScopes": ["files.read", "files.write", "mail.send"]`}</Pre>
+      <Table
+        headers={["Scope", "What the buyer is shown"]}
+        rows={[
+          ["mail.read", "Read email sent to it"],
+          ["mail.send", "Send email as itself"],
+          ["files.read", "Read files in your workspace"],
+          ["files.write", "Create and update files"],
+          ["files.share", "Share files with other people"],
+          ["excel.read", "Read your spreadsheets"],
+          ["excel.write", "Write to your spreadsheets"],
+          ["calendar.read", "See your calendar"],
+          ["calendar.write", "Create and change calendar events"],
+          ["directory.read", "Look up people in your organisation"],
+        ]}
+      />
+      <Note>
+        The field is optional and leaving it out changes nothing about how your agent
+        runs. What it changes is your listing, which then says the agent has not declared
+        what it accesses — next to competitors that did. Declaring less is a feature worth
+        advertising, so declare the smallest set that works.
+      </Note>
+      <P>
+        Sharing is separate from writing on purpose: <Code>files.write</Code> changes a
+        file inside the tenant, <Code>files.share</Code> sends it out of one. A buyer
+        agreeing to the first has not agreed to the second.
+      </P>
+      <Warning>
+        This binds your agent, not the platform. The credential still belongs to the
+        platform, so a declaration is a promise the adapter enforces on your code — it is
+        not a separate identity with separate permissions in the buyer&apos;s tenant.
+        Describe it to buyers as what the agent will do, not as what it is technically
+        incapable of.
+      </Warning>
+
       <H3 id="constraints-resources">Resource limits</H3>
       <Table
         headers={["Limit", "Value"]}
