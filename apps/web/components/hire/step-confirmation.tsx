@@ -151,10 +151,9 @@ export function StepConfirmation() {
           <span className="text-muted-foreground">Role</span>
           <span className="font-medium">{state.roleTitle}</span>
         </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Slack</span>
-          <span>{state.slackConnected ? "Connected" : "Not connected"}</span>
-        </div>
+        {/* A "Slack — Not connected" row used to sit here. Nothing ever sets
+            slackConnected, and the wizard badges Slack "Coming soon", so the
+            row could only ever read as a setup step the buyer had skipped. */}
         {/* The tier, not the provider. workspaceProvider is MICROSOFT on both
             tiers -- the agent's own mailbox is a Microsoft 365 mailbox wherever
             it lives -- so printing it told an email-tier buyer "Microsoft 365"

@@ -2,7 +2,9 @@ import { Check, X, Minus } from "lucide-react";
 
 const features = [
   {
-    name: "Works in existing tools (email, Slack)",
+    // Email, and only email. Slack is badged "Coming soon" in the hire wizard,
+    // so claiming it here sold something a buyer could not then connect.
+    name: "Works in existing tools (email, Microsoft 365)",
     marketplace: true,
     chatbots: false,
     copilots: "partial",

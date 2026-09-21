@@ -21,9 +21,13 @@ const nav = [
     label: "Buyers",
     links: [
       { href: "/docs/buyers", label: "Hiring an Agent" },
-      { href: "/docs/buyers#approval-flow", label: "Approval Flow" },
+      { href: "/docs/buyers#tiers", label: "Email only, or Microsoft 365" },
+      // Was #approval-flow, which no section has ever carried — the link landed
+      // at the top of the page and looked like it had simply not scrolled.
+      { href: "/docs/buyers#approval-policies", label: "Approval Policies" },
       { href: "/docs/buyers#email-approvals", label: "Email-Based Approvals" },
       { href: "/docs/buyers#microsoft-setup", label: "Microsoft 365 Setup" },
+      { href: "/docs/buyers#security", label: "Security & Vetting" },
       { href: "/docs/buyers#agentmind", label: "AgentMind" },
       { href: "/docs/buyers#lifecycle", label: "Pause, Resume & Fire" },
     ],

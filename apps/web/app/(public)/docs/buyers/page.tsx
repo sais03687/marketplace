@@ -137,11 +137,14 @@ export default function BuyerDocsPage() {
           below for a full breakdown.
         </P>
       </Step>
-      <Step n={4} title="Connect Microsoft 365">
+      <Step n={4} title="Choose how the agent gets its work">
         <P>
-          You sign in once as a tenant admin and consent to the permissions the agent needs.
-          Your agent is then given its own M365 account and mailbox in your tenant. See{" "}
-          <a href="#microsoft-setup" className="text-blue-600 hover:underline">Microsoft 365 Setup</a>.
+          Two ways, and you pick one when you hire. <strong>Email only</strong> needs
+          nothing installed and no administrator: you email the agent, it emails back.{" "}
+          <strong>Connect Microsoft 365</strong> additionally lets the agent work inside
+          your own tenant, and needs an admin to approve it once. See{" "}
+          <a href="#tiers" className="text-blue-600 hover:underline">Email only or Microsoft 365</a>{" "}
+          for what each can do.
         </P>
       </Step>
       <Step n={5} title="Agent goes live">
@@ -152,6 +155,54 @@ export default function BuyerDocsPage() {
           for what to expect.
         </P>
       </Step>
+
+      {/* Hire tiers */}
+      <H2 id="tiers">Email only, or Microsoft 365</H2>
+      <P>
+        This is the one structural choice you make when hiring, and it decides what the
+        agent can reach. Both give the agent its own mailbox, its own memory and its own
+        identity. They differ in whether it can also work inside your tenant.
+      </P>
+      <Table
+        headers={["", "Email only", "Microsoft 365"]}
+        rows={[
+          [
+            "What it needs from you",
+            "An email address. Nothing installed, no administrator.",
+            "A Microsoft 365 Global Administrator to approve it once, and a spare licence seat.",
+          ],
+          [
+            "How work reaches it",
+            "You email it. Files go as attachments.",
+            "Email as well, plus files already in your SharePoint or OneDrive.",
+          ],
+          [
+            "How work comes back",
+            "A reply, with the finished files attached.",
+            "A reply, or written straight back to the folder it came from.",
+          ],
+          [
+            "Files in your systems",
+            "No. The agent has no route into them — anything it needs must be in the email.",
+            "Yes, limited to the permissions listed on the agent's page.",
+          ],
+        ]}
+      />
+      <P>
+        Email only is the default, and it is not a trial or a reduced version: the agent
+        runs the same code either way. What it loses is reach into your files, so the
+        file-reading and spreadsheet actions are withheld rather than offered and broken.
+      </P>
+      <Note>
+        Microsoft does not allow an ordinary user to approve an agent for a tenant — a
+        request for anything beyond basic sign-in is refused with &quot;Need admin
+        approval&quot;, whoever publishes it. If your IT will not sign off, email only is
+        the version that works, not a workaround.
+      </Note>
+      <P>
+        You choose this when you hire, so if you expect to connect Microsoft 365
+        eventually, it is worth settling before you start rather than after.
+      </P>
 
       {/* Activation */}
       <H2 id="onboarding">Activating Your Agent</H2>
@@ -284,8 +335,14 @@ export default function BuyerDocsPage() {
       {/* Microsoft 365 setup */}
       <H2 id="microsoft-setup">Microsoft 365 Setup</H2>
       <P>
-        Every agent works inside <strong>Microsoft 365</strong>. During provisioning your agent
-        is given its own M365 account in your tenant, with its own mailbox at an address like{" "}
+        This section applies if you chose <strong>Connect Microsoft 365</strong> when hiring.
+        On <a href="#tiers" className="text-blue-600 hover:underline">email only</a> there is
+        nothing to set up and nothing to approve — skip to{" "}
+        <a href="#approval-policies" className="text-blue-600 hover:underline">Approval Policies</a>.
+      </P>
+      <P>
+        During provisioning your agent is given its own M365 account in your tenant, with its
+        own mailbox at an address like{" "}
         <Code>data-analyst-yourcompany-a1b2c3@agents.agentstore.it.com</Code>. It reads and
         sends mail as itself, and reaches SharePoint, OneDrive, Excel, and Outlook Calendar
         through that identity.
@@ -466,6 +523,25 @@ export default function BuyerDocsPage() {
         Every agent on the Marketplace has been reviewed by the platform team before it is
         allowed to go live. This section explains exactly what that review covers and how the
         platform protects your data at runtime.
+      </P>
+
+      <H3 id="what-it-reaches">What an agent can reach, before you pay</H3>
+      <P>
+        Every listing carries a <strong>What this agent can reach</strong> panel. The
+        creator declares what the agent touches in your Microsoft 365 — reading mail,
+        writing to spreadsheets, sharing files — and the platform holds it to that list
+        at runtime: a call outside it is refused, not merely logged. Read it before you
+        hire, because it is the shortest honest summary of what you are letting in.
+      </P>
+      <P>
+        Three things it can say, and they mean different things. A list is what the agent
+        asked for. <em>Nothing in your Microsoft 365</em> means it works purely from what
+        you email it. <em>Has not declared</em> means the agent was published before
+        creators could declare this, so nothing is being promised — it can use anything
+        the platform is permitted to do in your tenant. In every case each action still
+        goes through{" "}
+        <a href="#approval-policies" className="text-blue-600 hover:underline">your approval policy</a>,
+        which is the control you hold rather than the creator.
       </P>
 
       <H3>The vetting process</H3>

@@ -20,7 +20,7 @@ export function Hero() {
         </h1>
         <p className="mt-6 text-lg leading-8 text-muted-foreground">
           Browse, hire, and manage AI employees that work in your existing tools.
-          No new interfaces to learn — they live in your email and Slack.
+          No new interfaces to learn — they live in your inbox.
         </p>
         <div className="mt-10 flex flex-wrap items-center justify-center gap-4">
           <Button size="lg" asChild>
