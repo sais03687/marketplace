@@ -47,7 +47,8 @@ export interface MarketplaceManifest {
   description: string;    // markdown, max 2000 chars
   category: AgentCategory;
   version: string;        // semver "1.0.0"
-  pricePerMonth: number;  // USD cents, e.g. 49900 = $499/mo
+  /** Whole US dollars. Converted to cents on the way in, for Stripe. */
+  pricePerMonth: number;
   /**
    * Which model this agent runs on, by id from MODEL_CATALOGUE.
    *

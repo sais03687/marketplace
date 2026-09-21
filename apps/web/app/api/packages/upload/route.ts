@@ -256,10 +256,14 @@ export async function POST(request: Request) {
   const modelTierRaw = (
     derivedTier ?? canonicalTier(manifest.modelTier) ?? "standard"
   ).toUpperCase();
+  // Both doors now speak dollars. The form always did — it parsed a dollar
+  // figure and multiplied — while the manifest was read as cents, so the same
+  // route accepted 29 from one and 2900 from the other for the same price.
+  // Cents survive only past this line, because Stripe charges in them.
   const pricePerMonthRaw = formData.get("pricePerMonth") as string | null;
   const priceCheck = pricePerMonthRaw
     ? parseInt(pricePerMonthRaw, 10) * 100
-    : (manifest.pricePerMonth as number);
+    : (manifest.pricePerMonth as number) * 100;
 
   const uploadPriceError = priceRejection(priceCheck, modelTierRaw);
   if (uploadPriceError) {

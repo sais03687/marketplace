@@ -91,9 +91,27 @@ export function validateManifest(m: unknown): ValidationError[] {
     }
   }
 
-  // Price in cents (integer)
+  // Price in whole US dollars.
+  //
+  // It was cents, while the publish form on the same route took dollars and
+  // multiplied — so 29 and 2900 both meant $29 depending on which door a creator
+  // came through, and the docs said "USD cents" one clause before quoting "$29".
+  // Everything a person types is dollars now; the conversion happens once, on
+  // the way in, because Stripe charges in cents and nothing else needs them.
   if (typeof manifest.pricePerMonth !== "number" || manifest.pricePerMonth < 0) {
-    errors.push({ field: "pricePerMonth", message: "pricePerMonth must be a non-negative number (in USD cents)" });
+    errors.push({ field: "pricePerMonth", message: "pricePerMonth must be a non-negative number (in whole US dollars)" });
+  } else if (!Number.isInteger(manifest.pricePerMonth)) {
+    errors.push({ field: "pricePerMonth", message: "pricePerMonth must be a whole number of dollars — 29, not 29.00" });
+  } else if (manifest.pricePerMonth > 2000) {
+    // Almost certainly a cents figure from before the change. Saying so beats a
+    // silent hundredfold overcharge that nobody notices until a buyer is billed.
+    errors.push({
+      field: "pricePerMonth",
+      message:
+        `pricePerMonth is in whole dollars, and ${manifest.pricePerMonth} would be ` +
+        `$${manifest.pricePerMonth.toLocaleString()}/month. If you meant ` +
+        `$${Math.round(manifest.pricePerMonth / 100)}, write ${Math.round(manifest.pricePerMonth / 100)}.`,
+    });
   }
 
   // Capabilities must be array of { name, description }

@@ -143,7 +143,10 @@ export async function POST(
 
   // Enforce minimum pricing per model tier
   const versionModelTier = (manifest.modelTier as string) || "";
-  const versionPrice = manifest.pricePerMonth as number | undefined;
+  // Dollars in the manifest, cents in the row it is compared against.
+  const versionPriceDollars = manifest.pricePerMonth as number | undefined;
+  const versionPrice =
+    versionPriceDollars === undefined ? undefined : versionPriceDollars * 100;
   const priceError = priceRejection(versionPrice, versionModelTier);
   if (priceError) return jsonError(priceError, 400);
 
@@ -161,8 +164,8 @@ export async function POST(
   // accepting a number that will be discarded.
   if (versionPrice !== undefined && versionPrice !== agent.pricePerMonth) {
     return jsonError(
-      `This version's manifest sets pricePerMonth to ${versionPrice} but ${slug} ` +
-        `currently costs ${agent.pricePerMonth}. Publishing a version does not change ` +
+      `This version's manifest sets pricePerMonth to ${versionPriceDollars} but ${slug} ` +
+        `currently costs $${(agent.pricePerMonth / 100).toFixed(0)}. Publishing a version does not change ` +
         `the price, because buyers are already paying the current one. Either match ` +
         `the manifest to the current price, or change the price deliberately first.`,
       409,

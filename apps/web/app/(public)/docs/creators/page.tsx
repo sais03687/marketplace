@@ -139,9 +139,11 @@ export default function CreatorDocsPage() {
     └── MEMORY_TEMPLATE.md   ← initial memory structure (recommended)`}</Pre>
 
       <Warning>
-        <strong>Do not include:</strong> <Code>adapter.py</Code>, <Code>Dockerfile</Code>,
-        or <Code>platform-requirements.txt</Code>. These are platform-managed files. The
-        upload will be rejected if they are present.
+        <strong>Do not include:</strong> <Code>adapter.py</Code>,{" "}
+        <Code>platform_llm.py</Code>, <Code>Dockerfile</Code>, or{" "}
+        <Code>platform-requirements.txt</Code>. These are platform-managed files and ship
+        in every agent image already — import them, do not bundle them. The upload is
+        rejected if they are present.
       </Warning>
 
       <H3>agent.py — What the platform expects</H3>
@@ -671,7 +673,7 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
           ["description", "string", "Yes", "Markdown. Max 2000 characters. Shown on the agent detail page."],
           ["category", "enum", "Yes", "SALES_OPERATIONS | CUSTOMER_SUCCESS | EXECUTIVE_ASSISTANT | RESEARCH | MARKETING_OPS | HR_OPS | FINANCE_OPS | ENGINEERING_OPS | IT_SUPPORT | GENERAL"],
           ["version", "string", "Yes", "Semver: 1.0.0, 1.1.0, etc."],
-          ["pricePerMonth", "integer", "Yes", "USD cents. Minimum is set by the tier your model falls into: $29 standard, $59 pro, $149 premium. Buyers pay this monthly."],
+          ["pricePerMonth", "integer", "Yes", "Whole US dollars — write 29, not 2900. Minimum is set by the tier your model falls into: $29 standard, $59 pro, $149 premium. Buyers pay this monthly."],
           ["model", "string", "No", "Any model the provider serves, as \"vendor/model\" — e.g. openai/gpt-oss-120b. Sets which model runs your agent, and decides the tier. Omit it and the platform default is used."],
           ["modelTier", "enum", "Yes", "standard | pro | premium. Ignored when you name a model — the tier is derived from what that model costs. Sets the price floor."],
           ["runtime", "string", "Yes", "Must be \"custom\"."],
@@ -679,6 +681,7 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
           ["requiredTools", "array", "Yes", "Tool identifiers the agent uses: email, calendar, sharepoint, excel, etc. Listing metadata only — it grants nothing."],
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
+          ["graphScopes", "array", "No", "What the agent reaches in the buyer’s Microsoft 365, e.g. [\"files.read\", \"mail.send\"]. Shown on your listing and enforced at runtime. See Declaring what your agent reaches."],
           ["structuredOutput", "enum", "No", "auto | json | schema | none. How platform_llm asks your model for structured output. Default auto picks per vendor; use none for an agent that wants prose back. See Calling the model."],
         ]}
       />

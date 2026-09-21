@@ -167,7 +167,10 @@ export default function PublishPage() {
         }
         setTaglineOverride(parsed.tagline);
         setDescriptionOverride(parsed.description);
-        setPriceOverride(String(parsed.pricePerMonth / 100));
+        // The manifest is dollars now, and this field shows dollars, so it is
+        // shown as written. It used to divide by 100 because the manifest was
+        // cents while this same form sent dollars to the same endpoint.
+        setPriceOverride(String(parsed.pricePerMonth));
       } else {
         setParseError("marketplace.json not found in package");
       }
@@ -382,7 +385,7 @@ export default function PublishPage() {
                 onChange={(e) => setPriceOverride(e.target.value)}
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                From manifest: ${manifest.pricePerMonth / 100}/mo
+                From manifest: ${manifest.pricePerMonth}/mo
               </p>
             </div>
 
