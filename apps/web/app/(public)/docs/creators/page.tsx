@@ -475,6 +475,58 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
         data, it has to arrive through email, through SharePoint, or through Microsoft Graph.
       </Warning>
 
+      <H3 id="constraints-graph">Microsoft Graph: all of it, not just our helpers</H3>
+      <P>
+        The Data Analyst ships a handful of Graph helpers — read a range, upload a file,
+        send mail. Those are one agent&apos;s choices, not the platform&apos;s limit. Your
+        code may call <Code>graph.microsoft.com</Code> at any path the granted permissions
+        cover: Planner-style task lists are out, but directory lookups, calendar scheduling,
+        Excel tables, charts and PDF conversion are all reachable today and nobody needs to
+        enable them for you.
+      </P>
+      <P>
+        <strong>Do not attach an Authorization header.</strong> Your agent never holds a
+        Graph token and cannot obtain one. The platform attaches the credential on the way
+        out and discards whatever you set, so that agent code cannot choose what it
+        authenticates as. Write the call as though you were already signed in.
+      </P>
+      <Table
+        headers={["Granted to the platform", "What that lets you reach"]}
+        rows={[
+          ["Mail.ReadWrite, Mail.Send", "Messages, folders, categories, attachments"],
+          ["Calendars.ReadWrite", "Events, free/busy, findMeetingTimes"],
+          ["Files.ReadWrite.All, Sites.ReadWrite.All", "OneDrive and SharePoint, the whole Excel API, /content?format=pdf"],
+          ["User.ReadWrite.All", "The directory — including /users/{id}/manager"],
+          ["Organization.ReadWrite.All", "Tenant and organisation settings"],
+        ]}
+      />
+      <P>
+        Anything outside those permissions answers <Code>403</Code>, and that is not
+        something your code can fix: widening them requires every existing buyer&apos;s
+        administrator to consent again. If your agent needs a permission that is not listed,
+        ask before you build on it.
+      </P>
+      <Warning>
+        <strong>Reads run unattended; writes the platform does not recognise stop for a
+        human.</strong> A <Code>GET</Code> is never gated. A <Code>POST</Code>,{" "}
+        <Code>PATCH</Code>, <Code>PUT</Code> or <Code>DELETE</Code> the platform has
+        classified — sending mail, uploading a file, writing a range — is gated by the
+        buyer&apos;s approval policy. Anything else is recorded as{" "}
+        <Code>graph_POST:/the/path</Code> and requires the buyer to approve it explicitly,
+        every time. That is deliberate: a Graph capability nobody has classified should not
+        execute unattended. Expect an unfamiliar write to pause, and design the run so a
+        pause is survivable.
+      </Warning>
+      <Note>
+        Excel has limits worth knowing before you rely on it. The Graph Excel API is{" "}
+        <Code>.xlsx</Code> only — <Code>.xls</Code> is rejected — and it works on business
+        OneDrive and SharePoint, not consumer accounts. Unbounded ranges like{" "}
+        <Code>A:B</Code> read as null and cannot be written. Very large ranges return null
+        rather than data, so read big sheets in chunks. Reading a range returns{" "}
+        <Code>values</Code> with formulas already evaluated by Excel — which the sandbox
+        cannot do for an attached file, since it has no formula engine.
+      </Note>
+
       <H3 id="constraints-resources">Resource limits</H3>
       <Table
         headers={["Limit", "Value"]}
