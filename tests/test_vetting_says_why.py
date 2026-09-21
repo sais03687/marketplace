@@ -10,7 +10,11 @@ The traceback was in Docker the whole time and was never read. Found on
 2026-09-21 by publishing an agent that crashed at import and having no way,
 from the vetting report, to learn why.
 """
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 VET = (Path(__file__).resolve().parents[1] / "apps" / "provisioning-service" / "src"
        / "jobs" / "vet-package.ts").read_text(encoding="utf-8")
@@ -53,6 +57,22 @@ def test_reading_the_logs_cannot_break_the_diagnosis():
 
 def test_the_docker_frame_header_is_stripped():
     # Docker multiplexes stdout and stderr with an 8-byte header per frame when
-    # there is no TTY, which renders as control characters in the report.
+    # there is no TTY. The behaviour is tested for real in test_docker_logs.mjs,
+    # which runs the shipped module; this only checks the report path uses it
+    # rather than deleting control characters, which leaves the printable bytes
+    # of the length field at the start of a line.
     block = _health_failure_block()
-    assert "u0000" in block or "\\u0000" in block
+    assert "demuxDockerLogs" in block
+    assert "u0000" not in block, "control-char stripping is not enough on its own"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is needed")
+def test_the_demuxing_behaves():
+    script = Path(__file__).resolve().parent / "test_docker_logs.mjs"
+    r = subprocess.run(
+        ["node", "--experimental-strip-types", str(script)],
+        capture_output=True, text=True, cwd=script.parent,
+    )
+    print(r.stdout or r.stderr)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.count("ok   ") >= 8, r.stdout

@@ -10,6 +10,7 @@
  */
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, cpSync, readdirSync, statSync } from "node:fs";
+import { demuxDockerLogs } from "./docker-logs.js";
 import { startNetgate, stopEgressProxy, netgateName, baselineAllowedDomains, blockedEgressHosts } from "../clients/egress-proxy.js";
 import { createAgentNetwork, removeAgentNetwork } from "../clients/docker.js";
 import { join, dirname } from "node:path";
@@ -177,6 +178,7 @@ function isBinary(buf: Buffer): boolean {
 function elapsed(startMs: number): string {
   return `${((Date.now() - startMs) / 1000).toFixed(1)}s`;
 }
+
 
 // ── Main job ──────────────────────────────────────────────────────────────────
 
@@ -538,12 +540,8 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             // crashed at import and having no way to tell why.
             try {
               const raw = await container.logs({ stdout: true, stderr: true, tail: 40 });
-              // Docker multiplexes stdout and stderr with an 8-byte header per
-              // frame when there is no TTY; stripping it leaves readable text.
-              const text = Buffer.isBuffer(raw)
-                ? raw.toString("utf8").replace(/[\u0000-\u0008\u000b-\u001f]/g, "")
-                : String(raw);
-              const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+              const lines = demuxDockerLogs(raw as unknown as Buffer)
+                .split("\n").map((l) => l.trim()).filter(Boolean);
               if (lines.length > 0) {
                 healthLogs.push("", "--- container output ---", ...lines.slice(-40));
                 const blame = [...lines].reverse().find((l) =>
