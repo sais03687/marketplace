@@ -122,6 +122,12 @@ export async function provisionJob(
       version: deployment.agentVersion,
       vetStatus: "MANUALLY_APPROVED",
     },
+    // Nothing stops two rows sharing a version — the publish wizard created one
+    // per upload until 2026-09-21, and rows from before then are still here.
+    // Unordered, Postgres may return either, and since each upload now stores
+    // its own package, "either" means the buyer could be given the code that
+    // was replaced. Newest approved wins.
+    orderBy: { createdAt: "desc" },
     select: { storagePath: true, manifestData: true },
   });
 

@@ -97,6 +97,9 @@ export async function updateJob(deploymentId: string): Promise<void> {
       agentId: deployment.agent.id,
       version: deployment.agentVersion,
     },
+    // Two rows can share a version; see the note in provision.ts. Newest wins,
+    // so an update ships the same package a fresh provision would.
+    orderBy: { createdAt: "desc" },
     select: { storagePath: true },
   });
 
@@ -249,6 +252,8 @@ async function pushVersion(
 ): Promise<boolean> {
   const target = await prisma.agentVersion.findFirst({
     where: { agentId, version },
+    // Rolling back to an arbitrary one of two rows is not a rollback.
+    orderBy: { createdAt: "desc" },
     select: { storagePath: true },
   });
   if (!target?.storagePath || !isBlobStoragePath(target.storagePath)) {

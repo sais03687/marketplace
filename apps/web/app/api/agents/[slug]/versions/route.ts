@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { Prisma } from "@prisma/client";
 import { priceRejection } from "@/lib/agent-pricing";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { validateManifest } from "@marketplace/agent-package-schema";
@@ -206,6 +207,10 @@ export async function POST(
         storagePath,
         changelog: changelog ?? null,
         vetStatus: "PENDING",
+        // The previous attempt's report was run against code that is no longer
+        // stored here. Kept, it shows a verdict beside a package it never saw.
+        vetNotes: null,
+        testResults: Prisma.DbNull,
       },
     });
   } else {

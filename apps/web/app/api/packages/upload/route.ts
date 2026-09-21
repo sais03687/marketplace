@@ -9,6 +9,20 @@ import JSZip from "jszip";
 import { priceRejection } from "@/lib/agent-pricing";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
+/**
+ * Thrown inside the publish transaction when the version already passed review.
+ *
+ * Raised rather than returned so the transaction rolls back: the agent row is
+ * updated before the version is written, and a refused publish must not leave
+ * the listing describing a package that was never stored.
+ */
+class VersionAlreadyApprovedError extends Error {
+  constructor(public readonly version: string) {
+    super(`Version ${version} already exists and has been approved`);
+    this.name = "VersionAlreadyApprovedError";
+  }
+}
+
 // ── Code scanning ─────────────────────────────────────────────────────────────
 
 const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
@@ -360,81 +374,130 @@ export async function POST(request: Request) {
   }>;
 
   // 8. Create everything in a transaction
-  const result = await prisma.$transaction(async (tx) => {
-    // New agents start as PENDING until an admin approves them.
-    // Existing agents keep their current status — the new version goes to PENDING
-    // and won't be used for provisioning until approved.
-    const agent = existingAgent
-      ? await tx.agent.update({
-          where: { id: existingAgent.id },
-          data: {
-            name: agentName,
-            tagline,
-            description,
-            category: category as any,
-            pricePerMonth,
-            model: agentModel,
-            modelTier: modelTier as any,
-            runtime,
-            onboardingQuestions: onboardingQuestions ?? undefined,
-            memoryTemplate: memoryTemplate ?? undefined,
-            // Declared on every publish, so a version that drops a scope narrows
-            // what the listing claims rather than leaving the old claim standing.
-            // Prisma.DbNull, not undefined: undefined means "leave as it was",
-            // which would keep a stale declaration after the creator removed it.
-            graphScopes: manifest.graphScopes ?? Prisma.DbNull,
-            // If the agent was suspended (deleted by creator), revive it to IN_REVIEW.
-            // For LIVE/IN_REVIEW agents keep the current status — the new version must
-            // be approved before it becomes the active version.
-            ...(existingAgent.status === "SUSPENDED" ? { status: "IN_REVIEW" } : {}),
-          },
-        })
-      : await tx.agent.create({
-          data: {
-            slug,
-            name: agentName,
-            tagline,
-            description,
-            category: category as any,
-            pricePerMonth,
-            model: agentModel,
-            modelTier: modelTier as any,
-            creatorId: creator.id,
-            status: "IN_REVIEW",
-            runtime,
-            currentVersion: version,
-            onboardingQuestions: onboardingQuestions ?? undefined,
-            memoryTemplate: memoryTemplate ?? undefined,
-            graphScopes: manifest.graphScopes ?? Prisma.DbNull,
-          },
-        });
+  let result;
+  try {
+    result = await prisma.$transaction(async (tx) => {
+      // New agents start as PENDING until an admin approves them.
+      // Existing agents keep their current status — the new version goes to PENDING
+      // and won't be used for provisioning until approved.
+      const agent = existingAgent
+        ? await tx.agent.update({
+            where: { id: existingAgent.id },
+            data: {
+              name: agentName,
+              tagline,
+              description,
+              category: category as any,
+              pricePerMonth,
+              model: agentModel,
+              modelTier: modelTier as any,
+              runtime,
+              onboardingQuestions: onboardingQuestions ?? undefined,
+              memoryTemplate: memoryTemplate ?? undefined,
+              // Declared on every publish, so a version that drops a scope narrows
+              // what the listing claims rather than leaving the old claim standing.
+              // Prisma.DbNull, not undefined: undefined means "leave as it was",
+              // which would keep a stale declaration after the creator removed it.
+              graphScopes: manifest.graphScopes ?? Prisma.DbNull,
+              // If the agent was suspended (deleted by creator), revive it to IN_REVIEW.
+              // For LIVE/IN_REVIEW agents keep the current status — the new version must
+              // be approved before it becomes the active version.
+              ...(existingAgent.status === "SUSPENDED" ? { status: "IN_REVIEW" } : {}),
+            },
+          })
+        : await tx.agent.create({
+            data: {
+              slug,
+              name: agentName,
+              tagline,
+              description,
+              category: category as any,
+              pricePerMonth,
+              model: agentModel,
+              modelTier: modelTier as any,
+              creatorId: creator.id,
+              status: "IN_REVIEW",
+              runtime,
+              currentVersion: version,
+              onboardingQuestions: onboardingQuestions ?? undefined,
+              memoryTemplate: memoryTemplate ?? undefined,
+              graphScopes: manifest.graphScopes ?? Prisma.DbNull,
+            },
+          });
 
-    const agentVersion = await tx.agentVersion.create({
-      data: {
-        agentId: agent.id,
-        version,
-        packageUrl: `storage://${slug}/${version}`,
-        manifestData: manifest as any,
-        storagePath,
-        vetStatus: "PENDING",
-        publishedAt: null,
-      },
-    });
-
-    // Replace capabilities atomically
-    await tx.capability.deleteMany({ where: { agentId: agent.id } });
-    if (capabilities.length > 0) {
-      await tx.capability.createMany({
-        data: capabilities.map((cap) => ({
-          agentId: agent.id,
-          name: cap.name,
-          description: cap.description,
-        })),
+      // Re-publishing a version replaces it; it does not stack a second row.
+      //
+      // This created one row per upload unconditionally, so correcting a package
+      // and publishing again left two rows with the same version number, both
+      // PENDING, in the admin queue — indistinguishable in the list, and pointing
+      // at different code now that each upload stores its own package. Approving
+      // the wrong one ships the code the creator replaced. /api/agents/[slug]/
+      // versions has always done this correctly; this route, the one the publish
+      // wizard actually calls, did not. Found on 2026-09-21 by publishing twice.
+      //
+      // An already-approved version is not replaced. Letting a creator overwrite
+      // code that passed review, under the same version number, would route
+      // unreviewed code to every buyer running it.
+      const existingVersion = await tx.agentVersion.findFirst({
+        where: { agentId: agent.id, version },
+        orderBy: { createdAt: "desc" },
       });
-    }
+      if (existingVersion && existingVersion.vetStatus !== "PENDING") {
+        throw new VersionAlreadyApprovedError(version);
+      }
 
-    return { agent, version: agentVersion };
-  });
+      const agentVersion = existingVersion
+        ? await tx.agentVersion.update({
+            where: { id: existingVersion.id },
+            data: {
+              packageUrl: `storage://${slug}/${version}`,
+              manifestData: manifest as any,
+              storagePath,
+              vetStatus: "PENDING",
+              publishedAt: null,
+              // The previous attempt's report describes code that is no longer
+              // here. Leaving it would show a verdict next to a package it was
+              // never run against.
+              vetNotes: null,
+              testResults: Prisma.DbNull,
+            },
+          })
+        : await tx.agentVersion.create({
+            data: {
+              agentId: agent.id,
+              version,
+              packageUrl: `storage://${slug}/${version}`,
+              manifestData: manifest as any,
+              storagePath,
+              vetStatus: "PENDING",
+              publishedAt: null,
+            },
+          });
+
+      // Replace capabilities atomically
+      await tx.capability.deleteMany({ where: { agentId: agent.id } });
+      if (capabilities.length > 0) {
+        await tx.capability.createMany({
+          data: capabilities.map((cap) => ({
+            agentId: agent.id,
+            name: cap.name,
+            description: cap.description,
+          })),
+        });
+      }
+
+      return { agent, version: agentVersion };
+    });
+  } catch (e) {
+    if (e instanceof VersionAlreadyApprovedError) {
+      return jsonError(
+        `Version ${e.version} already exists and has been approved. ` +
+          `Bump the version number in marketplace.json and publish again.`,
+        409,
+      );
+    }
+    throw e;
+  }
 
   console.log("[upload] agent:", result.agent.slug, "status:", result.agent.status);
 
