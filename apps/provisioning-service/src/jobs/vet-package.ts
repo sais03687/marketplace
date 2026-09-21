@@ -527,6 +527,32 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
               }
             } catch { /* inspect is best-effort diagnosis */ }
 
+            // What the process actually said on its way out.
+            //
+            // Everything above describes the container from outside — killed,
+            // exited, blocked — and none of it names the line that broke. A
+            // creator whose agent raises on import saw sixty lines of "not yet
+            // ready" and "exited with code 1", which is true of every crash
+            // there is. The traceback was sitting in Docker the whole time and
+            // was thrown away. Found on 2026-09-21 by publishing an agent that
+            // crashed at import and having no way to tell why.
+            try {
+              const raw = await container.logs({ stdout: true, stderr: true, tail: 40 });
+              // Docker multiplexes stdout and stderr with an 8-byte header per
+              // frame when there is no TTY; stripping it leaves readable text.
+              const text = Buffer.isBuffer(raw)
+                ? raw.toString("utf8").replace(/[\u0000-\u0008\u000b-\u001f]/g, "")
+                : String(raw);
+              const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+              if (lines.length > 0) {
+                healthLogs.push("", "--- container output ---", ...lines.slice(-40));
+                const blame = [...lines].reverse().find((l) =>
+                  /Error|Exception|Traceback|ModuleNotFound|ImportError|KeyError/i.test(l),
+                );
+                if (blame) why.push(`it printed: ${blame.slice(0, 200)}`);
+              }
+            } catch { /* logs are best-effort too */ }
+
             const blocked = await blockedEgressHosts(vetId!);
             if (blocked.length > 0) {
               why.push(
