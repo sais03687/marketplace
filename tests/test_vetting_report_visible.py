@@ -44,10 +44,10 @@ def test_the_vet_container_gets_no_real_secret():
     src = io.open(VET, encoding="utf-8").read()
     env = src[src.index("const envVars = ["):]
     env = env[: env.index("];")]
-    # The LLM key is opt-in now: vet-noop unless an operator sets VET_LLM_API_KEY
-    # for a reviewer to test against. Either way it is a dedicated vetting key, never the
-    # platform runtime key or an infrastructure secret.
-    assert 'process.env.VET_LLM_API_KEY || "vet-noop"' in env
+    # The LLM key never enters the container now. With the broker on it gets a
+    # placeholder the adapter swaps for a run-scoped broker token; with the broker
+    # off it falls back to vet-noop, or to the operator's dedicated vetting key.
+    assert 'brokerVetLlm ? "brokered-see-adapter" : process.env.VET_LLM_API_KEY || "vet-noop"' in env
     assert "ANTHROPIC_API_KEY=vet-noop" in env
     # The hooks token is random per run, not the platform secret.
     assert "AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}" in env
@@ -55,26 +55,37 @@ def test_the_vet_container_gets_no_real_secret():
     # not the platform secret - so its presence is safe. The property that
     # matters is that no line pulls a *real* secret into the vet env.
     import re
-    # The only host-env value allowed into the vet container is the opt-in
-    # vetting LLM key. Anything else read from process.env would be a leak.
+    # The only host-env values allowed into the vet container are the opt-in
+    # vetting LLM key (a placeholder when brokered) and the model name it pins.
     for line in env.splitlines():
         if "process.env." in line:
-            assert "VET_LLM_API_KEY" in line, (
+            assert "VET_LLM_API_KEY" in line or "VET_LLM_BASE_URL" in line, (
                 f"the vet container reads a host-env value other than the vetting "
                 f"LLM key: {line.strip()}"
             )
     assert "config.microsoftClientSecret" not in env
     assert "config.approvalWebhookToken" not in env
-    assert "config.provisioningSecret" not in env
-    # Every credential-shaped var resolves to a noop or the ephemeral token.
+    # The provisioning secret appears only inside agentTokenFor(), which is an
+    # HMAC over the vet id: the token is derived FROM the secret and does not
+    # contain it, the same way a deployment's own AGENT_TOKEN works. The raw
+    # secret must never be interpolated on its own.
+    for line in env.splitlines():
+        if "config.provisioningSecret" in line:
+            assert "agentTokenFor(" in line, (
+                f"the provisioning secret reaches the vet env unwrapped: {line.strip()}"
+            )
+    # Every credential-shaped var resolves to a noop, the ephemeral token, the
+    # broker placeholder, or a value derived per run.
     for line in env.splitlines():
         m = re.search(r"(TOKEN|SECRET|KEY|CLIENT)=([^`,]*)", line)
         if m:
             val = m.group(2).strip()
             allowed = ("vet-noop", "${VET_HOOKS_TOKEN}", "")
-            # The LLM key's opt-in form resolves to vet-noop by default.
+            # The LLM key is the broker placeholder, or resolves to vet-noop.
             is_optin_llm = "VET_LLM_API_KEY" in val and "vet-noop" in val
-            assert val in allowed or is_optin_llm, (
+            is_brokered = "brokered-see-adapter" in val
+            is_derived = "agentTokenFor(" in val
+            assert val in allowed or is_optin_llm or is_brokered or is_derived, (
                 f"credential var set to something real: {line.strip()}"
             )
 

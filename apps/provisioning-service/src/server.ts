@@ -34,6 +34,7 @@ import { mintTokenForTenant, installTeamsAppForTenant, getUserByEmail, describeT
 import { config } from "./config.js";
 import { sendViaResend, resendConfigured } from "./clients/resend.js";
 import { agentTokenFor, agentTokenMatches, hooksTokenFor } from "./utils/agent-token.js";
+import { isVetDeploymentId, vetRunActive, vetRunModel } from "./utils/vet-broker.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -65,6 +66,10 @@ const BROKER_MODEL_TTL_MS = 15 * 60 * 1000;
 
 async function allowedModelFor(deploymentId: string): Promise<string> {
   const fallback = process.env.LLM_BROKER_MODEL || process.env.LLM_MODEL || "google/gemini-2.5-flash";
+  // A vetting run is not a deployment, so its model comes from the run itself —
+  // the one the package declares, which is what the reviewer is judging.
+  const vetModel = vetRunModel(deploymentId);
+  if (vetModel) return vetModel;
   const cached = _brokerModelCache.get(deploymentId);
   if (cached && Date.now() - cached.cachedAt < BROKER_MODEL_TTL_MS) return cached.model;
   try {
@@ -764,6 +769,17 @@ export function startProxyServer() {
       const agentToken = dot > 0 ? presented.slice(dot + 1) : "";
       if (!deploymentId || !agentTokenMatches(agentToken, deploymentId, SECRET)) {
         console.warn("[llm-broker] rejected an unauthenticated request");
+        return send(res, 401, { error: "Unauthorized" });
+      }
+
+      // A vetting sandbox gets a token for an id that is not a deployment, so
+      // there is no row to revoke and the derived token never expires by itself.
+      // The run's own lifetime is the expiry: accepted while vetting is in
+      // flight, refused the moment the job's cleanup runs. That matters because
+      // the creator can read this token — the platform puts it in the container's
+      // env, and the vetting report quotes the container.
+      if (isVetDeploymentId(deploymentId) && !vetRunActive(deploymentId)) {
+        console.warn(`[llm-broker] rejected ${deploymentId}: vetting run is not active`);
         return send(res, 401, { error: "Unauthorized" });
       }
 

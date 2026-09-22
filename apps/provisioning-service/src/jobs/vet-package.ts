@@ -20,6 +20,10 @@ import Dockerode from "dockerode";
 import { prisma } from "@marketplace/db";
 import { validateManifest } from "@marketplace/agent-package-schema";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
+import { agentTokenFor } from "../utils/agent-token.js";
+import { registerVetRun, endVetRun } from "../utils/vet-broker.js";
+import { redactSecrets } from "../utils/redact.js";
+import { config } from "../config.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CustomTest } from "../queue.js";
@@ -233,6 +237,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
   let container: Dockerode.Container | null = null;
   let vetNetwork: string | null = null;
   let vetId: string | null = null;
+  let vetDeploymentId: string | null = null;
   let vetNetgate: { proxyUrl: string; hostPort: number } | null = null;
 
   try {
@@ -399,8 +404,27 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           const containerName = `vet-${randomBytes(4).toString("hex")}`;
           // Network and netgate names derive from this via .slice(0, 8).
           vetId = containerName.slice(4) + "vetting";
+
+          // Route the sandbox's model calls through the broker, the same path a
+          // provisioned agent takes. Vetting runs code nobody has reviewed yet,
+          // and the creator is shown this container's output in their report, so
+          // handing it the real key put that key one print statement away from
+          // them. The broker holds the key instead; the sandbox gets a token that
+          // is only accepted while this run is in flight (see vet-broker.ts).
+          //
+          // Needs a vetting key to be worth doing: absent one the sandbox has no
+          // model at all and there is nothing to broker.
+          vetDeploymentId = `vet-${randomBytes(4).toString("hex")}`;
+          const vetModel =
+            process.env.VET_LLM_MODEL ||
+            (manifest?.model as string | undefined) ||
+            process.env.LLM_MODEL ||
+            "gpt-4o-mini";
+          const brokerVetLlm = config.llmBrokerEnabled && Boolean(process.env.VET_LLM_API_KEY);
+          if (brokerVetLlm) registerVetRun(vetDeploymentId, vetModel);
+
           const envVars = [
-            `DEPLOYMENT_ID=vet-${randomBytes(4).toString("hex")}`,
+            `DEPLOYMENT_ID=${vetDeploymentId}`,
             `AGENT_EMAIL=test@vet.internal`,
             `AGENT_NAME=VetAgent`,
             `COMPANY_NAME=VetCo`,
@@ -409,21 +433,35 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             `APPROVAL_POLICY=always`,
             `MODEL=standard`,
             // vet-noop by default: with no real key the agent cannot reason, so
-            // the automated boot/health/egress probes need no secret and the
-            // container's logs stay safe to show the creator. Set VET_LLM_API_KEY
-            // to give the sandbox a REAL model - what lets a reviewer send the
-            // agent tasks from the admin Sandbox tab and read its real answers
-            // during manual review. Dedicated, rate-limitable; not the platform
-            // runtime key, and only worth setting once you trust the code enough
-            // to run it against a live model (see the container hardening TODO).
-            `LLM_API_KEY=${process.env.VET_LLM_API_KEY || "vet-noop"}`,
+            // the automated boot/health/egress probes need no secret. Set
+            // VET_LLM_API_KEY to give the sandbox a REAL model - what lets a
+            // reviewer send the agent tasks from the admin Sandbox tab and read
+            // its real answers during manual review.
+            //
+            // That key is never handed to the container. With the broker on it
+            // gets a placeholder, which the adapter replaces with the run's
+            // broker token before creator code imports; the broker injects the
+            // real key server-side. Without the broker the key goes in directly,
+            // which is the old behaviour and only safe for code you trust.
+            `LLM_API_KEY=${brokerVetLlm ? "brokered-see-adapter" : process.env.VET_LLM_API_KEY || "vet-noop"}`,
+            ...(brokerVetLlm
+              ? [
+                  `LLM_BROKER_URL=${config.llmBrokerContainerUrl}`,
+                  // The adapter reads this, then scrubs it from the env before
+                  // creator code imports, and presents "<id>.<token>" as the key.
+                  `AGENT_TOKEN=${agentTokenFor(vetDeploymentId, config.provisioningSecret)}`,
+                ]
+              : []),
             // Key, base URL and model must name the SAME provider or auth fails.
             // When a vetting key is set we default the base URL and model to the
             // platform's own (so what the reviewer tests matches what a buyer
             // gets), each overridable with VET_LLM_BASE_URL / _MODEL for a cheaper
-            // or rate-limited vetting endpoint.
+            // or rate-limited vetting endpoint. With the broker on, the adapter
+            // replaces the base URL with the broker's and the broker pins the
+            // model to vetModel, so these two are what the sandbox falls back to
+            // if the broker is off.
             `LLM_BASE_URL=${process.env.VET_LLM_BASE_URL || (process.env.VET_LLM_API_KEY ? process.env.LLM_BASE_URL || "" : "")}`,
-            `LLM_MODEL=${process.env.VET_LLM_MODEL || (process.env.VET_LLM_API_KEY ? process.env.LLM_MODEL || "gpt-4o-mini" : "gpt-4o-mini")}`,
+            `LLM_MODEL=${vetModel}`,
             // The gateway authenticates /hooks/* — without this the harness's own
             // probes below would 503 and every package would fail vetting.
             `AGENT_HOOKS_TOKEN=${VET_HOOKS_TOKEN}`,
@@ -802,6 +840,10 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
     }
   } finally {
     // Cleanup
+    // First: the run's broker token stops being accepted. The creator can read
+    // that token in their report, so it must die with the run, not with the
+    // container it was issued to.
+    if (vetDeploymentId) endVetRun(vetDeploymentId);
     if (container) {
       try { await container.stop({ t: 5 }); } catch {}
       try { await container.remove({ force: true }); } catch {}
@@ -828,12 +870,14 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
   const failCount = report.steps.filter((s) => s.status === "fail").length;
   report.summary = `${passCount} step(s) passed, ${failCount} failed — overall: ${report.overallStatus.toUpperCase()}`;
 
-  // Write results to DB
+  // Write results to DB. Redacted on the way in rather than on the way out: the
+  // creator's Versions page is one reader of this record, and a value that never
+  // reaches the row cannot leak through a second one.
   await prisma.agentVersion.update({
     where: { id: versionId },
     data: {
       vetNotes: report.summary,
-      testResults: report as any,
+      testResults: redactSecrets(report) as any,
     },
   });
 

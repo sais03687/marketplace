@@ -33,10 +33,15 @@ interface AgentVersion {
   // The vetting run's own record. The API has always returned it - it is the
   // same object the platform writes during the sandbox run - and the page threw
   // it away, so a creator saw only PASSED/FAILED and never which probe failed or
-  // why. Safe to show: the vet container is given only noop secrets
-  // (LLM_API_KEY=vet-noop) and an ephemeral random hooks token, so its build and
-  // runtime logs contain nothing platform-sensitive, and this endpoint already
-  // 403s anyone who is not the owning creator.
+  // why. This endpoint already 403s anyone who is not the owning creator.
+  //
+  // What makes it safe to show is on the platform side, not here: the vet
+  // container holds no live secret to print. Its hooks token is random and
+  // per-run, and its model key is a broker token that stops working when the run
+  // ends (vet-package.ts, vet-broker.ts). Reports are also redacted before they
+  // are stored (redact.ts). Said plainly because the earlier version of this
+  // comment claimed the sandbox only ever got noop secrets, which stopped being
+  // true the day VET_LLM_API_KEY was set to a real key.
   testResults?: VetReport | null;
   vetNotes?: string | null;
 }

@@ -55,6 +55,9 @@ def test_no_automated_golden_task_gate():
 
 def test_vet_container_gets_a_real_model_when_the_operator_opts_in():
     # The reviewer's manual tests only show real answers if the sandbox has a real
-    # model. Default stays vet-noop so the container holds no secret by default.
-    assert 'LLM_API_KEY=${process.env.VET_LLM_API_KEY || "vet-noop"}' in VET
+    # model. Setting VET_LLM_API_KEY still turns that on — but the key itself now
+    # stays in the provisioning process and the sandbox reaches the model through
+    # the broker, so the container holds no secret either way.
+    assert "Boolean(process.env.VET_LLM_API_KEY)" in VET
+    assert '"brokered-see-adapter"' in VET
     assert "process.env.VET_LLM_BASE_URL" in VET
