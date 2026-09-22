@@ -94,6 +94,11 @@ model AgentVersion {
   manifestData Json?
   storagePath  String?
   agent        Agent     @relation(fields: [agentId], references: [id])
+
+  // Publishing a version again replaces that row rather than adding a second.
+  // Both upload routes enforce this; the constraint is what makes it true even
+  // if a third one is ever written.
+  @@unique([agentId, version])
 }
 
 model Capability {
