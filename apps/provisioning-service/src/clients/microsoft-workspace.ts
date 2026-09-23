@@ -204,6 +204,82 @@ async function getPlatformDomain(): Promise<string> {
   return defaultDomain;
 }
 
+/** M365 Business Basic, the platform SKU that grants an Exchange Online mailbox. */
+const PLATFORM_MAILBOX_SKU = "3b555118-da6a-4418-894f-7df1e2096870";
+
+/**
+ * Give this user a mailbox licence, and prove it landed.
+ *
+ * assignLicense answering 2xx does not mean the user is licensed. On
+ * 2026-09-23 a real hire went through with every seat on the SKU already
+ * consumed: Graph accepted the assignment, returned success, and quietly
+ * applied nothing. Provisioning saw no error, the deployment went ACTIVE, the
+ * buyer was charged, and the agent's mailbox was never built — every poll for
+ * its mail returned `404 MailboxNotEnabledForRESTAPI`, forever. An agent that
+ * cannot receive email is the whole product on this tier.
+ *
+ * So the seat count is checked first, to fail with a reason an operator can act
+ * on, and the licence is read back afterwards, because the check and the
+ * assignment are not atomic.
+ */
+async function ensureMailboxLicence(userId: string, upn: string): Promise<void> {
+  const current = await graphRequest(
+    "GET",
+    `/users/${userId}?$select=assignedLicenses`,
+  ) as { assignedLicenses?: Array<{ skuId: string }> };
+  if ((current.assignedLicenses ?? []).length > 0) return;
+
+  const skus = await graphRequest("GET", "/subscribedSkus") as {
+    value: Array<{
+      skuId: string;
+      skuPartNumber: string;
+      consumedUnits: number;
+      prepaidUnits?: { enabled: number };
+    }>;
+  };
+  const sku = skus.value?.find((s) => s.skuId === PLATFORM_MAILBOX_SKU);
+  if (!sku) {
+    throw new Error(
+      `The platform tenant has no ${PLATFORM_MAILBOX_SKU} subscription, so no agent ` +
+        `mailbox can be created. Buy M365 Business Basic seats in the admin centre.`,
+    );
+  }
+  const total = sku.prepaidUnits?.enabled ?? 0;
+  if (sku.consumedUnits >= total) {
+    throw new Error(
+      `No free ${sku.skuPartNumber} seats: ${sku.consumedUnits} of ${total} in use. ` +
+        `Every email-tier agent needs one for its mailbox — add a seat in the M365 ` +
+        `admin centre, or release one from a deployment that has been torn down.`,
+    );
+  }
+
+  await graphRequest("POST", `/users/${userId}/assignLicense`, {
+    addLicenses: [{ skuId: PLATFORM_MAILBOX_SKU }],
+    removeLicenses: [],
+  });
+
+  // Read it back. Directory writes propagate, so a couple of short waits — not
+  // a wait for the mailbox itself, which Exchange builds over several minutes
+  // and which the poller tolerates.
+  for (const delayMs of [0, 2000, 5000, 10000]) {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    const after = await graphRequest(
+      "GET",
+      `/users/${userId}?$select=assignedLicenses`,
+    ) as { assignedLicenses?: Array<{ skuId: string }> };
+    if ((after.assignedLicenses ?? []).some((l) => l.skuId === PLATFORM_MAILBOX_SKU)) {
+      console.log(`[microsoft] ${upn} licensed for a mailbox (${sku.skuPartNumber})`);
+      return;
+    }
+  }
+
+  throw new Error(
+    `Assigned ${sku.skuPartNumber} to ${upn} but the licence never appeared on the ` +
+      `user, so Exchange will not build a mailbox. Check seat availability and ` +
+      `licensing errors in the M365 admin centre before retrying the hire.`,
+  );
+}
+
 /**
  * Create a user in the platform-owned Microsoft 365 tenant.
  * Returns the user's UPN (email) and object ID.
@@ -235,18 +311,15 @@ export async function createMicrosoftUser(
     if (err.message?.includes("ObjectConflict") || err.message?.includes("already exists")) {
       console.log(`[microsoft] User ${userPrincipalName} already exists, reusing`);
       const existing = await graphRequest("GET", `/users/${userPrincipalName}?$select=id,userPrincipalName`) as { id: string; userPrincipalName: string };
+      // Still has to be licensed: the reuse path used to return here, so a user
+      // left unlicensed by a failed attempt stayed unlicensed forever.
+      await ensureMailboxLicence(existing.id, existing.userPrincipalName);
       return { email: existing.userPrincipalName, id: existing.id };
     }
     throw err;
   }
 
-  // Assign M365 Business Basic license so the user gets an Exchange Online mailbox.
-  // Without this the user is unlicensed and Graph inbox webhooks will fail.
-  // SKU: O365_BUSINESS_ESSENTIALS (3b555118-da6a-4418-894f-7df1e2096870)
-  await graphRequest("POST", `/users/${user.id}/assignLicense`, {
-    addLicenses: [{ skuId: "3b555118-da6a-4418-894f-7df1e2096870" }],
-    removeLicenses: [],
-  });
+  await ensureMailboxLicence(user.id, user.userPrincipalName);
 
   // Queue OneDrive personal site provisioning (async, takes 1–5 min).
   // Non-fatal — SharePoint shared storage still works without it.

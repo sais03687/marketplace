@@ -343,7 +343,22 @@ export async function provisionJob(
             `(email tier): ${user.email}`,
         );
       } catch (err: any) {
-        console.warn(`[provision] Microsoft 365 user creation failed: ${err.message}`);
+        // Fatal when this deployment has no mailbox to fall back on. On the
+        // email tier the mailbox *is* the product: an agent that cannot receive
+        // mail cannot do anything a buyer paid for, and warning here is what let
+        // a hire on 2026-09-23 reach ACTIVE, take $29, and deliver an address
+        // that bounces. A re-provision of a deployment that already has an
+        // identity keeps the old behaviour, since that one still works.
+        const existingEmail = (deployment as any).workspaceEmail;
+        if (!existingEmail) {
+          throw new Error(
+            `Could not give this agent a mailbox: ${err.message}`,
+          );
+        }
+        console.warn(
+          `[provision] Microsoft 365 user creation failed: ${err.message} — ` +
+            `keeping the existing identity ${existingEmail}`,
+        );
       }
     }
   }
