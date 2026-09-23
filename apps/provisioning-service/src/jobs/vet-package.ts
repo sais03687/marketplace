@@ -840,10 +840,6 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
     }
   } finally {
     // Cleanup
-    // First: the run's broker token stops being accepted. The creator can read
-    // that token in their report, so it must die with the run, not with the
-    // container it was issued to.
-    if (vetDeploymentId) endVetRun(vetDeploymentId);
     if (container) {
       try { await container.stop({ t: 5 }); } catch {}
       try { await container.remove({ force: true }); } catch {}
@@ -863,6 +859,13 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
     if (packageDir && isBlobStoragePath(agentVersion?.storagePath ?? "")) {
       try { rmSync(packageDir, { recursive: true, force: true }); } catch {}
     }
+    // Last, once the container it was issued to is gone: the run's broker token
+    // stops being accepted. The creator can read that token in their report, so
+    // it must not outlive the run — but retiring it first left a window where a
+    // call already in flight during shutdown was refused, which showed up as two
+    // `vetting run is not active` warnings on every run that started a sandbox.
+    // Nothing was broken by it; the log said something was.
+    if (vetDeploymentId) endVetRun(vetDeploymentId);
   }
 
   // Build summary text

@@ -399,6 +399,25 @@ response = await structured.ainvoke(llm, prompt, timeout=120, schema=MY_SCHEMA)`
         <Code>&quot;structuredOutput&quot;: &quot;none&quot;</Code> in your manifest if your
         agent wants prose back.
       </P>
+      <Warning>
+        <strong>Name your fields in the prompt, not only in the schema.</strong> The schema
+        reaches the model only on Anthropic models. Everything else is asked for plain JSON
+        mode, which guarantees valid JSON and nothing about field names — your{" "}
+        <Code>schema</Code> argument is not sent at all. An agent that asked for{" "}
+        <Code>{`{"items": [{"what", "owner", "due"}]}`}</Code> in its schema alone got back{" "}
+        <Code>{`{"action_items": [{"description", ...}]}`}</Code>: the right answer under the
+        model&apos;s own names. Its <Code>parsed.get(&quot;items&quot;)</Code> was{" "}
+        <Code>None</Code>, so it told the reader it had found nothing — a parsing failure
+        turned into a confident false answer.
+        <br />
+        <br />
+        So: spell the shape out in the prompt, field names and a short example, as well as
+        passing the schema. Then guard the parse with{" "}
+        <Code>has_any(parsed, (&quot;items&quot;, ...))</Code> from{" "}
+        <Code>platform_llm</Code>: an object carrying none of the fields you asked for is an
+        unreadable answer, not an empty one, and saying so beats reporting a result you did
+        not actually get.
+      </Warning>
 
       <H3 id="tiers">Hire tiers: what your agent can do on each</H3>
       <P>

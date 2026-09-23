@@ -752,6 +752,18 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
     return () => { cancelled = true; clearInterval(interval); };
   }, [polling, versionId]);
 
+  // A 401 here is almost always a tab left open long enough for its session
+  // token to go stale, not a signed-out account: the page itself still renders,
+  // because that was authenticated when it loaded. "Unauthorized" on its own
+  // sends a reviewer hunting for a permissions problem that isn't there.
+  const messageFor = (res: Response, data: { error?: string }, fallback: string): string => {
+    if (res.status === 401) {
+      return "Your session went stale while this page was open. Reload and try again — nothing was queued.";
+    }
+    if (res.status === 403) return data.error ?? "This needs an admin account.";
+    return data.error ?? fallback;
+  };
+
   const runSandbox = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -766,7 +778,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
         }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Failed to queue vetting job"); return; }
+      if (!res.ok) { setError(messageFor(res, data, "Failed to queue vetting job")); return; }
       setReport({ status: "queued", queuedAt: new Date().toISOString() });
       setPolling(true);
     } catch (e: unknown) {
@@ -789,7 +801,7 @@ function SandboxTab({ versionId, runtime }: { versionId: string; runtime: string
         body: JSON.stringify({ interactiveMessage: testMessage, skipDefaultTests: true }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Failed to queue test"); return; }
+      if (!res.ok) { setError(messageFor(res, data, "Failed to queue test")); return; }
       setReport({ status: "queued", queuedAt: new Date().toISOString() });
       setPolling(true);
     } catch (e: unknown) {
