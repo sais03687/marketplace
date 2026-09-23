@@ -16,6 +16,7 @@ import time
 import asyncio
 import contextvars
 import hashlib
+import inspect
 import io
 import traceback
 from datetime import datetime, timezone
@@ -3157,6 +3158,12 @@ async def _startup():
     """Discover MCP tools from sidecars and write dynamic tool docs."""
     await _discover_mcp_tools()
     _write_mcp_tools_doc()
+    # Said once, at boot, where vetting will show it to the creator — rather than
+    # as a TypeError on the first message a buyer sends.
+    try:
+        _warn_about_unfillable_params()
+    except Exception as e:
+        print(f"[adapter] could not check the creator entry point: {e}", flush=True)
     # Anyone whose run died with the last process is still waiting. Last, so a
     # failure here cannot stop the agent from coming up: a missed notice is bad,
     # an agent that will not start is worse.
@@ -5333,6 +5340,110 @@ def _record_running_version(version: str | None) -> None:
         print(f"[adapter] could not record running version: {e}", flush=True)
 
 
+# ─── What the platform hands creator code ───────────────────────────────────
+#
+# Every call into a creator's run_agent/resume_agent goes through here, so the
+# platform passes exactly what that creator's own signature declares.
+#
+# It used to pass one fixed list to everyone. An agent written to the published
+# docs — which describe `run_agent(content, context, approve_fn, resolve_fn,
+# contribute_fn, search_fn, use_fn)` — therefore died on its first message with a
+# TypeError: it was handed graph_fn and six others it never declared, and was
+# never handed the two it did. run-sync catches that and returns {"ok": false},
+# which vetting renders as "(no reply)", so the cause was invisible. The only
+# reason this went unnoticed is that the sole agent in production is first-party
+# and happens to declare the real names.
+#
+# approve_fn/resolve_fn were never wrong as concepts, only as names: they are
+# queue_for_approval and wait_for_resolution, which is the buyer's approval rail.
+# A creator who followed the docs had no approval rail at all.
+def _accepted_kwargs(fn, offered: dict) -> dict:
+    """The subset of `offered` that `fn` actually declares.
+
+    A creator taking **kwargs gets everything — they asked for whatever exists.
+    An unreadable signature (a callable object, say) is treated the same way,
+    since the safe assumption is the old behaviour.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return offered
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return offered
+    declared = {
+        name
+        for name, p in params.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    return {name: value for name, value in offered.items() if name in declared}
+
+
+def _creator_tool_kwargs(fn, *, mcp_fn=None, thread_id=None, verify_attempts=None) -> dict:
+    """Everything the platform can give creator code, filtered to what it wants."""
+    offered = {
+        # The approval rail, under the names the docs have always used.
+        "approve_fn": queue_for_approval,
+        "resolve_fn": wait_for_resolution,
+        # Shared learning.
+        "contribute_fn": contribute_knowledge,
+        "search_fn": search_knowledge,
+        "use_fn": report_usage,
+        # Microsoft 365. The platform holds the credential and applies the
+        # buyer's policy; the agent never gets one of its own.
+        "graph_fn": graph_request,
+        # Attachments and sandbox files, passed as handles rather than bytes.
+        "file_resolver_fn": resolve_sandbox_file,
+        "file_registrar_fn": _register_inbound_file,
+        "file_describer_fn": describe_file_shape,
+        # Claim checks against the files actually delivered.
+        "verify_fn": verify_deliverables,
+        "ranking_fn": check_rankings_against_file,
+        "headline_fn": check_headline_against_summary,
+    }
+    if mcp_fn is not None and _mcp_servers:
+        offered["mcp_fn"] = mcp_fn
+    if thread_id is not None:
+        offered["thread_id"] = thread_id
+    if verify_attempts is not None:
+        offered["verify_attempts"] = verify_attempts
+    return _accepted_kwargs(fn, offered)
+
+
+def _warn_about_unfillable_params() -> None:
+    """Say at startup if creator code asks for something that does not exist.
+
+    Better here, once, in the container's own log — where vetting shows it — than
+    as a TypeError on the first real message from a buyer.
+    """
+    offered = set(_creator_tool_kwargs(lambda **kw: None).keys()) | {
+        "mcp_fn",
+        "thread_id",
+        "verify_attempts",
+        "content",
+        "context",
+    }
+    for label, fn, positional in (("run_agent", run_agent, set()), ("resume_agent", resume_agent, {"thread_id", "resolution"})):
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            continue
+        unfillable = [
+            name
+            for name, p in params.items()
+            if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            and p.default is inspect.Parameter.empty
+            and name not in offered
+            and name not in positional
+        ]
+        if unfillable:
+            print(
+                f"[adapter] {label}() requires {', '.join(unfillable)}, which the platform "
+                f"does not provide — that call will fail. See the creator docs for the "
+                f"arguments available.",
+                flush=True,
+            )
+
+
 class RunSyncPayload(BaseModel):
     message: str
     thread_id: str | None = None
@@ -5372,22 +5483,19 @@ async def run_sync(body: RunSyncPayload, request: Request):
         result = await run_agent(
             content=body.message,
             context=context,
-            contribute_fn=contribute_knowledge,
-            search_fn=search_knowledge,
-            use_fn=report_usage,
-            graph_fn=graph_request,
-            thread_id=thread_id,
-            **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
-            file_resolver_fn=resolve_sandbox_file,
-            file_registrar_fn=_register_inbound_file,
-            file_describer_fn=describe_file_shape,
-            verify_fn=verify_deliverables,
-            ranking_fn=check_rankings_against_file,
-            headline_fn=check_headline_against_summary,
-            verify_attempts=0,
+            **_creator_tool_kwargs(
+                run_agent,
+                mcp_fn=_resume_capturing_mcp_fn,
+                thread_id=thread_id,
+                verify_attempts=0,
+            ),
         )
     except Exception as e:
-        return {"ok": False, "error": f"run failed: {e}"}
+        # Vetting shows this string to a reviewer and, through the report, to the
+        # creator — so name the cause. A bare "(no reply)" is what made a
+        # signature mismatch take a day to find.
+        print(f"[adapter] run-sync failed: {traceback.format_exc()}", flush=True)
+        return {"ok": False, "error": f"run failed: {type(e).__name__}: {e}"}
 
     if not isinstance(result, dict):
         return {"ok": False, "error": "agent returned a non-dict result"}
@@ -5748,10 +5856,6 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
         result = await resume_agent(
             thread_id,
             resolution,
-            contribute_fn=contribute_knowledge,
-            search_fn=search_knowledge,
-            use_fn=report_usage,
-            graph_fn=graph_request,
             # The raw call_mcp_tool used to be handed over here, so everything the
             # capturing wrapper does was lost the moment a run was suspended for
             # approval: file bytes went back through the model as base64 instead
@@ -5759,13 +5863,7 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             # regenerated after a deliverable hand-back was never registered.
             # Resuming is the *second half of the same run* and needs the same
             # instrumentation the first half had.
-            **({"mcp_fn": _resume_capturing_mcp_fn} if _mcp_servers else {}),
-            file_resolver_fn=resolve_sandbox_file,
-            file_registrar_fn=_register_inbound_file,
-            file_describer_fn=describe_file_shape,
-            verify_fn=verify_deliverables,
-            ranking_fn=check_rankings_against_file,
-            headline_fn=check_headline_against_summary,
+            **_creator_tool_kwargs(resume_agent, mcp_fn=_resume_capturing_mcp_fn),
         )
     except Exception as e:
         print(f"[adapter] resume_agent failed: {e}", flush=True)
@@ -6604,24 +6702,17 @@ async def receive_teams_message(request: Request):
         result = await run_agent(
             content=teams_content,
             context=context,
-            contribute_fn=contribute_knowledge,
-            search_fn=search_knowledge,
-            use_fn=report_usage,
-            graph_fn=graph_request,
-            thread_id=thread_id,
-            **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
-            file_resolver_fn=resolve_sandbox_file,
-            file_registrar_fn=_register_inbound_file,
-            file_describer_fn=describe_file_shape,
-            verify_fn=verify_deliverables,
-            ranking_fn=check_rankings_against_file,
-            headline_fn=check_headline_against_summary,
-            # Checked, never re-run. Teams is synchronous — the prompt tells the
-            # agent someone is waiting in real time — so a hand-back would buy
-            # correctness with two extra model turns of silence in a chat
-            # window. The gap is measured and said in the reply instead, which
-            # is the half that protects the reader.
-            verify_attempts=0,
+            **_creator_tool_kwargs(
+                run_agent,
+                mcp_fn=_capturing_mcp_fn,
+                thread_id=thread_id,
+                # Checked, never re-run. Teams is synchronous — the prompt tells
+                # the agent someone is waiting in real time — so a hand-back
+                # would buy correctness with two extra model turns of silence in
+                # a chat window. The gap is measured and said in the reply
+                # instead, which is the half that protects the reader.
+                verify_attempts=0,
+            ),
         )
 
         if not isinstance(result, dict):
@@ -6664,19 +6755,12 @@ async def receive_teams_message(request: Request):
             retry_result = await run_agent(
                 content=retry_content,
                 context=context,
-                contribute_fn=contribute_knowledge,
-                search_fn=search_knowledge,
-                use_fn=report_usage,
-                graph_fn=graph_request,
-                thread_id=retry_thread_id,
-                **({"mcp_fn": _capturing_mcp_fn} if _mcp_servers else {}),
-                file_resolver_fn=resolve_sandbox_file,
-                file_registrar_fn=_register_inbound_file,
-                file_describer_fn=describe_file_shape,
-                verify_fn=verify_deliverables,
-                ranking_fn=check_rankings_against_file,
-                headline_fn=check_headline_against_summary,
-                verify_attempts=0,
+                **_creator_tool_kwargs(
+                    run_agent,
+                    mcp_fn=_capturing_mcp_fn,
+                    thread_id=retry_thread_id,
+                    verify_attempts=0,
+                ),
             )
             # Check if the retry hit an interrupt (blocked action)
             if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":
@@ -6853,18 +6937,11 @@ async def _handle_message(message: str, context: dict):
             return await run_agent(
                 content=message,
                 context=ctx,
-                contribute_fn=contribute_knowledge,
-                search_fn=search_knowledge,
-                use_fn=report_usage,
-                graph_fn=graph_request,
-                thread_id=thread_id,
-                **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
-                file_resolver_fn=resolve_sandbox_file,
-                file_registrar_fn=_register_inbound_file,
-                file_describer_fn=describe_file_shape,
-                verify_fn=verify_deliverables,
-                ranking_fn=check_rankings_against_file,
-                headline_fn=check_headline_against_summary,
+                **_creator_tool_kwargs(
+                    run_agent,
+                    mcp_fn=_email_capturing_mcp_fn,
+                    thread_id=thread_id,
+                ),
             )
 
         print(f"[adapter] Running agent graph...", flush=True)
@@ -7261,11 +7338,6 @@ async def _handle_message(message: str, context: dict):
                 retry_result = await run_agent(
                     content=retry_content,
                     context=context,
-                    contribute_fn=contribute_knowledge,
-                    search_fn=search_knowledge,
-                    use_fn=report_usage,
-                    graph_fn=graph_request,
-                    thread_id=retry_thread_id,
                     # The same instrumentation the first attempt had. This used
                     # to hand over the raw call_mcp_tool with no resolver and no
                     # verifier, so a retry silently lost all three:
@@ -7281,13 +7353,11 @@ async def _handle_message(message: str, context: dict):
                     # The same mistake as the resume path, fixed there on
                     # 2026-08-10. A retry is the same run having another go, and
                     # needs what the first attempt was given.
-                    **({"mcp_fn": _email_capturing_mcp_fn} if _mcp_servers else {}),
-                    file_resolver_fn=resolve_sandbox_file,
-                    file_registrar_fn=_register_inbound_file,
-                    file_describer_fn=describe_file_shape,
-                    verify_fn=verify_deliverables,
-                    ranking_fn=check_rankings_against_file,
-                    headline_fn=check_headline_against_summary,
+                    **_creator_tool_kwargs(
+                        run_agent,
+                        mcp_fn=_email_capturing_mcp_fn,
+                        thread_id=retry_thread_id,
+                    ),
                     )
                 # Check if the retry hit an interrupt (blocked action)
                 if isinstance(retry_result, dict) and retry_result.get("status") == "__interrupted__":

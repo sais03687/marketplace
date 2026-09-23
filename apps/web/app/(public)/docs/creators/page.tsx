@@ -209,22 +209,50 @@ COMPANY_NAME = os.environ["COMPANY_NAME"]
 async def run_agent(
     content: dict[str, Any],
     context: dict[str, Any],
-    approve_fn: Callable,
-    resolve_fn: Callable,
-    contribute_fn: Callable,
-    search_fn: Callable,
-    use_fn: Callable,
+    **tools: Callable,
 ) -> dict[str, Any]:
     """
     Called by the platform adapter for every inbound message.
 
+    content and context are always passed. Everything else is a tool the
+    platform offers: name the ones you want as keyword arguments and you will
+    be given them, or take **tools and receive all of them. You are never sent
+    a tool you did not ask for, so this list can grow without breaking you.
+
     content: the inbound message (from, to, subject, text, thread_id, ...)
     context: deployment context (memory, agent_name, company_name, ...)
-    approve_fn: call to queue an action for human approval
-    resolve_fn: call to resolve a pending approval
-    contribute_fn: call to contribute a knowledge item to AgentMind
-    search_fn: call to search AgentMind for relevant knowledge
-    use_fn: call to record that you used a piece of AgentMind knowledge
+
+    Human approval — the buyer's safety rail:
+      approve_fn: queue an action for a human, returns an approval id
+      resolve_fn: wait for that decision (APPROVED / EDITED / REJECTED / EXPIRED)
+
+    Microsoft 365 — you get no credential of your own:
+      graph_fn: every mail, file and calendar call. The platform holds the
+                credential, refuses any call your manifest did not declare, and
+                applies the buyer's approval policy before anything is sent.
+
+    Shared learning (AgentMind):
+      contribute_fn: file something you learned
+      search_fn: look up past lessons
+      use_fn: report which lessons you actually used
+
+    Files — passed as handles, never raw bytes:
+      file_registrar_fn: register an inbound attachment, returns a handle
+      file_resolver_fn: turn a handle back into bytes
+      file_describer_fn: the real shape of a file (actual column names, ragged
+                         rows) before you write code against it
+
+    Checking your own claims against what you delivered:
+      verify_fn: figures in your summary that appear in none of your files
+      ranking_fn: ranking claims the delivered file contradicts
+      headline_fn: headline claims the workbook's own summary sheet contradicts
+
+    Other:
+      mcp_fn: run sandbox tools (Python, document parsing), when your manifest
+              declares a sandbox
+      thread_id: the conversation this run belongs to
+      verify_attempts: how many times you may redo work that failed a check;
+                       0 means report the gap rather than retry
 
     Return a dict — at minimum set "action":
       "reply_email"      — reply to the current thread
@@ -245,6 +273,15 @@ async def run_agent(
         <Code>needs_approval</Code> flag and your <Code>risk_assessment</Code> scores against
         the deployment's policy. You do not need to re-implement this logic; just set the
         flags correctly and let the adapter decide.
+      </Note>
+
+      <Note>
+        Ask for exactly the tools you use. The platform reads your function&apos;s own
+        signature and passes only what it names, so an agent that wants nothing but{" "}
+        <Code>content</Code> and <Code>context</Code> is valid, and one that takes{" "}
+        <Code>**tools</Code> receives everything above. If you name something the platform
+        cannot provide, the container says so in its startup log — which the vetting
+        report shows you — rather than failing on a buyer&apos;s first message.
       </Note>
 
       <H3 id="resume-agent">resume_agent — required, even if you never pause</H3>

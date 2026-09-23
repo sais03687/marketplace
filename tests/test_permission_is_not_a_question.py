@@ -74,7 +74,9 @@ def test_no_platform_gate_was_removed():
     does, and it still must.
     """
     adapter = io.open(ADAPTER, encoding="utf-8").read()
-    assert "verify_fn=verify_deliverables" in adapter
+    # The platform's own deliverable check, now offered through the one helper
+    # that hands tools to creator code rather than named at each call site.
+    assert '"verify_fn": verify_deliverables' in adapter
     gate = SRC[SRC.index("def _needs_manager_approval"):][:4000]
     for gated in ("drive_upload", "drive_create_link"):
         assert gated in gate, f"{gated} is no longer gated by the agent's own check"

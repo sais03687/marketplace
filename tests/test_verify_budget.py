@@ -17,14 +17,50 @@ RUNTIME = (Path(__file__).resolve().parents[1] /
            "apps" / "provisioning-service" / "src" / "templates" / "runtime" / "adapter.py")
 
 
+def _offered_by_helper(src: str) -> set[str]:
+    """The tool names _creator_tool_kwargs can hand to creator code."""
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_creator_tool_kwargs":
+            names = set()
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Dict):
+                    names |= {k.value for k in sub.keys if isinstance(k, ast.Constant)}
+                if isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Constant):
+                    names.add(sub.slice.value)
+            return names
+    raise AssertionError("_creator_tool_kwargs() is gone from adapter.py")
+
+
+def _tool_kwargs_call(node: ast.Call) -> ast.Call | None:
+    """The _creator_tool_kwargs(...) a call site unpacks, if it has one.
+
+    The platform used to repeat one fixed kwargs list at every call site, which
+    is how two Teams sites shipped with no deliverable check at all. The tools
+    now come from one helper that filters them to what the creator's signature
+    declares, so the per-site questions these tests ask — is the check passed,
+    what is the retry budget — are answered by that helper call.
+    """
+    for kw in node.keywords:
+        if kw.arg is None and isinstance(kw.value, ast.Call):
+            fn = kw.value.func
+            if isinstance(fn, ast.Name) and fn.id == "_creator_tool_kwargs":
+                return kw.value
+    return None
+
+
 def _call_sites():
     """Every place the platform starts or resumes the agent, with its kwargs."""
     src = io.open(RUNTIME, encoding="utf-8").read()
     tree = ast.parse(src)
+    offered = _offered_by_helper(src)
     sites = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("run_agent", "resume_agent"):
+            helper = _tool_kwargs_call(node)
             kw = {k.arg: k for k in node.keywords if k.arg}
+            if helper is not None:
+                kw |= {k.arg: k for k in helper.keywords if k.arg}
             window = "\n".join(src.splitlines()[max(0, node.lineno - 40):node.lineno])
             sites.append({
                 "line": node.lineno,
@@ -37,7 +73,9 @@ def _call_sites():
                     else "vetting" if '"hook_name": "vetting"' in window
                     else "email"
                 ),
-                "verify_fn": "verify_fn" in kw,
+                # Offered by the helper this site unpacks (it is handed to any
+                # creator whose signature names it), or passed inline.
+                "verify_fn": "verify_fn" in kw or (helper is not None and "verify_fn" in offered),
                 "attempts": (ast.unparse(kw["verify_attempts"].value)
                              if "verify_attempts" in kw else None),
             })

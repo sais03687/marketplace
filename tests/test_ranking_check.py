@@ -428,13 +428,34 @@ def test_no_verifier_installed_is_simply_no_check():
 
 def test_every_call_site_passes_the_check_in():
     # The deliverable check shipped missing from both Teams call sites, so a chat
-    # reply was never verified against its own file at all.
+    # reply was never verified against its own file at all. The tools now come
+    # from one helper rather than a list copied per site, so the question is
+    # whether every site unpacks that helper — and whether it still offers this.
     src = io.open(RUNTIME, encoding="utf-8").read()
     tree = ast.parse(src)
+
+    helper_offers_it = False
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_creator_tool_kwargs":
+            helper_offers_it = any(
+                isinstance(k, ast.Constant) and k.value == "ranking_fn"
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Dict)
+                for k in sub.keys
+            )
+    assert helper_offers_it, "_creator_tool_kwargs no longer offers ranking_fn"
+
     missing = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("run_agent", "resume_agent"):
-            if "ranking_fn" not in {k.arg for k in node.keywords if k.arg}:
+            unpacks_helper = any(
+                kw.arg is None
+                and isinstance(kw.value, ast.Call)
+                and isinstance(kw.value.func, ast.Name)
+                and kw.value.func.id == "_creator_tool_kwargs"
+                for kw in node.keywords
+            )
+            if not unpacks_helper and "ranking_fn" not in {k.arg for k in node.keywords if k.arg}:
                 missing.append(node.lineno)
     assert not missing, f"call sites without ranking_fn: {missing}"
 
