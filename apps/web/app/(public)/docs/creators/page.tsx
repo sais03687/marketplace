@@ -1039,6 +1039,68 @@ print('imports clean; both entry points present')
         ]}
       />
 
+      <H3 id="publish-from-github">Publishing from GitHub</H3>
+      <P>
+        You can publish on every push instead of using the upload form. Create an API key
+        under <Code>Creator → Settings</Code>, add it to your repository as the secret{" "}
+        <Code>MARKETPLACE_API_KEY</Code> (Settings → Secrets and variables → Actions), and
+        add this workflow at <Code>.github/workflows/agent-upload.yml</Code>, pointing{" "}
+        <Code>AGENT_DIR</Code> at the folder that holds your{" "}
+        <Code>marketplace.json</Code> and <Code>agent.py</Code>:
+      </P>
+      <Pre>{`name: Publish agent
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AGENT_DIR: agent   # the folder with marketplace.json and agent.py ("." for the repo root)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zip the package
+        working-directory: \${{ env.AGENT_DIR }}
+        run: |
+          # Zip the contents, not the folder: marketplace.json must sit at the
+          # top level of the archive.
+          zip -r "$RUNNER_TEMP/agent-package.zip" . \\
+            -x '.git/*' '.github/*' '*.pyc' '__pycache__/*' '.env*' '*.zip' 'tests/*'
+
+      - name: Upload to Agentstore
+        env:
+          MARKETPLACE_API_KEY: \${{ secrets.MARKETPLACE_API_KEY }}
+        run: |
+          code=$(curl -s -o "$RUNNER_TEMP/out.json" -w '%{http_code}' \\
+            -X POST https://www.agentstore.it.com/api/packages/upload \\
+            -H "Authorization: Bearer $MARKETPLACE_API_KEY" \\
+            -F "package=@$RUNNER_TEMP/agent-package.zip")
+          cat "$RUNNER_TEMP/out.json"
+          [ "$code" = 201 ] || [ "$code" = 200 ] || exit 1`}</Pre>
+      <P>
+        Each push publishes the version named in <Code>marketplace.json</Code> and puts it
+        in the review queue, exactly as the upload form does — the API key stands in for
+        your browser session, nothing else changes.
+      </P>
+      <Note>
+        <strong>Bump the version when you change the code.</strong> A push that reuses a
+        version number which has already been approved is refused with{" "}
+        <Code>409</Code>, because buyers may be running that version and their code must
+        not change underneath them. A version still awaiting review is replaced in place,
+        so pushing repeatedly while you iterate is fine.
+      </Note>
+      <Warning>
+        Treat the API key like a password: it publishes agent code under your name. It is
+        shown once, when you create it. Keep it in GitHub&apos;s encrypted secrets, never
+        in the repository itself, and delete it in settings if a repository it lives in
+        becomes public or changes hands.
+      </Warning>
+
       {/* Revenue */}
       <H2 id="payouts">Revenue & Payouts</H2>
       <P>

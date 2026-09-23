@@ -1,0 +1,94 @@
+# Publish an agent to Agentstore on every push.
+#
+# Copy this file into your repo at .github/workflows/agent-upload.yml, set
+# AGENT_DIR below to the folder holding your agent, and add one repository
+# secret:
+#
+#   MARKETPLACE_API_KEY — create it at
+#   https://www.agentstore.it.com/creator/settings, then add it under
+#   Settings → Secrets and variables → Actions → New repository secret.
+#
+# The agent folder must contain marketplace.json and agent.py at its top level.
+#
+# Each push publishes the version named in marketplace.json and puts it in the
+# review queue. Publishing a version that has already been approved is refused
+# with a 409 — bump "version" in marketplace.json when you change the code, so
+# buyers already running a version never have it swapped underneath them.
+
+name: Publish agent
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # The folder holding marketplace.json and agent.py. Use "." if they sit at
+  # the root of the repo.
+  AGENT_DIR: agent
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the package before uploading
+        working-directory: ${{ env.AGENT_DIR }}
+        run: |
+          test -f marketplace.json || { echo "::error::no marketplace.json in ${{ env.AGENT_DIR }}"; exit 1; }
+          test -f agent.py || { echo "::error::no agent.py in ${{ env.AGENT_DIR }}"; exit 1; }
+          jq -e '.slug and .version' marketplace.json >/dev/null \
+            || { echo "::error::marketplace.json needs slug and version"; exit 1; }
+          # Both entry points are imported at container start, so a package
+          # missing either cannot run at all.
+          grep -q "def run_agent" agent.py || { echo "::error::agent.py defines no run_agent"; exit 1; }
+          grep -q "def resume_agent" agent.py || { echo "::error::agent.py defines no resume_agent"; exit 1; }
+          echo "slug=$(jq -r .slug marketplace.json)" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version marketplace.json)" >> "$GITHUB_OUTPUT"
+        id: manifest
+
+      - name: Zip the package
+        working-directory: ${{ env.AGENT_DIR }}
+        run: |
+          # Zip the contents, not the folder: the platform expects
+          # marketplace.json at the top level of the archive.
+          zip -r "$RUNNER_TEMP/agent-package.zip" . \
+            -x '.git/*' '.github/*' '*.pyc' '__pycache__/*' '.env*' '*.zip' \
+               'node_modules/*' '.DS_Store' 'tests/*'
+
+      - name: Upload to Agentstore
+        env:
+          MARKETPLACE_API_KEY: ${{ secrets.MARKETPLACE_API_KEY }}
+          MARKETPLACE_URL: ${{ vars.MARKETPLACE_URL || 'https://www.agentstore.it.com' }}
+        run: |
+          if [ -z "$MARKETPLACE_API_KEY" ]; then
+            echo "::error::MARKETPLACE_API_KEY is not set on this repository"
+            exit 1
+          fi
+
+          code=$(curl -s -o "$RUNNER_TEMP/response.json" -w '%{http_code}' \
+            -X POST "$MARKETPLACE_URL/api/packages/upload" \
+            -H "Authorization: Bearer $MARKETPLACE_API_KEY" \
+            -F "package=@$RUNNER_TEMP/agent-package.zip")
+
+          echo "HTTP $code"
+          cat "$RUNNER_TEMP/response.json" | jq . 2>/dev/null || cat "$RUNNER_TEMP/response.json"
+
+          case "$code" in
+            200|201)
+              echo "Published ${{ steps.manifest.outputs.slug }} v${{ steps.manifest.outputs.version }} — pending review"
+              ;;
+            409)
+              echo "::error::v${{ steps.manifest.outputs.version }} is already approved. Bump the version in marketplace.json."
+              exit 1
+              ;;
+            401)
+              echo "::error::MARKETPLACE_API_KEY was rejected. Generate a new one in creator settings."
+              exit 1
+              ;;
+            *)
+              echo "::error::Upload failed with HTTP $code"
+              exit 1
+              ;;
+          esac
