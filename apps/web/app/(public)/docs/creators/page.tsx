@@ -207,7 +207,7 @@ AGENT_NAME = os.environ["AGENT_NAME"]
 COMPANY_NAME = os.environ["COMPANY_NAME"]
 
 async def run_agent(
-    content: dict[str, Any],
+    content: str,
     context: dict[str, Any],
     **tools: Callable,
 ) -> dict[str, Any]:
@@ -219,8 +219,14 @@ async def run_agent(
     be given them, or take **tools and receive all of them. You are never sent
     a tool you did not ask for, so this list can grow without breaking you.
 
-    content: the inbound message (from, to, subject, text, thread_id, ...)
-    context: deployment context (memory, agent_name, company_name, ...)
+    content: the message text, as a string. On Teams it arrives wrapped with
+             chat instructions; on email it is the formatted message body.
+             It is never a dict — everything about the message lives in
+             context.
+    context: who sent it and where it came from —
+             sender, subject, thread_id, message_id, session_key, hook_name,
+             agent_name, agent_email, company_name, company_domain,
+             approval_policy
 
     Human approval — the buyer's safety rail:
       approve_fn: queue an action for a human, returns an approval id
@@ -260,7 +266,7 @@ async def run_agent(
       "resolve_approval" — resolve a pending approval (requires approval_id, resolution)
       "none"             — no outbound action this turn
     """
-    subject = content.get("subject", "")
+    subject = context.get("subject", "")
     reply = f"Hi, I received your message about '{subject}'. I'll look into it."
     return {
         "action": "reply_email",

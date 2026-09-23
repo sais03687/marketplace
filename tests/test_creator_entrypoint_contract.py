@@ -86,6 +86,49 @@ def test_a_doc_following_agent_can_actually_be_called():
     assert len(params) > 2
 
 
+def test_content_is_a_string_everywhere_and_the_docs_say_so():
+    """The second half of the same mismatch.
+
+    Every call site passes the message as a str — the email body, the Teams
+    message wrapped in chat instructions, or run-sync's test message. The docs
+    described `content: dict[str, Any]` carrying from/subject/text, so an agent
+    written to them called content.get("text") and died with AttributeError.
+    Those fields are real, but they live in context.
+    """
+    tree = ast.parse(ADAPTER)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Name) and node.func.id in ("run_agent", "resume_agent")):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "content":
+                # A dict literal here would mean the runtime changed shape and
+                # the docs below need to change with it.
+                assert not isinstance(kw.value, ast.Dict), (
+                    f"line {node.lineno} passes a dict as content; the docs promise a string"
+                )
+
+    assert "content: str," in DOCS, "the docs no longer declare content as a string"
+    assert "It is never a dict" in DOCS
+    # The fields a creator actually needs are documented where they really are.
+    for field in ("sender", "subject", "thread_id"):
+        assert field in DOCS
+
+
+def test_the_documented_example_survives_a_real_string():
+    """Run the docs' own example body the way the platform calls it."""
+    match = re.search(r"(    subject = context\.get.*?\n    \})`\}</Pre>", DOCS, re.S)
+    assert match, "the docs no longer show an example body"
+    # Already indented one level, so it drops straight into a def.
+    source = f"async def example(content, context, **tools):\n{match.group(1)}\n"
+    namespace: dict = {}
+    exec(source, namespace)
+    # content as the platform really sends it: a plain string.
+    result = asyncio.run(namespace["example"]("Please total the Q3 numbers", {"subject": "Q3"}))
+    assert result["action"] == "reply_email"
+
+
 def test_the_approval_rail_reaches_a_creator_that_asks_for_it():
     offered = _offered_tool_names()
     assert {"approve_fn", "resolve_fn"} <= offered, (
