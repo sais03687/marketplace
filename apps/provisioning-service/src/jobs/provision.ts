@@ -577,6 +577,19 @@ export async function provisionJob(
       }
     }
 
+    // The token the container is about to be handed has to be on the deployment
+    // row before the container can use it. It is written again at the end of
+    // provisioning with everything else, but by then the agent has already
+    // started and made its first calls: fetching the buyer's setup answers and
+    // pushing its memory snapshot both 403'd on every hire, and the retry is on
+    // a ten-minute timer — so a buyer who emailed their new agent straight away
+    // got one that had never read their answers. Written here as well, because
+    // the row is what the marketplace checks the Bearer token against.
+    await prisma.deployment.update({
+      where: { id: deploymentId },
+      data: { approvalWebhookToken: config.approvalWebhookToken },
+    });
+
     // Create isolated Docker network for this deployment (agent + sidecars)
     // Custom runtime also needs a network when MCP sidecars are required.
     // Every agent gets its isolated network now, not only those with sidecars.
