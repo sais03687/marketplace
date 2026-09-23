@@ -1041,47 +1041,29 @@ print('imports clean; both entry points present')
 
       <H3 id="publish-from-github">Publishing from GitHub</H3>
       <P>
-        You can publish on every push instead of using the upload form. Create an API key
-        under <Code>Creator → Settings</Code>, add it to your repository as the secret{" "}
-        <Code>MARKETPLACE_API_KEY</Code> (Settings → Secrets and variables → Actions), and
-        add this workflow at <Code>.github/workflows/agent-upload.yml</Code>, pointing{" "}
-        <Code>AGENT_DIR</Code> at the folder that holds your{" "}
-        <Code>marketplace.json</Code> and <Code>agent.py</Code>:
+        You can publish on every push instead of using the upload form. Three steps:
       </P>
-      <Pre>{`name: Publish agent
-
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-env:
-  AGENT_DIR: agent   # the folder with marketplace.json and agent.py ("." for the repo root)
-
-jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Zip the package
-        working-directory: \${{ env.AGENT_DIR }}
-        run: |
-          # Zip the contents, not the folder: marketplace.json must sit at the
-          # top level of the archive.
-          zip -r "$RUNNER_TEMP/agent-package.zip" . \\
-            -x '.git/*' '.github/*' '*.pyc' '__pycache__/*' '.env*' '*.zip' 'tests/*'
-
-      - name: Upload to Agentstore
-        env:
-          MARKETPLACE_API_KEY: \${{ secrets.MARKETPLACE_API_KEY }}
-        run: |
-          code=$(curl -s -o "$RUNNER_TEMP/out.json" -w '%{http_code}' \\
-            -X POST https://www.agentstore.it.com/api/packages/upload \\
-            -H "Authorization: Bearer $MARKETPLACE_API_KEY" \\
-            -F "package=@$RUNNER_TEMP/agent-package.zip")
-          cat "$RUNNER_TEMP/out.json"
-          [ "$code" = 201 ] || [ "$code" = 200 ] || exit 1`}</Pre>
+      <P>
+        <strong>1.</strong> Create an API key under <Code>Creator → Settings</Code>.{" "}
+        <strong>2.</strong> Add it to your repository as the secret{" "}
+        <Code>MARKETPLACE_API_KEY</Code> (Settings → Secrets and variables → Actions).{" "}
+        <strong>3.</strong> Copy the workflow below to{" "}
+        <Code>.github/workflows/agent-upload.yml</Code> and set <Code>AGENT_DIR</Code> to
+        the folder holding your <Code>marketplace.json</Code> and <Code>agent.py</Code>.
+      </P>
+      <P>
+        The workflow file:{" "}
+        <a
+          href="https://github.com/sais03687/marketplace/blob/main/templates/github/agent-upload.yml"
+          className="underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          templates/github/agent-upload.yml
+        </a>
+        . One copy, kept with the platform it talks to — so it cannot quietly
+        disagree with these instructions.
+      </P>
       <P>
         Each push publishes the version named in <Code>marketplace.json</Code> and puts it
         in the review queue, exactly as the upload form does — the API key stands in for
