@@ -34,5 +34,25 @@ export async function GET(
     deployment.agent.currentVersion !== null &&
     deployment.agentVersion !== deployment.agent.currentVersion;
 
-  return jsonSuccess(redactSecrets({ ...deployment, updateAvailable }));
+  // Why setup failed, for the panel that offers to retry it. Every step already
+  // writes here; the buyer has never been shown any of it, which is how a hire
+  // that failed looked exactly like one that worked.
+  const lastFailure =
+    deployment.status === "ERROR"
+      ? await prisma.provisioningLog.findFirst({
+          where: { deploymentId: id, status: "failed" },
+          orderBy: { createdAt: "desc" },
+          select: { message: true, step: true, createdAt: true },
+        })
+      : null;
+
+  const payload = {
+    ...deployment,
+    updateAvailable,
+    lastFailure: lastFailure
+      ? { step: lastFailure.step, message: lastFailure.message, at: lastFailure.createdAt }
+      : null,
+  };
+
+  return jsonSuccess(redactSecrets(payload));
 }

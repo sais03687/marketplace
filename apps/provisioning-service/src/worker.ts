@@ -8,6 +8,34 @@ import { pauseJob, resumeJob } from "./jobs/pause.js";
 import { renewMicrosoftWebhooksJob } from "./jobs/renew-microsoft-webhooks.js";
 import { cleanupMicrosoftUsersJob } from "./jobs/cleanup-microsoft-users.js";
 
+/**
+ * Tell the marketplace a hire could not be provisioned.
+ *
+ * Never throws: this runs in a failure handler, and a broken notification must
+ * not replace the error it is reporting.
+ */
+async function reportProvisioningFailure(deploymentId: string, reason: string): Promise<void> {
+  const base = config.approvalWebhookUrl?.replace(/\/+$/, "");
+  if (!base || !config.provisioningSecret) {
+    console.warn(`[worker] cannot report the failure of ${deploymentId}: no marketplace URL or secret`);
+    return;
+  }
+  try {
+    const resp = await fetch(`${base}/api/deployments/${deploymentId}/provisioning-failed`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.provisioningSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ reason }),
+    });
+    const body = await resp.text();
+    console.log(`[worker] reported provisioning failure for ${deploymentId}: HTTP ${resp.status} ${body.slice(0, 200)}`);
+  } catch (err) {
+    console.error(`[worker] could not report provisioning failure for ${deploymentId}:`, err);
+  }
+}
+
 async function processJob(job: Job<ProvisionJobData>): Promise<void> {
   console.log(`[worker] Processing ${job.data.type} job`);
 
@@ -64,6 +92,18 @@ export function startWorker(): Worker<ProvisionJobData> {
 
   worker.on("failed", (job, err) => {
     console.error(`[worker] Job ${job?.id} (${job?.data.type}) failed:`, err.message);
+
+    // A hire that could not be built has to reach the buyer and their bill.
+    // This service has no Stripe key, so the marketplace does that part: it
+    // records the reason and marks the subscription to lapse, which during the
+    // trial means nothing is ever charged for an agent that never existed.
+    // Only on the last attempt — BullMQ retries, and a run that later succeeds
+    // should not have told anyone it failed.
+    const isFinalAttempt =
+      !job || (job.attemptsMade ?? 0) >= (job.opts?.attempts ?? 1);
+    if (job?.data.type === "provision" && isFinalAttempt) {
+      void reportProvisioningFailure(job.data.deploymentId, err.message);
+    }
   });
 
   // Schedule Microsoft webhook renewal — runs every 24h to keep Graph subscriptions alive

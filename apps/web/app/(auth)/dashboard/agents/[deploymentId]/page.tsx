@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { ApprovalCard } from "@/components/marketplace/approval-card";
 import { OnboardingPanel } from "@/components/dashboard/onboarding-panel";
+import { SetupFailedPanel } from "@/components/dashboard/setup-failed-panel";
 import { Loader2, Pause, Play, UserX, RefreshCw, AlertTriangle, ArrowUpCircle, Star } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -291,6 +292,7 @@ export default function AgentOverviewPage({
   const isActive = deployment.status === "ACTIVE";
   const isFired = deployment.status === "FIRED";
   const isOnboarding = deployment.status === "ONBOARDING";
+  const setupFailed = deployment.status === "ERROR";
 
   return (
     <div className="space-y-6">
@@ -381,6 +383,14 @@ export default function AgentOverviewPage({
             </Button>
           )}
         </div>
+      )}
+
+      {/* Setup failed — say so, and offer the retry that reuses this hire */}
+      {setupFailed && (
+        <SetupFailedPanel
+          deploymentId={deploymentId}
+          reason={(deployment as { lastFailure?: { message?: string | null } }).lastFailure?.message}
+        />
       )}
 
       {/* Onboarding panel */}

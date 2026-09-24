@@ -182,11 +182,21 @@ export async function POST(request: Request) {
         },
       });
 
-      // Create Stripe Checkout session — buyer pays before provisioning starts
+      // Checkout takes the card but bills nothing yet: the first invoice lands a
+      // day later, and provisioning takes minutes.
+      //
+      // It used to charge at checkout, before provisioning had done anything. A
+      // hire on 2026-09-23 failed to get its agent a mailbox, reached ACTIVE
+      // anyway, and took $29 for an address that bounced — and because firing
+      // only cancels at period end, that month was not refunded. Re-hiring then
+      // charged a second time for the same agent. A day of trial covers the
+      // whole window in which a hire can fail: if it does, the subscription is
+      // cancelled inside the trial and the buyer is never billed at all.
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         customer: stripeCustomerId,
         line_items: [{ price: price.id, quantity: 1 }],
+        subscription_data: { trial_period_days: 1 },
         metadata: { deploymentId: deployment.id },
         success_url: `${APP_URL}/dashboard/billing/success?session_id={CHECKOUT_SESSION_ID}&deploymentId=${deployment.id}`,
         cancel_url: `${APP_URL}/browse`,
