@@ -36,6 +36,7 @@ export async function GET() {
       status: d.status,
       subscriptionId: d.stripeSubscriptionId,
       currentPeriodEnd: null,
+      trialEnd: null,
       cancelAtPeriodEnd: false,
     }));
     return jsonSuccess({ subscriptions });
@@ -56,8 +57,20 @@ export async function GET() {
           pricePerMonth: item?.price?.unit_amount ?? null,
           status: d.status,
           subscriptionId: d.stripeSubscriptionId,
-          currentPeriodEnd: (sub as any).current_period_end
-            ? new Date((sub as any).current_period_end * 1000).toISOString()
+          // Stripe moved current_period_end onto the subscription *item* in its
+          // 2025 API versions. Reading it off the subscription gave undefined on
+          // every row, so the dashboard's "Next Billing" column had been a
+          // column of em-dashes. The subscription-level field is kept as a
+          // fallback for older API versions.
+          currentPeriodEnd: (() => {
+            const ts =
+              (item as any)?.current_period_end ?? (sub as any).current_period_end ?? null;
+            return ts ? new Date(ts * 1000).toISOString() : null;
+          })(),
+          // During the trial this is the date the buyer is first charged, which
+          // is the one thing they want from this page after a hire.
+          trialEnd: (sub as any).trial_end
+            ? new Date((sub as any).trial_end * 1000).toISOString()
             : null,
           cancelAtPeriodEnd: (sub as any).cancel_at_period_end ?? false,
         };
@@ -70,6 +83,7 @@ export async function GET() {
           status: d.status,
           subscriptionId: d.stripeSubscriptionId,
           currentPeriodEnd: null,
+          trialEnd: null,
           cancelAtPeriodEnd: false,
         };
       }

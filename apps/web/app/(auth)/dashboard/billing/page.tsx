@@ -16,6 +16,7 @@ interface Subscription {
   status: string;
   subscriptionId: string | null;
   currentPeriodEnd: string | null;
+  trialEnd: string | null;
   cancelAtPeriodEnd: boolean;
 }
 
@@ -179,9 +180,15 @@ export default function BillingPage() {
                         {statusBadge(sub.status, sub.cancelAtPeriodEnd)}
                       </td>
                       <td className="py-3 text-muted-foreground">
-                        {sub.currentPeriodEnd
-                          ? new Date(sub.currentPeriodEnd).toLocaleDateString()
-                          : "—"}
+                        {/* On a trial the date that matters is when the first
+                            charge lands, not when a period rolls over. Saying
+                            "free until" is the honest version of a hire that
+                            has not been billed yet. */}
+                        {sub.trialEnd && new Date(sub.trialEnd) > new Date()
+                          ? `Free until ${new Date(sub.trialEnd).toLocaleDateString()}`
+                          : sub.currentPeriodEnd
+                            ? new Date(sub.currentPeriodEnd).toLocaleDateString()
+                            : "—"}
                       </td>
                       <td className="py-3 text-right">
                         {!sub.cancelAtPeriodEnd && sub.subscriptionId && (
