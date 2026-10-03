@@ -792,28 +792,50 @@ def _read_memory_for_snapshot() -> dict:
 _HEARTBEAT_INTERVAL_S = float(os.environ.get("HEARTBEAT_INTERVAL_S", 60))
 
 
+_heartbeat_failures = {"streak": 0}
+
+
 async def _send_heartbeat() -> None:
     """Tell the platform the agent is alive.
 
     A short-timer post so the dashboard can show Online and a check can alert on
-    silence. Cheap and frequent: the timestamp is the signal. Failures here are
-    swallowed - a heartbeat that cannot be sent is itself the thing being
-    detected, from the other side.
+    silence. Cheap and frequent: the timestamp is the signal. A heartbeat that
+    cannot be sent is itself the thing being detected, from the other side — so
+    this never raises, but it does say so in the container log.
     """
     if not MARKETPLACE_URL or not DEPLOYMENT_ID:
         return
     try:
         llm_ok = await _check_llm_health()
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
+            resp = await client.post(
                 f"{MARKETPLACE_URL}/api/deployments/{DEPLOYMENT_ID}/heartbeat",
                 headers={"Authorization": f"Bearer {APPROVAL_TOKEN}"},
                 json={"ok": bool(llm_ok)},
             )
-    except Exception:
-        # Deliberately silent. If the agent cannot reach the platform, the
-        # platform's own staleness check is what notices.
-        pass
+        # httpx does not raise on 4xx, so a rejected heartbeat — a token the
+        # platform no longer accepts, a deployment it no longer knows — used to
+        # read as success here while the dashboard quietly went stale. The
+        # refusal is the interesting case: it does not fix itself.
+        if resp.status_code >= 400:
+            raise RuntimeError(f"platform answered HTTP {resp.status_code}: {resp.text[:120]}")
+        _heartbeat_failures["streak"] = 0
+    except Exception as e:
+        # The platform's staleness check is what raises the alarm — that part
+        # was already right. But the container log said nothing at all, so when
+        # a nine-day-old agent showed "Not responding · last seen 3m ago" on
+        # 2026-10-03 there was no way to tell whether it had lost the network,
+        # the token, or the loop. Say it once at the start of a bad run and
+        # every ten minutes after, which is quiet when the platform blips and
+        # loud enough to find when it does not come back.
+        _heartbeat_failures["streak"] += 1
+        streak = _heartbeat_failures["streak"]
+        if streak == 1 or streak % 10 == 0:
+            print(
+                f"[adapter] heartbeat failed ({streak} in a row): "
+                f"{type(e).__name__}: {str(e)[:200]}",
+                flush=True,
+            )
 
 
 async def _push_memory_snapshot() -> None:
