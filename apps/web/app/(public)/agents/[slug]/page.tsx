@@ -287,15 +287,21 @@ export default async function AgentListingPage({
                   />
                 </div>
 
+                {/* What a buyer actually needs. This used to list Microsoft 365
+                    admin consent and a spare Exchange licence as flat
+                    requirements, which is only true of the connected tier — the
+                    default tier needs neither, and the hire wizard says so two
+                    clicks later. Telling someone they need their IT department
+                    when they do not is the most expensive sentence on the page. */}
                 <div className="mt-4 space-y-1.5 text-xs text-muted-foreground">
-                  <p className="font-medium text-foreground">Requirements:</p>
+                  <p className="font-medium text-foreground">What you need:</p>
                   <div className="flex items-center gap-1">
                     <Mail className="h-3 w-3" />
-                    Microsoft 365 admin consent
+                    Email only: nothing to install, no admin approval
                   </div>
                   <div className="flex items-center gap-1">
                     <MessageSquare className="h-3 w-3" />
-                    A free licence seat with Exchange Online
+                    Optional: connect Microsoft 365 for files and calendar
                   </div>
                 </div>
               </CardContent>

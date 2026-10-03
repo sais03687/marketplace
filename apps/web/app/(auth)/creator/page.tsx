@@ -41,7 +41,15 @@ export default async function CreatorDashboardPage() {
     },
     include: {
       _count: {
-        select: { deployments: true },
+        // Deployments that still exist, not every one ever made. Counting all
+        // of them put "Active Deployments 22" on a dashboard whose creator had
+        // one agent running and sixteen fired — and the same number is printed
+        // per agent in the list below.
+        // The same two statuses the analytics page counts, so the two pages
+        // cannot disagree about how many deployments a creator has.
+        select: {
+          deployments: { where: { status: { in: ["ACTIVE", "ONBOARDING"] } } },
+        },
       },
       versions: {
         where: { vetStatus: "PENDING" },

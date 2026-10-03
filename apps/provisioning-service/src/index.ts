@@ -1,3 +1,8 @@
+// First import on purpose: it fills process.env from the service's env file as
+// a side effect, before config.ts reads it. See load-env.ts for why this is not
+// left to pm2.
+import "./load-env.js";
+
 import { prisma } from "@marketplace/db";
 import { startWorker } from "./worker.js";
 import { config } from "./config.js";

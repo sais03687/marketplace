@@ -1,3 +1,7 @@
+// Must be first: it fills process.env from the service's env file, and every
+// value below is read at import time.
+import "./load-env.js";
+
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
