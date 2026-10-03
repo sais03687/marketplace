@@ -642,7 +642,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           url: string,
           init: RequestInit & { signal: AbortSignal },
           expectStatus: number,
-        ): Promise<{ httpStatus: number; responseBody: string }> {
+        ): Promise<{ httpStatus: number; responseBody: string; fullBody: string }> {
           // Attached here rather than at each call site: the /hooks/* probes need
           // it, the others ignore it, and a probe that forgot would read as the
           // package failing rather than the harness misconfiguring itself.
@@ -660,14 +660,21 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             },
           });
           const raw = await r.text().catch(() => "");
+          // responseBody is for the report, where a wall of JSON helps nobody.
+          // fullBody is for callers that have to read the thing: truncating
+          // before parsing turned a long reply into invalid JSON, and the
+          // manual test then showed the reviewer the raw
+          // {"ok":true,"action":"reply_email","text":"…"} envelope instead of
+          // the agent's answer. Short replies parsed, so it only went wrong on
+          // the agents with most to say.
           const responseBody = raw.slice(0, 500) + (raw.length > 500 ? "…" : "");
           if (r.status !== expectStatus) {
             throw Object.assign(
               new Error(`Expected HTTP ${expectStatus}, got ${r.status}`),
-              { httpStatus: r.status, responseBody },
+              { httpStatus: r.status, responseBody, fullBody: raw },
             );
           }
-          return { httpStatus: r.status, responseBody };
+          return { httpStatus: r.status, responseBody, fullBody: raw };
         }
 
         // Built-in platform tests (skippable via skipDefaultTests)
@@ -813,7 +820,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
                 signal: AbortSignal.timeout(180_000),
               }, 200);
               let reply = "";
-              try { reply = (JSON.parse(res.responseBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
+              try { reply = (JSON.parse(res.fullBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
               report.steps.push({
                 name: "Manual test",
                 status: reply.trim() ? "pass" : "fail",
