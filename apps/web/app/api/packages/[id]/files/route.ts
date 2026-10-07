@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { isAdminUser, jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { listPackageFiles, readPackageFile } from "@/lib/package-storage";
 
 export async function GET(
@@ -13,10 +13,14 @@ export async function GET(
 
   const version = await prisma.agentVersion.findUnique({
     where: { id },
-    select: { storagePath: true },
+    select: { storagePath: true, agent: { select: { creator: { select: { clerkUserId: true } } } } },
   });
 
-  if (!version?.storagePath) {
+  // A package is its creator's source code. Reviewers read it to vet it and the
+  // creator may read their own; any other signed-in account — another creator,
+  // a buyer — gets the same answer as for a version that does not exist.
+  const isOwner = version?.agent?.creator?.clerkUserId === authResult.userId;
+  if (!version?.storagePath || !(isOwner || isAdminUser(authResult.userId))) {
     return jsonError("Version not found or no stored files", 404);
   }
 
