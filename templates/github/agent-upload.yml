@@ -10,6 +10,10 @@
 #
 # The agent folder must contain marketplace.json and agent.py at its top level.
 #
+# Before uploading, the workflow imports agent.py with your requirements
+# installed, then asks Agentstore whether it would accept the package. Either
+# check failing stops the run, so nothing broken reaches the review queue.
+#
 # Each push publishes the version named in marketplace.json and puts it in the
 # review queue. Publishing a version that has already been approved is refused
 # with a 409 — bump "version" in marketplace.json when you change the code, so
@@ -48,6 +52,60 @@ jobs:
           echo "version=$(jq -r .version marketplace.json)" >> "$GITHUB_OUTPUT"
         id: manifest
 
+      # The platform runs agents on Python 3.12, so check on the same version.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the agent loads
+        working-directory: ${{ env.AGENT_DIR }}
+        # An agent that waits on the network or loops while loading would
+        # never start on the platform either.
+        timeout-minutes: 5
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install --quiet -r requirements.txt \
+              || { echo "::error::pip could not install requirements.txt — the platform's build would fail the same way"; exit 1; }
+          fi
+
+          # platform_llm ships inside the platform's image, not in your package,
+          # so stand it in for this check. It lives outside the agent folder so
+          # it never ends up in the zip.
+          mkdir -p "$RUNNER_TEMP/stubs"
+          cat > "$RUNNER_TEMP/stubs/platform_llm.py" <<'EOF'
+          class StructuredLLM:
+              def __init__(self, model, setting=None):
+                  assert isinstance(model, str), "StructuredLLM takes a model name, not a client"
+              async def ainvoke(self, llm, prompt, *, timeout, schema=None): ...
+          def has_any(obj, keys):
+              return isinstance(obj, dict) and any(k in obj for k in keys)
+          def __getattr__(name):
+              return lambda *a, **k: None
+          EOF
+
+          # Everything at the top level of agent.py runs when the container
+          # starts. Importing it here catches a syntax error, a missing package
+          # or a crash on startup in seconds instead of after a vetting run.
+          LLM_MODEL="$(jq -r '.model // "openai/gpt-oss-120b"' marketplace.json)" \
+          LLM_BASE_URL=https://example.invalid LLM_API_KEY=check-only \
+          PYTHONPATH="$RUNNER_TEMP/stubs:." python - <<'EOF'
+          import inspect, sys
+          try:
+              import agent
+          except Exception as e:
+              print(f"::error::agent.py failed to load: {type(e).__name__}: {e}")
+              sys.exit(1)
+          for name in ("run_agent", "resume_agent"):
+              fn = getattr(agent, name, None)
+              if not callable(fn):
+                  print(f"::error::agent.py has no {name}; the platform cannot start an agent without it")
+                  sys.exit(1)
+              if not inspect.iscoroutinefunction(fn):
+                  print(f"::error::{name} must be async (async def {name}(...))")
+                  sys.exit(1)
+          print("agent.py loads; run_agent and resume_agent are present")
+          EOF
+
       - name: Zip the package
         working-directory: ${{ env.AGENT_DIR }}
         run: |
@@ -57,7 +115,8 @@ jobs:
             -x '.git/*' '.github/*' '*.pyc' '__pycache__/*' '.env*' '*.zip' \
                'node_modules/*' '.DS_Store' 'tests/*'
 
-      - name: Upload to Agentstore
+      - name: Ask Agentstore whether it would accept the package
+        id: dryrun
         env:
           MARKETPLACE_API_KEY: ${{ secrets.MARKETPLACE_API_KEY }}
           MARKETPLACE_URL: ${{ vars.MARKETPLACE_URL || 'https://www.agentstore.it.com' }}
@@ -67,6 +126,43 @@ jobs:
             exit 1
           fi
 
+          # Runs every check the real upload runs (manifest, price for the
+          # model's tier, forbidden files, the code scan, version already
+          # approved) and stops before anything is stored or sent to vetting.
+          code=$(curl -s -o "$RUNNER_TEMP/dryrun.json" -w '%{http_code}' \
+            -X POST "$MARKETPLACE_URL/api/packages/upload?dryRun=1" \
+            -H "Authorization: Bearer $MARKETPLACE_API_KEY" \
+            -F "package=@$RUNNER_TEMP/agent-package.zip")
+
+          case "$code" in
+            200|201) ;;
+            401)
+              echo "::error::MARKETPLACE_API_KEY was rejected. Generate a new one in creator settings."
+              exit 1
+              ;;
+            *)
+              msg=$(jq -r '.error // empty' "$RUNNER_TEMP/dryrun.json" 2>/dev/null)
+              echo "::error::Agentstore would refuse this package (HTTP $code): ${msg:-$(cat "$RUNNER_TEMP/dryrun.json")}"
+              exit 1
+              ;;
+          esac
+
+          # A platform without check-only uploads ignores dryRun=1 and takes the
+          # package for real. Say so, and do not upload it a second time.
+          if grep -q '"dryRun":true' "$RUNNER_TEMP/dryrun.json"; then
+            echo "Agentstore would accept this package."
+            echo "uploaded=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Agentstore does not support check-only uploads yet, so the check uploaded the package. It is in the review queue."
+            echo "uploaded=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload to Agentstore
+        if: steps.dryrun.outputs.uploaded != 'true'
+        env:
+          MARKETPLACE_API_KEY: ${{ secrets.MARKETPLACE_API_KEY }}
+          MARKETPLACE_URL: ${{ vars.MARKETPLACE_URL || 'https://www.agentstore.it.com' }}
+        run: |
           code=$(curl -s -o "$RUNNER_TEMP/response.json" -w '%{http_code}' \
             -X POST "$MARKETPLACE_URL/api/packages/upload" \
             -H "Authorization: Bearer $MARKETPLACE_API_KEY" \

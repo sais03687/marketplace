@@ -1069,6 +1069,15 @@ print('imports clean; both entry points present')
         in the review queue, exactly as the upload form does — the API key stands in for
         your browser session, nothing else changes.
       </P>
+      <P>
+        Before it uploads, the workflow checks the package in two ways, and stops if
+        either fails. It installs your <Code>requirements.txt</Code> and imports{" "}
+        <Code>agent.py</Code> on GitHub&apos;s machine, which catches a syntax error, a
+        missing package or a crash on startup. Then it asks the platform whether it would
+        accept the package, which runs every check the upload form runs without storing
+        anything or starting a review. A mistake shows up in the Actions log in seconds,
+        with the reason, rather than after a vetting run.
+      </P>
       <Note>
         <strong>Bump the version when you change the code.</strong> A push that reuses a
         version number which has already been approved is refused with{" "}

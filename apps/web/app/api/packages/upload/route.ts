@@ -319,6 +319,32 @@ export async function POST(request: Request) {
     return jsonError(`Slug "${slug}" is already taken by another creator`, 409);
   }
 
+  // A dry run answers "would this upload be accepted?" with every check above,
+  // and stops before anything is stored or queued for vetting. The GitHub
+  // workflow calls it before the real upload, so a package that would be
+  // refused costs the creator seconds rather than a slot in the vetting queue.
+  if (new URL(request.url).searchParams.get("dryRun") === "1") {
+    if (existingAgent) {
+      const existingVersion = await prisma.agentVersion.findFirst({
+        where: { agentId: existingAgent.id, version },
+        orderBy: { createdAt: "desc" },
+      });
+      if (existingVersion && existingVersion.vetStatus !== "PENDING") {
+        return jsonError(
+          `Version ${version} already exists and has been approved — bump "version" in marketplace.json`,
+          409,
+        );
+      }
+    }
+    return jsonSuccess({
+      dryRun: true,
+      slug,
+      version,
+      modelTier: modelTierRaw,
+      pricePerMonth: priceCheck / 100,
+    });
+  }
+
   // 5. Extract onboarding files
   let onboardingQuestions: any | null = null;
   let memoryTemplate: string | null = null;
