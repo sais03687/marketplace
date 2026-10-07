@@ -368,15 +368,35 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           imageName = `marketplace/vet-${slug}:${version}`;
 
           let buildError: string | null = null;
+          // The build runs the creator's own pip install, which is their code
+          // running on this machine before anyone has reviewed it. The worker runs
+          // two jobs at a time and hires share those slots, so one install that
+          // hangs or balloons would stall every hire and every other creator's
+          // upload. Cap its memory and CPU, and give up after VET_BUILD_TIMEOUT_MS.
+          const buildTimeoutMs = Number(process.env.VET_BUILD_TIMEOUT_MS) || 10 * 60_000;
           const stream = await docker.buildImage(
             { context: buildDir, src: ["."] },
-            { t: imageName, dockerfile: "Dockerfile" },
+            {
+              t: imageName,
+              dockerfile: "Dockerfile",
+              memory: 1536 * 1024 * 1024,
+              memswap: 1536 * 1024 * 1024,
+              cpuperiod: 100_000,
+              cpuquota: 200_000,
+            },
           );
 
           await new Promise<void>((res, rej) => {
+            // Closing the connection is what cancels a build in progress.
+            const timer = setTimeout(() => {
+              buildError = `build took longer than ${Math.round(buildTimeoutMs / 60_000)} minutes and was stopped — check requirements.txt for a package that is very large or will not install`;
+              buildLogs.push(`ERROR: ${buildError}`);
+              (stream as any).destroy?.();
+              rej(new Error(buildError));
+            }, buildTimeoutMs);
             docker.modem.followProgress(
               stream,
-              (err: Error | null) => { if (err) rej(err); else res(); },
+              (err: Error | null) => { clearTimeout(timer); if (err) rej(err); else res(); },
               (event: { stream?: string; error?: string }) => {
                 if (event.stream) buildLogs.push(event.stream.replace(/\n$/, ""));
                 if (event.error) { buildError = event.error; buildLogs.push(`ERROR: ${event.error}`); }
