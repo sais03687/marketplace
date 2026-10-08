@@ -247,6 +247,21 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
             for field in ("name", "slug", "version"):
                 if not data.get(field):
                     out.append(Finding(ERROR, "marketplace.json", 0, f'"{field}" is missing', f'add "{field}"'))
+            # A placeholder left in by `agentstore init` would become the public
+            # listing the moment the version is approved.
+            def _strings(value):
+                if isinstance(value, str):
+                    yield value
+                elif isinstance(value, dict):
+                    for v in value.values():
+                        yield from _strings(v)
+                elif isinstance(value, list):
+                    for v in value:
+                        yield from _strings(v)
+            if any("TODO:" in s for s in _strings(data)):
+                out.append(Finding(ERROR, "marketplace.json", 0, "still has TODO: placeholders",
+                                   "replace each one — the name, tagline, description and capabilities "
+                                   "become your public listing"))
             if not data.get("model"):
                 out.append(Finding(WARN, "marketplace.json", 0, 'no "model" is named, so the platform default runs',
                                    "pick any text model from https://openrouter.ai/models and put its id in \"model\""))

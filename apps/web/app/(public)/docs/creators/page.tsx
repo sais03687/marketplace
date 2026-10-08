@@ -232,7 +232,27 @@ async def run_agent(content: str, context: dict) -> dict:
         not, for now.
       </Warning>
 
-      <H3 id="existing-step-publish">4. Add a manifest, then publish</H3>
+      <H3 id="existing-step-local">4. Check and test it on your machine</H3>
+      <P>
+        The <Code>agentstore</Code> command-line tool does the rest of this guide&apos;s
+        checking for you, on your own key — it never uses an Agentstore account.
+      </P>
+      <Pre>{`pip install "git+https://github.com/sais03687/marketplace.git#subdirectory=packages/agentstore-cli"
+
+agentstore init                 # adds marketplace.json, an agent.py wrapper, .env
+agentstore check                # what will not work on the platform, line by line
+agentstore test "a sample email"   # runs it as the platform would, on your key
+agentstore pack                 # builds the upload zip (never includes .env)`}</Pre>
+      <P>
+        <Code>agentstore test</Code> formats the email the way the platform does, runs
+        the model your manifest names whatever your code asks for, and shows the reply
+        that would be sent. Put your own key in <Code>OPENAI_API_KEY</Code> in a{" "}
+        <Code>.env</Code> file; an OpenRouter key runs the exact model you will publish on.
+        Microsoft 365 and sandbox tools are stand-ins locally — they print what they would
+        do instead of doing it.
+      </P>
+
+      <H3 id="existing-step-publish">5. Add a manifest, then publish</H3>
       <P>
         Add a <Code>marketplace.json</Code> (name, price, model — see the{" "}
         <a href="#manifest" className="underline">reference</a>) and a{" "}

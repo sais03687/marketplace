@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentstore"
-version = "0.1.0"
+version = "0.2.0"
 description = "Check, test and package an agent for Agentstore"
 requires-python = ">=3.10"
 dependencies = []
