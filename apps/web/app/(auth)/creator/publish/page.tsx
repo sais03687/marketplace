@@ -332,6 +332,24 @@ export default function PublishPage() {
                 onChange={handleFileSelect}
               />
             </div>
+            {/* Outside the drop zone: the file input covers all of it, so a link
+                placed inside opens the file picker instead of the link. */}
+            <p className="mt-3 text-center text-xs text-muted-foreground">
+              Starting out?{" "}
+              <a
+                href="https://github.com/sais03687/agentstore-agent-template"
+                target="_blank"
+                rel="noreferrer"
+                className="underline hover:text-foreground"
+              >
+                Use the agent template
+              </a>{" "}
+              — a working agent that checks and publishes itself from GitHub.{" "}
+              <Link href="/docs/creators" className="underline hover:text-foreground">
+                Read the creator docs
+              </Link>
+              .
+            </p>
 
             {validations.length > 0 && (
               <div className="space-y-2">

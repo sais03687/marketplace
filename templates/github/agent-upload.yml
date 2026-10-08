@@ -33,6 +33,10 @@ env:
 
 jobs:
   publish:
+    # The template repository has no agent of its own to publish and no key to
+    # publish it with. A copy made with "Use this template" has a different name,
+    # so this never skips a creator's run.
+    if: github.repository != 'sais03687/agentstore-agent-template'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
