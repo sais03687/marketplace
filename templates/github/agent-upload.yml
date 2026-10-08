@@ -10,9 +10,10 @@
 #
 # The agent folder must contain marketplace.json and agent.py at its top level.
 #
-# Before uploading, the workflow imports agent.py with your requirements
-# installed, then asks Agentstore whether it would accept the package. Either
-# check failing stops the run, so nothing broken reaches the review queue.
+# Before uploading, the workflow checks your code for what will not work on the
+# platform, imports agent.py with your requirements installed, then asks
+# Agentstore whether it would accept the package. Any of them failing stops the
+# run, so nothing broken reaches the review queue.
 #
 # Each push publishes the version named in marketplace.json and puts it in the
 # review queue. Publishing a version that has already been approved is refused
@@ -60,6 +61,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # Reads the code without running it and lists what will not work on the
+      # platform — a key left in the code, a call to a site it cannot reach, an
+      # entry point that is not async — each at its line, with the fix. Warnings
+      # are shown and the run continues; errors stop it here.
+      - name: Check for migration problems
+        run: |
+          pip install --quiet "git+https://github.com/sais03687/marketplace.git#subdirectory=packages/agentstore-cli"
+          agentstore check "$AGENT_DIR"
 
       - name: Check the agent loads
         working-directory: ${{ env.AGENT_DIR }}

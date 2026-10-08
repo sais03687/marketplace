@@ -1,0 +1,2 @@
+[console_scripts]
+agentstore = agentstore.cli:main

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentstore"
+version = "0.1.0"
+description = "Check, test and package an agent for Agentstore"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+agentstore = "agentstore.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
