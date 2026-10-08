@@ -57,7 +57,10 @@ def _offered_tool_names() -> set[str]:
 
 def _documented_run_agent():
     """Build a function with the signature the published docs show."""
-    match = re.search(r"async def run_agent\((.*?)\n\) -> dict\[str, Any\]:", DOCS, re.S)
+    # The full signature is the one written across several lines. The docs also
+    # show one-line run_agent wrappers (the migration guide), which an unanchored
+    # pattern would start matching from and run on into the real signature.
+    match = re.search(r"async def run_agent\(\n(.*?)\n\) -> dict\[str, Any\]:", DOCS, re.S)
     assert match, "the docs no longer show a run_agent signature"
     params = []
     for raw in match.group(1).split("\n"):
