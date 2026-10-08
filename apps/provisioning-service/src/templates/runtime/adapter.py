@@ -4098,6 +4098,7 @@ def _should_require_approval(
     explanation that gets logged so the decision is auditable.
 
     Policy evaluation order (highest precedence first):
+      0. Recipient is the manager → auto-approve, under every policy
       1. Explicit AUTO_APPROVE_LIST match → auto-approve
       2. Explicit REQUIRE_APPROVAL_LIST match → require approval
       3. Global policy:
@@ -4109,6 +4110,14 @@ def _should_require_approval(
     email = _extract_email(recipient)
     if not email:
         return True, "no recipient email (fail-safe: require approval)"
+
+    # 0. The manager is the person who approves. Holding a message addressed only
+    # to them asks them to approve reading their own mail: on 2026-10-08 a buyer
+    # on policy=always asked the agent a follow-up and had to click Approve before
+    # the answer reached them. Whatever the policy, nothing is gained by asking.
+    _manager = _manager_email().lower()
+    if _manager and email == _manager:
+        return False, f"recipient is the manager ({email})"
 
     policy_cfg = _load_policy()
     policy = policy_cfg["policy"]
@@ -4141,10 +4150,8 @@ def _should_require_approval(
         return False, f"policy=risk-based, combined={combined:.1f} < {threshold}"
 
     # Default: "external-only" (prior hardcoded behavior)
-    # Manager and company domain auto-approve; everyone else requires approval.
-    _manager = _manager_email().lower()
-    if _manager and email == _manager:
-        return False, f"policy=external-only, recipient is manager ({email})"
+    # The manager was let through above; the company domain auto-approves here,
+    # and everyone else requires approval.
     if COMPANY_DOMAIN and email.endswith("@" + COMPANY_DOMAIN.strip().lower()):
         return False, f"policy=external-only, recipient on company domain ({email})"
     return True, f"policy=external-only, recipient is external ({email})"
