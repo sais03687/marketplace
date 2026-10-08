@@ -1,9 +1,0 @@
-pyproject.toml
-src/agentstore/__init__.py
-src/agentstore/check.py
-src/agentstore/cli.py
-src/agentstore.egg-info/PKG-INFO
-src/agentstore.egg-info/SOURCES.txt
-src/agentstore.egg-info/dependency_links.txt
-src/agentstore.egg-info/entry_points.txt
-src/agentstore.egg-info/top_level.txt
