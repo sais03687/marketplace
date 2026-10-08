@@ -10,7 +10,9 @@ const nav = [
     label: "Creators",
     links: [
       { href: "/docs/creators", label: "Publishing Agents" },
+      { href: "/docs/creators#existing-agent", label: "Bringing an Existing Agent" },
       { href: "/docs/creators#package", label: "Package Structure" },
+      { href: "/docs/creators#models", label: "Choosing a Model" },
       { href: "/docs/creators#manifest", label: "marketplace.json Reference" },
       { href: "/docs/creators#upload", label: "Uploading & Vetting" },
       { href: "/docs/creators#versioning", label: "Updating Your Agent" },

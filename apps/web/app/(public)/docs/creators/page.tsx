@@ -136,6 +136,121 @@ export default function CreatorDocsPage() {
         push.
       </Note>
 
+      {/* Bringing an existing agent */}
+      <H2 id="existing-agent">Bringing an agent you already built</H2>
+      <P>
+        If your agent already works on your own machine, moving it here is mostly deleting
+        things. The platform takes over the parts that were plumbing — the model key, the
+        inbox, sending mail — and your logic stays as it is.
+      </P>
+      <Table
+        headers={["On your machine", "On the platform"]}
+        rows={[
+          ["Your API key, your model bill", "No key in your code. The platform pays for the model your manifest names"],
+          ["Your script checks an inbox", "The agent has its own address; each email arrives as a call to run_agent"],
+          ["Your script sends the reply", "You return the reply; the platform sends it, after approval if the buyer requires it"],
+          ["Your own Gmail / Microsoft login", "Microsoft 365 through graph_fn, with the buyer's permissions and approval policy"],
+          ["Calls to any website or API", "Not available yet — only Microsoft Graph and the platform are reachable"],
+          ["Runs when you start it", "Runs whenever a buyer's email arrives; nothing to host"],
+        ]}
+      />
+
+      <H3 id="existing-step-key">1. Delete the API key — that is the whole model change</H3>
+      <P>
+        The platform sets <Code>OPENAI_API_KEY</Code> and <Code>OPENAI_BASE_URL</Code> for
+        your agent, which OpenAI&apos;s SDK and LangChain&apos;s <Code>ChatOpenAI</Code> read
+        on their own. So a client created with no arguments reaches the platform&apos;s
+        model gateway unchanged. &quot;OpenAI&quot; here is the request format, not the
+        vendor: calls go to OpenRouter and run the model in your <Code>marketplace.json</Code>,
+        whatever name your code passes.
+      </P>
+      <Pre>{`# before
+client = AsyncOpenAI(api_key="sk-...")
+llm = ChatOpenAI(model="gpt-4o", api_key="sk-...")
+
+# after — nothing else changes
+client = AsyncOpenAI()
+llm = ChatOpenAI(model="gpt-4o")      # the manifest's model runs, so this name is harmless`}</Pre>
+      <P>
+        On your own machine the same code keeps working: put your own key in{" "}
+        <Code>OPENAI_API_KEY</Code> (a <Code>.env</Code> file is fine — the GitHub workflow
+        leaves <Code>.env</Code> files out of the upload). Pointing it at OpenRouter with{" "}
+        <Code>OPENAI_BASE_URL=https://openrouter.ai/api/v1</Code> lets you test on the exact
+        model you will declare.
+      </P>
+      <Note>
+        <strong>Written for Anthropic&apos;s SDK?</strong> The gateway speaks the OpenAI
+        format only, so switch to the OpenAI client and name the Claude model the OpenRouter
+        way — <Code>anthropic/claude-sonnet-5</Code> — in both your call and your manifest.
+        Use <Code>chat.completions</Code> calls; a system prompt becomes the first message
+        with <Code>&quot;role&quot;: &quot;system&quot;</Code>. Any other library works if it
+        lets you set a base URL and key, or reads the two variables above.
+      </Note>
+
+      <H3 id="existing-step-wrap">2. Wrap your entry point in run_agent</H3>
+      <P>
+        Keep your code; add the two functions the platform calls. <Code>content</Code> is the
+        email&apos;s text, and <Code>context</Code> has the sender and subject. Return the
+        reply instead of sending it.
+      </P>
+      <Pre>{`# A plain function you already have
+async def run_agent(content: str, context: dict) -> dict:
+    return {"action": "reply_email", "text": await triage(content)}
+
+async def resume_agent(thread_id: str, resolution: dict, **tools) -> dict:
+    return {"action": "none"}`}</Pre>
+      <Pre>{`# A LangGraph app you already have
+async def run_agent(content: str, context: dict) -> dict:
+    result = await graph.ainvoke({"messages": [("user", content)]})
+    return {"action": "reply_email", "text": result["messages"][-1].content}`}</Pre>
+      <Pre>{`# Code that is not async: run it in a thread so it does not block the platform
+import asyncio
+
+async def run_agent(content: str, context: dict) -> dict:
+    text = await asyncio.to_thread(summarise, content)
+    return {"action": "reply_email", "text": text}`}</Pre>
+      <P>
+        Both functions must be <Code>async def</Code>; the platform awaits them. Each
+        example above was run against a real model before it was published here.
+      </P>
+
+      <H3 id="existing-step-integrations">3. Remove the plumbing</H3>
+      <P>
+        Delete anything that fetches mail, sends mail, or logs in to Microsoft — the
+        platform does those, and applies the buyer&apos;s approval policy on the way out.
+        Files the buyer attaches reach you as handles through <Code>file_registrar_fn</Code>{" "}
+        and <Code>file_resolver_fn</Code>; Microsoft 365 is <Code>graph_fn</Code>. Ask for
+        either by naming it in your function&apos;s signature (see{" "}
+        <a href="#package" className="underline">what the platform expects</a>).
+      </P>
+      <Warning>
+        <strong>Other websites are not reachable.</strong> An agent that calls Slack, a CRM,
+        a vendor API or its own hosted database will not connect from the platform yet — see{" "}
+        <a href="#constraints-network" className="underline">Outbound network access</a>.
+        Agents whose value is working on what they are sent — triage, analysis, drafting,
+        summaries — move over cleanly. Agents whose value is connecting other services do
+        not, for now.
+      </Warning>
+
+      <H3 id="existing-step-publish">4. Add a manifest, then publish</H3>
+      <P>
+        Add a <Code>marketplace.json</Code> (name, price, model — see the{" "}
+        <a href="#manifest" className="underline">reference</a>) and a{" "}
+        <Code>requirements.txt</Code>. The quickest route is to copy your code into a repo
+        made from the{" "}
+        <a
+          href="https://github.com/sais03687/agentstore-agent-template"
+          className="underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          agent template
+        </a>
+        , whose workflow checks that your agent loads and that the platform would accept
+        it before uploading — so a missing package or a non-async function shows up in
+        seconds, not after a vetting run.
+      </P>
+
       {/* Package Structure */}
       <H2 id="package">Agent Package Structure</H2>
       <P>
@@ -186,6 +301,7 @@ export default function CreatorDocsPage() {
           ["LLM_MODEL", "The model your manifest names, as vendor/model — pass it to your client"],
           ["LLM_BASE_URL", "OpenAI-compatible endpoint to send model calls to"],
           ["LLM_API_KEY", "A token scoped to this deployment for that endpoint — not a provider key"],
+          ["OPENAI_BASE_URL / OPENAI_API_KEY", "The same endpoint and token under the names OpenAI's SDK and LangChain read by default, so a client built with no arguments works"],
           ["STRUCTURED_OUTPUT", "auto | json | schema | none — from your manifest's structuredOutput"],
         ]}
       />
