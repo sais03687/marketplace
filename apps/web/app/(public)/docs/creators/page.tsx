@@ -120,6 +120,21 @@ export default function CreatorDocsPage() {
         You need a working knowledge of Python to build an agent. No infrastructure knowledge
         is required — the platform handles all hosting, email routing, and LLM API keys.
       </P>
+      <Note>
+        <strong>Fastest start:</strong> the{" "}
+        <a
+          href="https://github.com/sais03687/agentstore-agent-template"
+          className="underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          agent template on GitHub
+        </a>{" "}
+        is a working agent with everything below already in place, plus the workflow that
+        checks and publishes it on every push. Click <strong>Use this template</strong>,
+        replace the example agent with yours, add your API key as a repository secret, and
+        push.
+      </Note>
 
       {/* Package Structure */}
       <H2 id="package">Agent Package Structure</H2>
@@ -779,7 +794,7 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
           ["category", "enum", "Yes", "SALES_OPERATIONS | CUSTOMER_SUCCESS | EXECUTIVE_ASSISTANT | RESEARCH | MARKETING_OPS | HR_OPS | FINANCE_OPS | ENGINEERING_OPS | IT_SUPPORT | GENERAL"],
           ["version", "string", "Yes", "Semver: 1.0.0, 1.1.0, etc."],
           ["pricePerMonth", "integer", "Yes", "Whole US dollars — write 29, not 2900. Minimum is set by the tier your model falls into: $29 standard, $59 pro, $149 premium. Buyers pay this monthly."],
-          ["model", "string", "No", "Any model the provider serves, as \"vendor/model\" — e.g. openai/gpt-oss-120b. Sets which model runs your agent, and decides the tier. Omit it and the platform default is used."],
+          ["model", "string", "No", "Any text model on OpenRouter, as \"vendor/model\" — e.g. openai/gpt-oss-120b. The current list is at openrouter.ai/models. Sets which model runs your agent, and decides the tier. Omit it and the platform default is used."],
           ["modelTier", "enum", "Yes", "standard | pro | premium. Ignored when you name a model — the tier is derived from what that model costs. Sets the price floor."],
           ["runtime", "string", "Yes", "Must be \"custom\"."],
           ["capabilities", "array", "Yes", "List of { name, description } objects. Shown as feature bullets on the listing."],
@@ -795,10 +810,36 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
       <H2 id="models">Choosing a model</H2>
 
       <P>
-        Name any model the provider serves in the <Code>model</Code> field, using its
-        full <Code>vendor/model</Code> id. You are not limited to a shortlist — if it is
-        on OpenRouter, you can publish on it. The platform supplies the API key and pays
-        the model bill; your code never sees a credential.
+        You choose your agent&apos;s model. Name any model the provider serves in the{" "}
+        <Code>model</Code> field, using its full <Code>vendor/model</Code> id. You are not
+        limited to a shortlist — if it is on OpenRouter, you can publish on it. The
+        platform supplies the API key and pays the model bill; your code never sees a
+        credential.
+      </P>
+
+      <P>
+        The current list, with each model&apos;s id and price, is{" "}
+        <a
+          href="https://openrouter.ai/models"
+          className="underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          openrouter.ai/models
+        </a>
+        . It is kept up to date by OpenRouter, so a model released tomorrow is usable
+        tomorrow. Copy the id exactly as shown there, for example{" "}
+        <Code>anthropic/claude-sonnet-5</Code>, and pick a text (chat) model: the list also
+        has image and speech models, which an agent cannot use. A misspelled or unknown id
+        is refused at upload, before it reaches a buyer.
+      </P>
+
+      <P>
+        The model in <Code>marketplace.json</Code> is the one that runs, whatever your code
+        asks for. Every call your agent makes goes through the platform, which sends it to
+        the declared model — so a model name left in your code from development, such as{" "}
+        <Code>gpt-4o</Code>, does no harm and needs no editing. To change models, change
+        the manifest and publish a new version.
       </P>
 
       <P>
@@ -1062,7 +1103,16 @@ print('imports clean; both entry points present')
           templates/github/agent-upload.yml
         </a>
         . One copy, kept with the platform it talks to — so it cannot quietly
-        disagree with these instructions.
+        disagree with these instructions. Repositories made from the{" "}
+        <a
+          href="https://github.com/sais03687/agentstore-agent-template"
+          className="underline"
+          target="_blank"
+          rel="noreferrer"
+        >
+          agent template
+        </a>{" "}
+        already include it.
       </P>
       <P>
         Each push publishes the version named in <Code>marketplace.json</Code> and puts it
