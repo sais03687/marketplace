@@ -92,6 +92,19 @@ if _llm_broker_url:
     else:
         print("[adapter] LLM_BROKER_URL set but DEPLOYMENT_ID/AGENT_TOKEN missing — leaving LLM env as-is", flush=True)
 
+# The same endpoint under the names other code already reads. OpenAI's SDK,
+# LangChain's ChatOpenAI and most libraries built on them look for OPENAI_API_KEY
+# and OPENAI_BASE_URL (OPENAI_API_BASE in older LangChain) when given no
+# arguments, so an agent written elsewhere as `OpenAI()` or `ChatOpenAI()` reaches
+# the broker unchanged — migrating it means deleting its hard-coded key and
+# nothing else. "OpenAI" names the request format, not the vendor: the broker
+# forwards to OpenRouter and runs the model the manifest declares. Set after the
+# broker swap so these carry the per-deployment token, never a provider key.
+if os.environ.get("LLM_BASE_URL") and os.environ.get("LLM_API_KEY"):
+    for _name in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+        os.environ[_name] = os.environ["LLM_BASE_URL"]
+    os.environ["OPENAI_API_KEY"] = os.environ["LLM_API_KEY"]
+
 # ─── MCP Sidecar Discovery ─────────────────────────────────────────────────
 # Read MCP_*_URL env vars, scrub them, then discover tools at startup.
 
