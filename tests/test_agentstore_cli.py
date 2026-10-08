@@ -64,13 +64,21 @@ def _agent(folder: Path, body: str, model="openai/gpt-oss-120b"):
     return folder
 
 
+# Standard library only, so CI needs no SDK. It reads the two variables exactly as
+# OpenAI's client does when built with no arguments, which is the behaviour under test.
 OPENAI_AGENT = '''
-from openai import AsyncOpenAI
-client = AsyncOpenAI()
+import asyncio, json, os, urllib.request
+
+def _complete(prompt):
+    req = urllib.request.Request(
+        os.environ["OPENAI_BASE_URL"].rstrip("/") + "/chat/completions",
+        data=json.dumps({"model": "gpt-4o", "messages": [{"role": "user", "content": prompt}]}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]})
+    return json.loads(urllib.request.urlopen(req).read())["choices"][0]["message"]["content"]
 
 async def run_agent(content: str, context: dict) -> dict:
-    r = await client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": content}])
-    return {"action": "reply_email", "text": r.choices[0].message.content, "needs_approval": NEEDS}
+    text = await asyncio.to_thread(_complete, content)
+    return {"action": "reply_email", "text": text, "needs_approval": NEEDS}
 
 async def resume_agent(thread_id: str, resolution: dict, **tools) -> dict:
     raise AssertionError("a held draft is approved or dropped, never resumed")
