@@ -1,8 +1,11 @@
 #!/bin/sh
 # Weekly disk cleanup for the agent host. Tracked here; the copy that runs is
-# /opt/marketplace/scripts/prune-docker.sh, from root's crontab:
+# /opt/marketplace/scripts/prune-docker.sh, scheduled by /etc/cron.d/marketplace-prune:
 #
-#   0 4 * * 0  /opt/marketplace/scripts/prune-docker.sh >> /var/log/marketplace-prune.log 2>&1
+#   0 4 * * 0 root /opt/marketplace/scripts/prune-docker.sh >> /var/log/marketplace-prune.log 2>&1
+#
+# Sundays at 04:00 UTC. Its own file rather than root's crontab, so installing
+# or removing it never touches anything else scheduled there.
 #
 # Every hire builds its own image (350-840 MB) and firing it removes the
 # container but not the image, so the disk filled a little with each hire and
