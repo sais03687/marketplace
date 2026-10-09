@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { Prisma } from "@prisma/client";
-import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { isAdminUser, jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
+import { claimUploadSlot } from "@/lib/upload-limit";
 import { validateApiKey } from "@/lib/api-key-auth";
 import { validateManifest, canonicalTier } from "@marketplace/agent-package-schema";
 import { resolveModel } from "@/lib/model-resolver";
@@ -343,6 +344,21 @@ export async function POST(request: Request) {
       modelTier: modelTierRaw,
       pricePerMonth: priceCheck / 100,
     });
+  }
+
+  // Only real uploads count, and only once every check above has passed, so a
+  // package refused for a typo never uses up one of the day's slots. Reviewers
+  // are exempt: they republish first-party agents and re-run vetting by hand.
+  if (!isAdminUser(userId)) {
+    const slot = await claimUploadSlot(creator.id);
+    if (!slot.allowed) {
+      return jsonError(
+        `You have reached today's limit of ${slot.limit} uploads. Each upload is built and ` +
+          `vetted, so the limit resets at midnight UTC. Meanwhile, \`agentstore test\` runs ` +
+          `your agent on your own machine as the platform would — see the creator docs.`,
+        429,
+      );
+    }
   }
 
   // 5. Extract onboarding files

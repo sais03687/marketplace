@@ -1269,7 +1269,10 @@ print('imports clean; both entry points present')
         version number which has already been approved is refused with{" "}
         <Code>409</Code>, because buyers may be running that version and their code must
         not change underneath them. A version still awaiting review is replaced in place,
-        so pushing repeatedly while you iterate is fine.
+        so pushing repeatedly while you iterate is fine — up to 10 uploads a day, since
+        each one is built and vetted. Checks that store nothing, like the workflow&apos;s
+        dry run, do not count, and <Code>agentstore test</Code> lets you iterate on your
+        own machine without uploading at all.
       </Note>
       <Warning>
         Treat the API key like a password: it publishes agent code under your name. It is
