@@ -296,6 +296,34 @@ agentstore pack                 # builds the upload zip (never includes .env)`}<
         rejected if they are present.
       </Warning>
 
+      <H3 id="build">Packages from GitHub, and compiled code</H3>
+      <P>
+        Your agent is built in two stages. The build stage has <Code>git</Code>, a C, C++ and
+        Fortran compiler, and CMake, so <Code>requirements.txt</Code> may name a package
+        straight from a repository —{" "}
+        <Code>mypkg @ git+https://github.com/org/mypkg.git@v1.2</Code> — or one that has to
+        be compiled. The agent then runs in a slim image that receives what was installed
+        and your folder, but none of the build tools.
+      </P>
+      <P>
+        For anything pip cannot install — a C++ library with Python bindings, say — add a{" "}
+        <Code>build.sh</Code> next to <Code>agent.py</Code>. It runs once, during the build,
+        in your folder, as an unprivileged user, with internet access. Only what it leaves in
+        your folder reaches the agent, so build into it:
+      </P>
+      <Pre>{`#!/bin/sh
+set -e
+git clone --depth 1 https://github.com/org/solver.git
+cmake -S solver -B solver/build -DCMAKE_BUILD_TYPE=Release
+cmake --build solver/build -j2
+cp solver/build/libsolver.so .     # agent.py loads ./libsolver.so`}</Pre>
+      <Note>
+        A build is capped at 20 minutes, 1.5&nbsp;GB of memory and two CPUs, and a reviewer reads{" "}
+        <Code>build.sh</Code> at vetting. Pin what you download to a tag or commit, so the
+        version that was reviewed is the version that is built. Nothing secret is present
+        while building — keys reach the agent only when it starts.
+      </Note>
+
       <H3>agent.py — What the platform expects</H3>
       <P>
         The platform's adapter imports your <Code>agent.py</Code> and calls <Code>run_agent</Code>{" "}

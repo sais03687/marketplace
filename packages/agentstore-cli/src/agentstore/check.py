@@ -266,6 +266,15 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
                 out.append(Finding(WARN, "marketplace.json", 0, 'no "model" is named, so the platform default runs',
                                    "pick any text model from https://openrouter.ai/models and put its id in \"model\""))
 
+    build = root / "build.sh"
+    if build.exists():
+        # Not a problem — a notice, so the creator knows it runs and where.
+        out.append(Finding(WARN, "build.sh", 0,
+                           "build.sh runs once while your agent is built, with internet access and a C/C++/Fortran "
+                           "toolchain, as an unprivileged user; only what it leaves in this folder reaches the agent",
+                           "keep it to compiling and downloading what the agent needs — a reviewer reads it at vetting, "
+                           "and the build stops after 20 minutes"))
+
     reqs = root / "requirements.txt"
     if not reqs.exists():
         out.append(Finding(WARN, "requirements.txt", 0, "there is no requirements.txt",

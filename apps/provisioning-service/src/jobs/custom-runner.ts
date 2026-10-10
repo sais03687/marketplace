@@ -25,6 +25,7 @@ import Dockerode from "dockerode";
 import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
 import { removeAgentNetwork } from "../clients/docker.js";
+import { buildAgentImage } from "../clients/image-build.js";
 import { stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { startNetgate, stopEgressProxy, netgateName } from "../clients/egress-proxy.js";
 import { startPoller, stopPoller } from "./poller-manager.js";
@@ -180,40 +181,15 @@ function assembleBuildContext(
 // ─── Docker Operations ──────────────────────────────────────────────────────
 
 /**
- * Build a Docker image from the assembled build context.
+ * Build a Docker image from the assembled build context, with the same caps and
+ * failure handling as vetting (see image-build.ts).
  */
 async function buildCustomImage(
   buildDir: string,
   imageName: string,
 ): Promise<void> {
   console.log(`[custom-runner] Building image ${imageName} from ${buildDir}`);
-
-  const stream = await docker.buildImage(
-    {
-      context: buildDir,
-      src: ["."],
-    },
-    {
-      t: imageName,
-      dockerfile: "Dockerfile",
-    },
-  );
-
-  // Wait for build to complete
-  await new Promise<void>((resolve, reject) => {
-    docker.modem.followProgress(
-      stream,
-      (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      },
-      (event: { stream?: string; error?: string }) => {
-        if (event.stream) process.stdout.write(`[docker-build] ${event.stream}`);
-        if (event.error) console.error(`[docker-build] ERROR: ${event.error}`);
-      },
-    );
-  });
-
+  await buildAgentImage(buildDir, imageName, (line) => console.log(`[docker-build] ${line}`));
   console.log(`[custom-runner] Image ${imageName} built successfully`);
 }
 

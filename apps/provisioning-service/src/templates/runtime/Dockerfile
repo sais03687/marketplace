@@ -1,24 +1,66 @@
+# Agent image, built in two stages.
+#
+# BUILD stage: has git, a C/C++/Fortran toolchain and CMake, so a creator can
+# depend on packages that are only on GitHub or have to be compiled, and can
+# ship an optional build.sh for anything pip cannot do (a C++ library with
+# Python bindings, say). This stage has the internet and runs creator-supplied
+# code — pip's setup.py and build.sh — so it holds no secrets: keys only ever
+# reach the running container, at start-up, from the platform.
+#
+# RUNTIME stage: the slim image the agent actually runs in. It receives the
+# installed packages and the creator's folder (including anything build.sh
+# produced) and nothing else — no compilers, no git, no apt cache. A toolchain
+# left at runtime would hand every agent the means to build whatever it liked
+# inside a buyer's deployment; leaving it behind costs nothing.
+FROM python:3.12-slim AS build
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         git build-essential gfortran cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Platform deps, then the creator's, into a prefix copied whole into the runtime
+# stage. Sequential installs keep pip's normal meaning: the creator's
+# requirements are resolved against what the platform already installed.
+COPY platform-requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r platform-requirements.txt
+
+COPY creator/ ./creator/
+RUN if [ -f creator/requirements.txt ]; then \
+      PYTHONPATH=/install/lib/python3.12/site-packages \
+      pip install --no-cache-dir --prefix=/install -r creator/requirements.txt; \
+    fi
+
+# The optional build step runs as an unprivileged user, in the creator's own
+# folder, and can only leave its results there.
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin builder \
+    && chown -R builder:builder /build/creator
+USER builder
+RUN if [ -f creator/build.sh ]; then \
+      cd creator && PYTHONPATH=/install/lib/python3.12/site-packages sh ./build.sh; \
+    fi
+USER root
+
+
 FROM python:3.12-slim
+
+# Shared libraries that compiled code commonly links against at runtime
+# (OpenMP, the Fortran runtime). Libraries only — no compilers.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 libgfortran5 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /agent
 
-# Platform deps (fixed, always present)
-COPY platform-requirements.txt .
-RUN pip install --no-cache-dir -r platform-requirements.txt
+COPY --from=build /install /usr/local
+COPY --from=build /build/creator/ ./creator/
 
-# Creator deps — fail loudly if requirements.txt is present but broken
-# (if requirements.txt is absent the layer is skipped gracefully)
-COPY creator/ ./creator/
-RUN if [ -f creator/requirements.txt ]; then \
-      pip install --no-cache-dir -r creator/requirements.txt; \
-    fi
-
-# Copy platform adapter to WORKDIR root (NOT inside creator/)
+# Platform adapter at WORKDIR root (NOT inside creator/)
 COPY adapter.py .
 COPY platform_llm.py .
 COPY platform-requirements.txt .
-
-# Copy creator code into subdirectory (already copied above for deps — idempotent)
 
 RUN mkdir -p /data
 
@@ -28,10 +70,9 @@ RUN mkdir -p /data
 # not root inside the container. The agent binds 4000 (above the privileged
 # range) and writes only /data and /agent/creator, both owned by this user below.
 #
-# pip install ran above as root, before this switch, so build-time dependency
-# installation is unaffected. NOTE: a FRESH named volume for /data inherits this
-# ownership on first mount; an EXISTING root-owned volume (e.g. reprovisioning a
-# deployment created before this change) must be chowned once —
+# NOTE: a FRESH named volume for /data inherits this ownership on first mount; an
+# EXISTING root-owned volume (e.g. reprovisioning a deployment created before the
+# non-root change) must be chowned once —
 #   docker run --rm -v <vol>:/data busybox chown -R 10001:10001 /data
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin agent \
     && chown -R agent:agent /agent /data
