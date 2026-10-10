@@ -324,6 +324,18 @@ cp solver/build/libsolver.so .     # agent.py loads ./libsolver.so`}</Pre>
         while building — keys reach the agent only when it starts.
       </Note>
 
+      <P>
+        Some packages load system libraries at runtime that pip cannot install — SUMO&apos;s
+        Python bindings, for instance, need X11 and OpenGL even without a screen. List the
+        Debian packages in your manifest and they are installed in the runtime image:
+      </P>
+      <Pre>{`"systemPackages": ["libgl1", "libx11-6", "libxext6", "libxrender1"]`}</Pre>
+      <P>
+        Up to 25, by Debian package name; a reviewer sees the list. To find what a library
+        is missing, run <Code>ldd</Code> on its <Code>.so</Code> file inside a{" "}
+        <Code>python:3.12-slim</Code> container and look for <Code>not found</Code>.
+      </P>
+
       <H3>agent.py — What the platform expects</H3>
       <P>
         The platform's adapter imports your <Code>agent.py</Code> and calls <Code>run_agent</Code>{" "}
@@ -1020,6 +1032,7 @@ async def run_agent(content: str, context: dict, progress_fn) -> dict:
           ["connectsTo", "array", "No", "Outside hosts the agent may reach, exactly as written — e.g. [\"api.weather.gov\"]. Shown to reviewers and buyers; nothing unlisted is reachable. See Reaching other sites."],
           ["maxRunMinutes", "number", "No", "The longest one run may take, 1–240 minutes (default 60). The platform stops a run that reaches it and tells the sender. See Long-running work."],
           ["resources", "string", "No", "standard (512 MB, 1 CPU — the default) or large (2 GB, 2 CPUs; price floor +$40/month, cannot be free). See Resource limits."],
+          ["systemPackages", "array", "No", "Debian packages installed in the runtime image for libraries your packages load, e.g. [\"libgl1\"]. At most 25. See Packages from GitHub, and compiled code."],
           ["structuredOutput", "enum", "No", "auto | json | schema | none. How platform_llm asks your model for structured output. Default auto picks per vendor; use none for an agent that wants prose back. See Calling the model."],
         ]}
       />

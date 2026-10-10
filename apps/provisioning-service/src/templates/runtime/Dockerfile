@@ -57,6 +57,18 @@ WORKDIR /agent
 COPY --from=build /install /usr/local
 COPY --from=build /build/creator/ ./creator/
 
+# System libraries the creator's packages load at runtime, from the manifest's
+# systemPackages (e.g. SUMO's Python bindings link X11 and OpenGL). Debian
+# packages only, validated again here — names, at most 25 — and installed as
+# root before the switch to the agent's user below. A list that fails the check
+# fails the build rather than being skipped.
+RUN pkgs="$(python -c 'import json,re,sys; p=json.load(open("creator/marketplace.json")).get("systemPackages") or []; ok=isinstance(p,list) and len(p)<=25 and all(isinstance(x,str) and re.fullmatch(r"[a-z0-9][a-z0-9+.-]{1,62}",x) for x in p); print(" ".join(p)) if ok else sys.exit("systemPackages must be a list of at most 25 Debian package names")')" \
+    && if [ -n "$pkgs" ]; then \
+         apt-get update \
+         && apt-get install -y --no-install-recommends $pkgs \
+         && rm -rf /var/lib/apt/lists/*; \
+       fi
+
 # Platform adapter at WORKDIR root (NOT inside creator/)
 COPY adapter.py .
 COPY platform_llm.py .

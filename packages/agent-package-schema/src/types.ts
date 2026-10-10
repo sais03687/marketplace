@@ -103,6 +103,8 @@ export interface MarketplaceManifest {
   maxRunMinutes?: number;
   /** Compute tier: "standard" (512 MB, 1 CPU) or "large" (2 GB, 2 CPUs). Default standard. */
   resources?: "standard" | "large";
+  /** Debian packages installed in the runtime image, e.g. ["libgl1"]. At most 25. */
+  systemPackages?: string[];
 }
 
 /**

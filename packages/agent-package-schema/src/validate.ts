@@ -164,6 +164,22 @@ export function validateManifest(m: unknown): ValidationError[] {
     errors.push({ field: "resources", message: `resources must be one of: ${RESOURCE_TIER_NAMES.join(", ")}` });
   }
 
+  // Debian packages the agent needs at runtime (optional). Installed in the
+  // runtime image; the Dockerfile checks the same rule again.
+  if (manifest.systemPackages !== undefined) {
+    const p = manifest.systemPackages;
+    const valid =
+      Array.isArray(p) &&
+      p.length <= 25 &&
+      p.every((x) => typeof x === "string" && /^[a-z0-9][a-z0-9+.-]{1,62}$/.test(x));
+    if (!valid) {
+      errors.push({
+        field: "systemPackages",
+        message: "systemPackages must be a list of at most 25 Debian package names, e.g. [\"libgl1\", \"libx11-6\"]",
+      });
+    }
+  }
+
   // How long one run may take, in minutes (optional; the platform default is 60).
   if (manifest.maxRunMinutes !== undefined) {
     const m = manifest.maxRunMinutes;

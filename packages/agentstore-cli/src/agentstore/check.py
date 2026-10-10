@@ -327,6 +327,14 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
                 out.append(Finding(ERROR, "marketplace.json", 0, "still has TODO: placeholders",
                                    "replace each one — the name, tagline, description and capabilities "
                                    "become your public listing"))
+            pkgs = data.get("systemPackages")
+            if pkgs is not None and not (
+                isinstance(pkgs, list) and len(pkgs) <= 25
+                and all(isinstance(p, str) and re.fullmatch(r"[a-z0-9][a-z0-9+.-]{1,62}", p) for p in pkgs)
+            ):
+                out.append(Finding(ERROR, "marketplace.json", 0,
+                                   "systemPackages must be a list of at most 25 Debian package names",
+                                   'e.g. "systemPackages": ["libgl1", "libx11-6"]'))
             _, host_errors = check_connects_to(data.get("connectsTo"))
             for message in host_errors:
                 out.append(Finding(ERROR, "marketplace.json", 0, f"connectsTo: {message}",
