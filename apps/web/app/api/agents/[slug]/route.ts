@@ -17,8 +17,10 @@ export async function GET(
     where: { slug },
     include: {
       capabilities: true,
+      // displayName only. This route is public, and it used to return the
+      // creator's email address to anyone who asked for a listing.
       creator: {
-        select: { displayName: true, email: true },
+        select: { displayName: true },
       },
       reviews: {
         orderBy: { createdAt: "desc" },
