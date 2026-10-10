@@ -97,12 +97,24 @@ class _Tools:
         def no_problems(*args, **kwargs):
             return []
 
+        progress = {"sent": 0}
+
+        async def progress_fn(text, *args, **kwargs):
+            # The platform sends at most 3, a minute apart, and only where no
+            # approval would be needed; locally the first 3 are shown.
+            if progress["sent"] >= 3 or not str(text or "").strip():
+                return False
+            progress["sent"] += 1
+            self._say(f"progress note {progress['sent']}/3 to the sender: {str(text).strip()[:200]}")
+            return True
+
         offered = {
             "approve_fn": approve_fn, "resolve_fn": resolve_fn, "graph_fn": graph_fn,
             "file_resolver_fn": file_resolver_fn, "file_registrar_fn": file_registrar_fn,
             "file_describer_fn": file_describer_fn,
             "verify_fn": no_problems, "ranking_fn": no_problems, "headline_fn": no_problems,
             "mcp_fn": mcp_fn, "thread_id": "local-thread", "verify_attempts": 0,
+            "progress_fn": progress_fn,
         }
         for name in ("contribute_fn", "search_fn", "use_fn"):
             offered[name] = skipped(name)

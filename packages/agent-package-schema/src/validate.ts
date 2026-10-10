@@ -158,6 +158,14 @@ export function validateManifest(m: unknown): ValidationError[] {
     errors.push({ field: "connectsTo", message });
   }
 
+  // How long one run may take, in minutes (optional; the platform default is 60).
+  if (manifest.maxRunMinutes !== undefined) {
+    const m = manifest.maxRunMinutes;
+    if (typeof m !== "number" || !Number.isInteger(m) || m < 1 || m > 240) {
+      errors.push({ field: "maxRunMinutes", message: "maxRunMinutes must be a whole number of minutes from 1 to 240" });
+    }
+  }
+
   // Runtime (optional, defaults to "custom" — the only supported runtime)
   if (manifest.runtime !== undefined && !VALID_RUNTIMES.has(manifest.runtime as string)) {
     errors.push({ field: "runtime", message: `runtime must be one of: ${[...VALID_RUNTIMES].join(", ")}` });

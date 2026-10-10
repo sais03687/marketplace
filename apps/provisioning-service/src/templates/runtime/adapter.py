@@ -133,6 +133,40 @@ _pending_resumes: dict[str, dict] = {}
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 DEPLOYMENT_ID = os.environ.get("DEPLOYMENT_ID", "unknown")
+
+
+def _read_creator_manifest() -> dict:
+    """The package's own marketplace.json, as shipped beside agent.py."""
+    try:
+        return json.loads((Path(__file__).parent / "creator" / "marketplace.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_CREATOR_MANIFEST = _read_creator_manifest()
+
+
+def _max_run_seconds() -> float:
+    """How long one run may take before the platform stops it.
+
+    Runs had no limit at all, so a run stuck in a loop or waiting on something
+    that never answers held its container — and the buyer's reply — forever.
+    The creator sets the limit in the manifest (maxRunMinutes); 60 minutes by
+    default, between 1 and 240.
+    """
+    raw = os.environ.get("MAX_RUN_MINUTES") or _CREATOR_MANIFEST.get("maxRunMinutes")
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        minutes = 60.0
+    return max(1.0, min(minutes, 240.0)) * 60.0
+
+
+MAX_RUN_S = _max_run_seconds()
+# Interim emails a run may send through progress_fn, and how far apart. Enough
+# to say "started" and "nearly there" on a long job; too few to spam anyone.
+MAX_PROGRESS_EMAILS = 3
+PROGRESS_MIN_INTERVAL_S = 60.0
 AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "")
@@ -5420,7 +5454,7 @@ def _accepted_kwargs(fn, offered: dict) -> dict:
     return {name: value for name, value in offered.items() if name in declared}
 
 
-def _creator_tool_kwargs(fn, *, mcp_fn=None, thread_id=None, verify_attempts=None) -> dict:
+def _creator_tool_kwargs(fn, *, mcp_fn=None, thread_id=None, verify_attempts=None, progress_fn=None) -> dict:
     """Everything the platform can give creator code, filtered to what it wants."""
     offered = {
         # The approval rail, under the names the docs have always used.
@@ -5448,6 +5482,8 @@ def _creator_tool_kwargs(fn, *, mcp_fn=None, thread_id=None, verify_attempts=Non
         offered["thread_id"] = thread_id
     if verify_attempts is not None:
         offered["verify_attempts"] = verify_attempts
+    if progress_fn is not None:
+        offered["progress_fn"] = progress_fn
     return _accepted_kwargs(fn, offered)
 
 
@@ -5461,6 +5497,7 @@ def _warn_about_unfillable_params() -> None:
         "mcp_fn",
         "thread_id",
         "verify_attempts",
+        "progress_fn",
         "content",
         "context",
     }
@@ -6916,6 +6953,54 @@ async def receive_teams_message(request: Request):
         return {"ok": False, "error": "Internal error processing your message"}
 
 
+def _make_progress_fn(context: dict):
+    """A progress_fn bound to one run's message. See the inner docstring."""
+    progress_state = {"sent": 0, "last": 0.0}
+
+    async def progress_fn(text: str) -> bool:
+        """Tell the person who emailed that the work is under way.
+
+        For long jobs, so a buyer is not left wondering whether anything is
+        happening. Sent as a reply in the same thread. Limited to
+        MAX_PROGRESS_EMAILS per run, at least PROGRESS_MIN_INTERVAL_S apart,
+        and only to a recipient the buyer's policy would let a reply reach
+        without approval — an interim note is never worth an approval
+        request. Returns whether it was sent.
+        """
+        now = time.monotonic()
+        if progress_state["sent"] >= MAX_PROGRESS_EMAILS:
+            return False
+        if progress_state["sent"] and now - progress_state["last"] < PROGRESS_MIN_INTERVAL_S:
+            return False
+        note = str(text or "").strip()[:1000]
+        recipient = _extract_email(context.get("sender", ""))
+        if not note or not recipient or not context.get("message_id"):
+            return False
+        needs_approval, reason = _should_require_approval(recipient)
+        if needs_approval:
+            print(f"[adapter] progress note not sent ({reason})", flush=True)
+            return False
+        try:
+            # notice: an interim "still working" note from the creator's code.
+            # The run has not finished, so there are no files to attach yet;
+            # the final reply carries them.
+            await reply_email(
+                message_id=context["message_id"],
+                text=note,
+                fallback_to=recipient,
+                fallback_subject=context.get("subject", ""),
+            )
+        except Exception as exc:
+            print(f"[adapter] progress note failed: {exc}", flush=True)
+            return False
+        progress_state["sent"] += 1
+        progress_state["last"] = now
+        print(f"[adapter] progress note {progress_state['sent']}/{MAX_PROGRESS_EMAILS} sent to {recipient}", flush=True)
+        return True
+
+    return progress_fn
+
+
 async def _handle_message(message: str, context: dict):
     """Process a message through the LangGraph agent and act on the result."""
     print(f"[adapter] _handle_message called with session_key={context.get('session_key', '')}", flush=True)
@@ -6975,16 +7060,40 @@ async def _handle_message(message: str, context: dict):
             record_sandbox_step(tool, arguments, mcp_result)
             return await _read_back_summary(_register_sandbox_files(mcp_result))
 
+        progress_fn = _make_progress_fn(context)
+
         async def _invoke_agent(ctx: dict):
-            return await run_agent(
-                content=message,
-                context=ctx,
-                **_creator_tool_kwargs(
-                    run_agent,
-                    mcp_fn=_email_capturing_mcp_fn,
-                    thread_id=thread_id,
-                ),
-            )
+            # The run's time limit. Cancellation lands at the creator's next
+            # await, so work run with asyncio.to_thread finishes in its thread
+            # but its answer is no longer waited for. The sender is told the run
+            # stopped rather than hearing nothing; the reply still passes through
+            # the approval policy below like any other.
+            try:
+                return await asyncio.wait_for(
+                    run_agent(
+                        content=message,
+                        context=ctx,
+                        **_creator_tool_kwargs(
+                            run_agent,
+                            mcp_fn=_email_capturing_mcp_fn,
+                            thread_id=thread_id,
+                            progress_fn=progress_fn,
+                        ),
+                    ),
+                    timeout=MAX_RUN_S,
+                )
+            except asyncio.TimeoutError:
+                minutes = round(MAX_RUN_S / 60)
+                print(f"[adapter] run stopped after {minutes} min (maxRunMinutes)", flush=True)
+                return {
+                    "action": "reply_email",
+                    "text": (
+                        f"I stopped working on this after {minutes} minutes, the longest this "
+                        f"agent is allowed to run on one request, without finishing. "
+                        f"Splitting it into smaller requests should help."
+                    ),
+                    "needs_approval": False,
+                }
 
         print(f"[adapter] Running agent graph...", flush=True)
         result = await _invoke_agent(context)

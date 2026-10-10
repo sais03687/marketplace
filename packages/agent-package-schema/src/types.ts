@@ -99,6 +99,8 @@ export interface MarketplaceManifest {
    * they hire; nothing outside this list and the platform is reachable.
    */
   connectsTo?: string[];
+  /** The longest one run may take, in minutes (1–240, default 60). */
+  maxRunMinutes?: number;
 }
 
 /**

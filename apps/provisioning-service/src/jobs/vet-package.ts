@@ -804,7 +804,7 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
                 method: "POST",
                 headers: { "Content-Type": "application/json", "x-deployment-token": VET_HOOKS_TOKEN },
                 body: JSON.stringify({ message: interactiveMessage }),
-                signal: AbortSignal.timeout(180_000),
+                signal: AbortSignal.timeout(vetRunTimeoutMs(manifest)),
               }, 200);
               let reply = "";
               try { reply = (JSON.parse(res.fullBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
@@ -879,6 +879,20 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
   });
 
   console.log(`[vet-package] Done: ${report.summary}`);
+}
+
+/**
+ * How long vetting waits for the agent's answer.
+ *
+ * The agent's own limit (maxRunMinutes), so a long-job agent is tested on the
+ * work it is for, but never more than 15 minutes: vetting holds one of the
+ * worker's two slots, which hires share, and a reviewer can test a longer job
+ * on a hire. Three minutes when nothing is declared, as before.
+ */
+function vetRunTimeoutMs(manifest: Record<string, unknown> | null): number {
+  const declared = Number(manifest?.maxRunMinutes);
+  const minutes = Number.isFinite(declared) && declared > 0 ? Math.min(declared, 15) : 3;
+  return minutes * 60_000;
 }
 
 // ── Build context assembly (mirrors custom-runner.ts) ────────────────────────

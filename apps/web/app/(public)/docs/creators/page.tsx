@@ -890,6 +890,31 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
         looks like an unexplained restart, not a Python traceback.
       </P>
 
+      <H3 id="long-runs">Long-running work</H3>
+      <P>
+        A run may take up to an hour by default. Set <Code>maxRunMinutes</Code> in your
+        manifest (1–240) to change that; when a run reaches it, the platform stops it and tells
+        the sender so, rather than leaving them waiting. Vetting waits for your agent up to
+        that limit, at most 15 minutes.
+      </P>
+      <P>
+        For a job that takes minutes, ask for <Code>progress_fn</Code> and tell the sender it
+        has started. It sends a short reply in the same thread — at most three per run, a
+        minute apart, and only where no approval would be needed — and returns whether it was
+        sent:
+      </P>
+      <Pre>{`import asyncio
+
+async def run_agent(content: str, context: dict, progress_fn) -> dict:
+    await progress_fn("Got it — the simulation takes about 10 minutes. I'll reply with results.")
+    results = await asyncio.to_thread(run_simulation, content)   # keep the platform responsive
+    return {"action": "reply_email", "text": summarise(results)}`}</Pre>
+      <Warning>
+        <strong>Run heavy computation with <Code>asyncio.to_thread</Code>.</strong> Your agent
+        shares one event loop with the platform&apos;s health checks. A long calculation called
+        directly blocks them, and the agent is reported as not responding while it works.
+      </Warning>
+
       <H3 id="constraints-integrations">Integrations and tools</H3>
       <P>
         <Code>requiredIntegrations</Code> currently accepts exactly one value,{" "}
@@ -985,6 +1010,7 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
           ["graphScopes", "array", "No", "What the agent reaches in the buyer’s Microsoft 365, e.g. [\"files.read\", \"mail.send\"]. Shown on your listing and enforced at runtime. See Declaring what your agent reaches."],
           ["connectsTo", "array", "No", "Outside hosts the agent may reach, exactly as written — e.g. [\"api.weather.gov\"]. Shown to reviewers and buyers; nothing unlisted is reachable. See Reaching other sites."],
+          ["maxRunMinutes", "number", "No", "The longest one run may take, 1–240 minutes (default 60). The platform stops a run that reaches it and tells the sender. See Long-running work."],
           ["structuredOutput", "enum", "No", "auto | json | schema | none. How platform_llm asks your model for structured output. Default auto picks per vendor; use none for an agent that wants prose back. See Calling the model."],
         ]}
       />
