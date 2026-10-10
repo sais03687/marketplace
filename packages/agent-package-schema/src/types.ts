@@ -93,6 +93,12 @@ export interface MarketplaceManifest {
    * container as GRAPH_SCOPES.
    */
   graphScopes?: GraphScope[];
+  /**
+   * Outside sites this agent may reach, as exact host names
+   * (e.g. "api.weather.gov"). Shown to the reviewer and to the buyer before
+   * they hire; nothing outside this list and the platform is reachable.
+   */
+  connectsTo?: string[];
 }
 
 /**

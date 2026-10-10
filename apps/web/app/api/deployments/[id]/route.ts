@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, requireOrg } from "@/lib/api-utils";
 import { redactSecrets } from "@/lib/redact";
+import { hostsOfVersion } from "@/lib/connects-to";
+import { addedHosts } from "@marketplace/agent-package-schema";
 
 export async function GET(
   _request: Request,
@@ -34,6 +36,15 @@ export async function GET(
     deployment.agent.currentVersion !== null &&
     deployment.agentVersion !== deployment.agent.currentVersion;
 
+  // Outside sites the newer version reaches that this hire's version does not.
+  // Non-empty means the update waits for the buyer to accept them.
+  const updateNewHosts = updateAvailable
+    ? addedHosts(
+        await hostsOfVersion(deployment.agentId, deployment.agentVersion),
+        await hostsOfVersion(deployment.agentId, deployment.agent.currentVersion),
+      )
+    : [];
+
   // Why setup failed, for the panel that offers to retry it. Every step already
   // writes here; the buyer has never been shown any of it, which is how a hire
   // that failed looked exactly like one that worked.
@@ -49,6 +60,7 @@ export async function GET(
   const payload = {
     ...deployment,
     updateAvailable,
+    updateNewHosts,
     lastFailure: lastFailure
       ? { step: lastFailure.step, message: lastFailure.message, at: lastFailure.createdAt }
       : null,

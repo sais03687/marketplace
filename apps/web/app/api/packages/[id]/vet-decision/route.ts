@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import { hostsOfVersion } from "@/lib/connects-to";
+import { addedHosts } from "@marketplace/agent-package-schema";
 import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
 import { sendPlatformEmail, buildVettingDecisionEmail } from "@/lib/email";
@@ -200,9 +202,22 @@ export async function POST(
       },
     });
 
+    // A version that reaches outside sites a hire's current version did not is
+    // never applied automatically: auto-update is consent to the creator's
+    // improvements, not to new places the agent can send the buyer's data.
+    // Those hires keep their version, and their dashboard asks the buyer.
+    const hostsAfter = await hostsOfVersion(version.agentId, version.version);
     if (autoUpdateDeployments.length > 0) {
       await Promise.all(
         autoUpdateDeployments.map(async (dep) => {
+          const added = addedHosts(await hostsOfVersion(version.agentId, dep.agentVersion), hostsAfter);
+          if (added.length > 0) {
+            console.log(
+              `[vet-decision] Not auto-updating ${dep.id}: v${version.version} adds outside sites ` +
+                `(${added.join(", ")}) the buyer has not accepted`,
+            );
+            return;
+          }
           // Update version in DB so the container knows what to pull
           await prisma.deployment.update({
             where: { id: dep.id },

@@ -36,3 +36,11 @@ export {
   isValidManifest,
   type ValidationError,
 } from "./validate.js";
+
+export {
+  MAX_DECLARED_HOSTS,
+  hostProblem,
+  checkConnectsTo,
+  declaredHosts,
+  addedHosts,
+} from "./hosts.js";

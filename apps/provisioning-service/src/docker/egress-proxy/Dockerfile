@@ -12,7 +12,9 @@
 # enforcing egress should not itself be an unreviewed dependency.
 FROM alpine:3.20
 
-RUN apk add --no-cache tinyproxy socat
+# iptables: the gate refuses private and internal addresses itself (see
+# entrypoint.sh), so a hostname it allows cannot be pointed somewhere inside.
+RUN apk add --no-cache tinyproxy socat iptables ip6tables
 
 # The allowlist arrives as ALLOWED_DOMAINS and the forward target as AGENT_HOST,
 # so the image is identical for every deployment and nothing is mounted from the

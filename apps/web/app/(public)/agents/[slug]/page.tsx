@@ -4,9 +4,10 @@ import { CapabilityBadge } from "@/components/marketplace/capability-badge";
 import { HireButton } from "@/components/hire/hire-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle, KeyRound } from "lucide-react";
+import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle, KeyRound, Globe } from "lucide-react";
 import { GRAPH_SCOPE_LABELS, type GraphScope } from "@marketplace/agent-package-schema";
 import { formatPrice } from "@/lib/utils";
+import { hostsOfVersion } from "@/lib/connects-to";
 import Link from "next/link";
 
 
@@ -69,6 +70,8 @@ export default async function AgentListingPage({
   const declaredScopes: GraphScope[] | null = Array.isArray(agent.graphScopes)
     ? (agent.graphScopes as GraphScope[])
     : null;
+
+  const outsideHosts = await hostsOfVersion(agent.id, agent.currentVersion);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -343,6 +346,35 @@ export default async function AgentListingPage({
                     </li>
                   ))}
                 </ul>
+              )}
+            </div>
+
+            {/* Outside the buyer's Microsoft 365: every site the agent can reach
+                beyond the platform, from the approved version's manifest. Said
+                plainly when there are none, because "nothing" is the claim a
+                careful buyer is looking for. */}
+            <div className="rounded-lg border p-4">
+              <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                <Globe className="h-4 w-4" />
+                Outside sites it connects to
+              </div>
+              {outsideHosts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  None. It cannot reach any website or service outside your Microsoft 365
+                  and this platform.
+                </p>
+              ) : (
+                <>
+                  <ul className="space-y-1 font-mono text-xs text-muted-foreground">
+                    {outsideHosts.map((host) => (
+                      <li key={host}>· {host}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Only these exact sites — nothing else outside the platform is reachable, and
+                    every connection is logged.
+                  </p>
+                </>
               )}
             </div>
           </div>

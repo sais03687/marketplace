@@ -290,6 +290,33 @@ function OverviewTab({ version }: { version: VersionData }) {
         <MetaItem label="Price" value={`${formatPrice(version.agent.pricePerMonth)}/mo`} />
       </div>
 
+      {/* Outside sites. Approving this version admits exactly these hosts to
+          every hire's network gate, so they are put in front of the reviewer
+          rather than left inside the manifest JSON. */}
+      {(() => {
+        const hosts = Array.isArray(manifest?.connectsTo) ? (manifest!.connectsTo as unknown[]).map(String) : [];
+        return (
+          <div className={hosts.length ? "rounded-md border border-amber-300 bg-amber-50 p-3" : ""}>
+            <h4 className="mb-1 font-semibold text-muted-foreground">Outside sites it connects to</h4>
+            {hosts.length === 0 ? (
+              <p className="text-muted-foreground">None — Microsoft 365 and the platform only.</p>
+            ) : (
+              <>
+                <ul className="list-inside list-disc font-mono text-xs">
+                  {hosts.map((h) => (
+                    <li key={h}>{h}</li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-xs text-amber-900">
+                  Approving admits these exact hosts for every hire. Check each is a service this
+                  agent plausibly needs, and not one the creator controls or anyone can write to.
+                </p>
+              </>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Capabilities */}
       {version.agent.capabilities.length > 0 && (
         <div>

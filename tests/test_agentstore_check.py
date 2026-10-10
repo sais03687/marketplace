@@ -77,11 +77,11 @@ def test_every_laptop_habit_is_reported_at_its_line(tmp_path):
     _at(f, 1, "imaplib", WARN)
     _at(f, 4, "Anthropic SDK", WARN)
     _at(f, 5, "Flask runs a server", WARN)
-    _at(f, 6, "Slack is not reachable", WARN)
+    _at(f, 6, "Slack needs an account or API key", WARN)
     _at(f, 9, "api_key= is set to a fixed value", ERROR)
     _at(f, 9, "OpenAI-style key", ERROR)
     _at(f, 10, "ANTHROPIC_API_KEY", WARN)
-    _at(f, 14, "api.example-crm.com", WARN)
+    _at(f, 14, "api.example-crm.com, which is not listed in connectsTo", WARN)
     _at(f, 15, "input()", WARN)
 
 
@@ -132,3 +132,44 @@ def test_the_platforms_own_agents_pass():
         if path.exists():
             errors = [x for x in check(path) if x.level == ERROR]
             assert errors == [], f"{folder}: {errors}"
+
+
+def test_a_declared_site_is_not_reported_as_unreachable(tmp_path):
+    src = CLEAN_AGENT + '''
+import httpx
+def forecast():
+    return httpx.get("https://api.weather.gov/points/39.7,-86.1")
+'''
+    (tmp_path / "undeclared").mkdir()
+    (tmp_path / "declared").mkdir()
+    flagged = _agent(tmp_path / "undeclared", src)
+    assert any("api.weather.gov" in x.message for x in flagged)
+    declared = _agent(tmp_path / "declared", src, manifest={
+        "name": "T", "slug": "t", "version": "1.0.0", "model": "openai/gpt-oss-120b",
+        "connectsTo": ["api.weather.gov"]})
+    assert declared == []
+
+
+# The same cases the platform's own rules are tested with
+# (packages/agent-package-schema/src/hosts.ts), so the two cannot drift apart
+# without one of these failing.
+GOOD_HOSTS = ["api.weather.gov", "API.GitHub.com", "hooks.slack.com.", "data.ny.gov"]
+BAD_HOSTS = ["https://api.x.com", "api.x.com/v1", "*.x.com", "api.x.com:443", "10.0.0.1",
+             "169.254.169.254", "localhost", "host.docker.internal", "db.internal", "printer.local",
+             "com", "a..b.com", "-a.com", "[::1]", "api x.com", "metadata.google.internal", ""]
+
+
+def test_connects_to_rules_match_the_platform():
+    from agentstore.check import check_connects_to, host_problem
+    hosts, errors = check_connects_to(GOOD_HOSTS)
+    assert errors == [] and hosts == ["api.weather.gov", "api.github.com", "hooks.slack.com", "data.ny.gov"]
+    for bad in BAD_HOSTS:
+        assert host_problem(bad) is not None, bad
+    assert len(check_connects_to(["a.com", "A.com"])[1]) == 1
+    assert any("most" in e for e in check_connects_to([f"h{i}.example.org" for i in range(11)])[1])
+
+
+def test_a_bad_connects_to_is_an_error(tmp_path):
+    f = _agent(tmp_path, CLEAN_AGENT, manifest={
+        "name": "T", "slug": "t", "version": "1.0.0", "model": "m/x", "connectsTo": ["10.0.0.1"]})
+    assert any(x.level == ERROR and "connectsTo" in x.message for x in f)

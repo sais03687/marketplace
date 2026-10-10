@@ -13,12 +13,31 @@ export function StepConfirmation() {
   >("review");
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Outside sites the agent reaches. Null until loaded, so the hire button
+  // stays disabled rather than letting a hire through before the list is known.
+  const [connectsTo, setConnectsTo] = useState<string[] | null>(null);
+  const [acceptedHosts, setAcceptedHosts] = useState(false);
 
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/agents/${encodeURIComponent(state.agentSlug)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((agent) => {
+        if (!cancelled) setConnectsTo(Array.isArray(agent?.connectsTo) ? agent.connectsTo : []);
+      })
+      .catch(() => {
+        if (!cancelled) setConnectsTo([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.agentSlug]);
 
   const handleDeploy = async () => {
     setStatus("deploying");
@@ -39,6 +58,7 @@ export function StepConfirmation() {
           onboardingAnswers: Object.keys(state.onboardingAnswers).length > 0
             ? state.onboardingAnswers
             : undefined,
+          acceptedHosts: acceptedHosts && connectsTo?.length ? connectsTo : undefined,
         }),
       });
 
@@ -187,6 +207,32 @@ export function StepConfirmation() {
         )}
       </div>
 
+      {connectsTo && connectsTo.length > 0 && (
+        <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <p className="font-medium">This agent connects to sites outside Microsoft 365</p>
+          <ul className="list-inside list-disc font-mono text-xs">
+            {connectsTo.map((host) => (
+              <li key={host}>{host}</li>
+            ))}
+          </ul>
+          <p className="text-xs">
+            It can send what it is working on to these sites, and to nothing else outside the
+            platform. Every connection is logged, and emails and file changes still follow your
+            approval setting.
+          </p>
+          <label className="flex items-start gap-2 text-xs">
+            <input
+              id="accept-connects-to"
+              type="checkbox"
+              className="mt-0.5"
+              checked={acceptedHosts}
+              onChange={(e) => setAcceptedHosts(e.target.checked)}
+            />
+            <span>I understand this agent connects to the sites listed above.</span>
+          </label>
+        </div>
+      )}
+
       <div className="rounded-lg bg-muted p-3 text-xs text-muted-foreground">
         Your setup answers have been saved. All actions requiring approval
         will be queued until you review and approve them.
@@ -196,7 +242,11 @@ export function StepConfirmation() {
         <Button variant="outline" onClick={() => setStep(5)}>
           Back
         </Button>
-        <Button className="flex-1" onClick={handleDeploy}>
+        <Button
+          className="flex-1"
+          onClick={handleDeploy}
+          disabled={connectsTo === null || (connectsTo.length > 0 && !acceptedHosts)}
+        >
           Hire {state.hireName} — Pay with Stripe
         </Button>
       </div>

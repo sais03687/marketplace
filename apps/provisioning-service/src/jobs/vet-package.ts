@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import Dockerode from "dockerode";
 import { prisma } from "@marketplace/db";
-import { validateManifest } from "@marketplace/agent-package-schema";
+import { declaredHosts, validateManifest } from "@marketplace/agent-package-schema";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor } from "../utils/agent-token.js";
 import { registerVetRun, endVetRun } from "../utils/vet-broker.js";
@@ -480,7 +480,9 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           // then failed in a buyer's tenant — the sandbox certified an environment
           // the agent would never actually run in.
           vetNetwork = await createAgentNetwork(vetId!);
-          vetNetgate = await startNetgate(vetId!, vetNetwork, containerName);
+          // The sandbox reaches what the version declares, as a hire would, so the
+          // reviewer sees the agent working with the access it is asking for.
+          vetNetgate = await startNetgate(vetId!, vetNetwork, containerName, declaredHosts(manifest));
 
           container = await docker.createContainer({
             Image: imageName!,

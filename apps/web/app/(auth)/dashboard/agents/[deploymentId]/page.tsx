@@ -64,6 +64,7 @@ interface Deployment {
   agent: Agent;
   _count: { approvals: number };
   updateAvailable: boolean;
+  updateNewHosts?: string[];
   workspaceEmail: string | null;
   /**
    * "buyer_org" = the agent lives in the buyer's Microsoft 365. "platform" =
@@ -165,6 +166,9 @@ export default function AgentOverviewPage({
   const [reviewBody, setReviewBody] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
   const [daysActive, setDaysActive] = useState(0);
+  const [acceptNewHosts, setAcceptNewHosts] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -364,24 +368,73 @@ export default function AgentOverviewPage({
         </div>
       )}
 
-      {/* Update available banner */}
+      {/* Update available banner. A version that reaches new outside sites is
+          never applied on its own, so the buyer sees the sites and accepts them
+          here; any other update can be applied now rather than only "automatically". */}
       {deployment.updateAvailable && isActive && (
-        <div className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-          <ArrowUpCircle className="h-4 w-4 shrink-0" />
-          <div className="flex-1">
-            <p className="font-medium">Update available</p>
-            <p className="text-blue-700">
-              A new version of this agent is available.{" "}
-              {deployment.autoUpdate
-                ? "Auto-update is enabled — it will be applied automatically."
-                : "Enable auto-update in Settings to apply it automatically."}
-            </p>
-          </div>
-          {!deployment.autoUpdate && (
-            <Button size="sm" variant="outline" asChild>
-              <Link href={`/dashboard/agents/${deploymentId}/settings`}>Settings</Link>
+        <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          <div className="flex items-center gap-3">
+            <ArrowUpCircle className="h-4 w-4 shrink-0" />
+            <div className="flex-1">
+              <p className="font-medium">Update available</p>
+              <p className="text-blue-700">
+                {deployment.updateNewHosts?.length
+                  ? "The new version connects to sites this one does not. It will not be applied until you accept them."
+                  : deployment.autoUpdate
+                    ? "Auto-update is on, so it will be applied — or apply it now."
+                    : "Apply it now, or turn on auto-update in Settings."}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={updating || (!!deployment.updateNewHosts?.length && !acceptNewHosts)}
+              onClick={async () => {
+                setUpdating(true);
+                setUpdateError(null);
+                try {
+                  const res = await fetch(`/api/deployments/${deploymentId}/update`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      acceptedHosts: deployment.updateNewHosts?.length ? deployment.updateNewHosts : undefined,
+                    }),
+                  });
+                  if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.error || "Could not start the update");
+                  }
+                  await fetchData();
+                } catch (e) {
+                  setUpdateError(e instanceof Error ? e.message : "Could not start the update");
+                } finally {
+                  setUpdating(false);
+                }
+              }}
+            >
+              {updating ? <Loader2 className="h-3 w-3 animate-spin" /> : "Update now"}
             </Button>
+          </div>
+          {!!deployment.updateNewHosts?.length && (
+            <div className="space-y-1 pl-7">
+              <ul className="list-inside list-disc font-mono text-xs">
+                {deployment.updateNewHosts.map((h) => (
+                  <li key={h}>{h}</li>
+                ))}
+              </ul>
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  id="accept-update-hosts"
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={acceptNewHosts}
+                  onChange={(e) => setAcceptNewHosts(e.target.checked)}
+                />
+                <span>I accept that the updated agent connects to these sites.</span>
+              </label>
+            </div>
           )}
+          {updateError && <p className="pl-7 text-xs text-red-700">{updateError}</p>}
         </div>
       )}
 

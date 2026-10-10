@@ -6,6 +6,7 @@ import { agentGatewayPort, restartContainer } from "../clients/docker.js";
 import { probeAgent, waitUntilIdle, waitUntilHealthy } from "./update-helpers.js";
 import { customAgentContainerName } from "./custom-runner.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
+import { declaredHosts } from "@marketplace/agent-package-schema";
 
 function collectFiles(dir: string): Record<string, string> {
   const files: Record<string, string> = {};
@@ -113,6 +114,42 @@ export async function updateJob(deploymentId: string): Promise<void> {
     }
   } else {
     console.warn(`[update] No blob storagePath for v${deployment.agentVersion} — sending empty diff`);
+  }
+
+  // ── Changes a file push cannot apply ────────────────────────────────────────
+  //
+  // Pushing files into the running container replaces code. It does not install
+  // new packages, run a new build.sh, or change which outside sites the agent's
+  // gate admits — those are fixed when the image and the gate are built. Until
+  // this check, a version that changed any of them updated "successfully" and
+  // then ran without what it needed. Such a version is applied by rebuilding
+  // the deployment the way resume does, which builds both afresh from it.
+  if (tmpDir) {
+    let previousDir: string | null = null;
+    try {
+      previousDir = previousVersion
+        ? await downloadVersionPackage(deployment.agent.id, previousVersion)
+        : null;
+      const reasons = rebuildReasons(previousDir, tmpDir);
+      if (reasons.length > 0) {
+        console.log(`[update] v${deployment.agentVersion} needs a rebuild (${reasons.join("; ")})`);
+        await waitUntilIdle(port);
+        await rebuildDeployment(deploymentId, deployment.status);
+        await prisma.provisioningLog.create({
+          data: {
+            deploymentId,
+            step: "update_complete",
+            status: "succeeded",
+            attempt: 1,
+            message: `Rebuilt for v${deployment.agentVersion} — ${reasons.join("; ")}`,
+          },
+        });
+        console.log(`[update] Deployment ${deploymentId} rebuilt for v${deployment.agentVersion}`);
+        return;
+      }
+    } finally {
+      if (previousDir) { try { rmSync(previousDir, { recursive: true, force: true }); } catch {} }
+    }
   }
 
   // ── Push files to running agent ─────────────────────────────────────────────
@@ -285,4 +322,75 @@ async function pushVersion(
 
   await restartContainer(containerName);
   return waitUntilHealthy(port);
+}
+
+/** Download a stored version's package to a temp dir, or null if there is none. */
+async function downloadVersionPackage(agentId: string, version: string): Promise<string | null> {
+  const row = await prisma.agentVersion.findFirst({
+    where: { agentId, version },
+    orderBy: { createdAt: "desc" },
+    select: { storagePath: true },
+  });
+  if (!row?.storagePath || !isBlobStoragePath(row.storagePath)) return null;
+  try {
+    return await downloadBlobPackage(row.storagePath);
+  } catch {
+    return null;
+  }
+}
+
+function readOrEmpty(dir: string, name: string): string {
+  try {
+    return readFileSync(join(dir, name), "utf-8").replace(/\r\n/g, "\n").trim();
+  } catch {
+    return "";
+  }
+}
+
+function hostsOf(dir: string): string[] {
+  try {
+    return declaredHosts(JSON.parse(readFileSync(join(dir, "marketplace.json"), "utf-8"))).sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * What in the new package only a rebuild applies.
+ *
+ * With the running version's package unknown (an agent that never reported
+ * its version), a new package that has a build.sh or declares outside sites is
+ * rebuilt anyway — pushing files could never apply either.
+ */
+export function rebuildReasons(previousDir: string | null, nextDir: string): string[] {
+  const reasons: string[] = [];
+  if (previousDir === null) {
+    if (readOrEmpty(nextDir, "build.sh")) reasons.push("has a build step");
+    if (hostsOf(nextDir).length) reasons.push("declares outside sites");
+    return reasons;
+  }
+  if (readOrEmpty(previousDir, "requirements.txt") !== readOrEmpty(nextDir, "requirements.txt")) {
+    reasons.push("requirements.txt changed");
+  }
+  if (readOrEmpty(previousDir, "build.sh") !== readOrEmpty(nextDir, "build.sh")) {
+    reasons.push("build.sh changed");
+  }
+  if (hostsOf(previousDir).join(",") !== hostsOf(nextDir).join(",")) {
+    reasons.push("outside sites changed");
+  }
+  return reasons;
+}
+
+/**
+ * Rebuild a running deployment from its current version, keeping its data.
+ *
+ * The same path resume takes: provisioning reconciles an existing deployment
+ * rather than duplicating it, rebuilding the image and the network gate from
+ * the version's package. The data volume is kept, so memory, approvals and
+ * checkpoints survive.
+ */
+async function rebuildDeployment(deploymentId: string, statusBefore: string): Promise<void> {
+  await prisma.deployment.update({ where: { id: deploymentId }, data: { status: "PROVISIONING" } });
+  const { provisionJob } = await import("./provision.js");
+  await provisionJob(deploymentId, statusBefore as any);
 }

@@ -24,8 +24,52 @@ if [ -n "${ALLOWED_DOMAINS:-}" ]; then
   done
 fi
 
+# Hosts a creator declared in their manifest are matched exactly — no
+# subdomains. Allowing "github.com" must not also allow "gist.github.com",
+# which anyone can write to. The platform's own hosts above keep subdomains
+# because the platform chose them.
+if [ -n "${EXACT_DOMAINS:-}" ]; then
+  echo "$EXACT_DOMAINS" | tr ',' '\n' | while IFS= read -r raw; do
+    domain=$(printf '%s' "$raw" | tr -d '[:space:]')
+    [ -z "$domain" ] && continue
+    escaped=$(printf '%s' "$domain" | sed 's/\./\\./g')
+    printf '^%s$\n' "$escaped" >> "$FILTER"
+  done
+fi
+
 echo "[netgate] egress allowlist ($(wc -l < "$FILTER") rule(s), everything else denied):" >&2
 cat "$FILTER" >&2
+
+# ── Egress: refuse private and internal addresses ──────────────────────────────
+#
+# The filter above decides by NAME; tinyproxy then resolves the name and
+# connects to whatever address comes back. A name whose DNS the creator controls
+# could be pointed at this host, another agent's gate, or the cloud provider's
+# metadata service, and the name check would pass. These rules decide by
+# ADDRESS: the only private destinations this gate may reach are the platform
+# host (for Graph tokens and mail) and its own agent's network (for the ingress
+# below). Everything else private, loopback-to-elsewhere, link-local, CGNAT and
+# multicast is dropped.
+#
+# Set up before tinyproxy starts and fatal if it fails: a gate that cannot hold
+# this line refuses to start rather than run without it.
+if [ "${BLOCK_PRIVATE:-1}" = "1" ]; then
+  GATEWAY_IP=$(getent hosts host.docker.internal | awk '{print $1}' | head -1)
+  iptables -A OUTPUT -o lo -j ACCEPT
+  iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  [ -n "$GATEWAY_IP" ] && iptables -A OUTPUT -d "$GATEWAY_IP" -j ACCEPT
+  [ -n "${AGENT_SUBNET:-}" ] && iptables -A OUTPUT -d "$AGENT_SUBNET" -j ACCEPT
+  for net in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 \
+             172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15 \
+             224.0.0.0/4 240.0.0.0/4; do
+    iptables -A OUTPUT -d "$net" -j DROP
+  done
+  # No IPv6 route is configured for agents; refuse it outright rather than
+  # maintain a second list nobody tests.
+  ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
+  ip6tables -P OUTPUT DROP 2>/dev/null || true
+  echo "[netgate] private destinations blocked (allowed: gateway ${GATEWAY_IP:-none}, agent net ${AGENT_SUBNET:-none})" >&2
+fi
 
 cat > /etc/tinyproxy/tinyproxy.conf <<EOF
 User tinyproxy

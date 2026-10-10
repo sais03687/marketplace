@@ -150,7 +150,7 @@ export default function CreatorDocsPage() {
           ["Your script checks an inbox", "The agent has its own address; each email arrives as a call to run_agent"],
           ["Your script sends the reply", "You return the reply; the platform sends it, after approval if the buyer requires it"],
           ["Your own Gmail / Microsoft login", "Microsoft 365 through graph_fn, with the buyer's permissions and approval policy"],
-          ["Calls to any website or API", "Not available yet — only Microsoft Graph and the platform are reachable"],
+          ["Calls to any website or API", "Only the hosts you list in connectsTo, each shown to buyers; services that need an API key are not supported yet"],
           ["Runs when you start it", "Runs whenever a buyer's email arrives; nothing to host"],
         ]}
       />
@@ -224,12 +224,12 @@ async def run_agent(content: str, context: dict) -> dict:
         <a href="#package" className="underline">what the platform expects</a>).
       </P>
       <Warning>
-        <strong>Other websites are not reachable.</strong> An agent that calls Slack, a CRM,
-        a vendor API or its own hosted database will not connect from the platform yet — see{" "}
-        <a href="#constraints-network" className="underline">Outbound network access</a>.
-        Agents whose value is working on what they are sent — triage, analysis, drafting,
-        summaries — move over cleanly. Agents whose value is connecting other services do
-        not, for now.
+        <strong>Other websites need declaring.</strong> An agent that calls a public API
+        lists its host in <Code>connectsTo</Code> (see{" "}
+        <a href="#connects-to" className="underline">Reaching other sites</a>) and buyers see it
+        before hiring. Services that need an API key — Slack, a CRM, a paid data provider —
+        cannot be connected yet, because there is no safe place for the key. Agents whose
+        value is working on what they are sent move over cleanly today.
       </Warning>
 
       <H3 id="existing-step-local">4. Check and test it on your machine</H3>
@@ -754,11 +754,29 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
           ["The platform's own hostnames", "Approval callbacks and the model gateway"],
         ]}
       />
+      <H3 id="connects-to">Reaching other sites: connectsTo</H3>
+      <P>
+        To reach anything else — a public API, a data source — list each host in your
+        manifest. Nothing that is not listed is reachable, and the list is shown to the
+        reviewer at vetting and to every buyer before they hire:
+      </P>
+      <Pre>{`"connectsTo": ["api.weather.gov", "api.open-meteo.com"]`}</Pre>
+      <Table
+        headers={["Rule", "Why"]}
+        rows={[
+          ["Exact host names only — no wildcards, URLs, paths or ports", "Allowing github.com does not allow gist.github.com, which anyone can write to"],
+          ["No IP addresses or internal names (localhost, *.internal, *.local)", "A buyer cannot judge an address, and internal names are never an outside service"],
+          ["At most 10 hosts", "A short list a person can actually read"],
+          ["Private and internal addresses are refused by the network gate itself", "A listed name pointed at the platform's network still cannot reach it"],
+          ["A new version that adds a host is not auto-updated", "Each buyer accepts the new host on their dashboard first"],
+        ]}
+      />
       <Warning>
-        <strong>This list cannot be extended.</strong> There is no manifest field for it.
-        Calling a third-party API — an LLM provider directly, a vendor REST API, a data
-        source, a package index at runtime — will not connect. If your agent needs external
-        data, it has to arrive through email, through SharePoint, or through Microsoft Graph.
+        <strong>API keys are not supported yet.</strong> There is nowhere to keep a secret for
+        a listed service, and a key written into your code is uploaded with it, readable by
+        reviewers — <Code>agentstore check</Code> refuses one. Use services that need no key,
+        or that the buyer sends you data from, until key storage ships. Model calls are
+        unaffected: those never needed a key of yours.
       </Warning>
 
       <H3 id="constraints-graph">Microsoft Graph: all of it, not just our helpers</H3>
@@ -966,6 +984,7 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
           ["graphScopes", "array", "No", "What the agent reaches in the buyer’s Microsoft 365, e.g. [\"files.read\", \"mail.send\"]. Shown on your listing and enforced at runtime. See Declaring what your agent reaches."],
+          ["connectsTo", "array", "No", "Outside hosts the agent may reach, exactly as written — e.g. [\"api.weather.gov\"]. Shown to reviewers and buyers; nothing unlisted is reachable. See Reaching other sites."],
           ["structuredOutput", "enum", "No", "auto | json | schema | none. How platform_llm asks your model for structured output. Default auto picks per vendor; use none for an agent that wants prose back. See Calling the model."],
         ]}
       />

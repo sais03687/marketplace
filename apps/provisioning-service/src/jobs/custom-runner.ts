@@ -26,6 +26,52 @@ import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
 import { removeAgentNetwork } from "../clients/docker.js";
 import { buildAgentImage } from "../clients/image-build.js";
+import { declaredHosts } from "@marketplace/agent-package-schema";
+
+/**
+ * Give an agent's data volume to the user the agent runs as (uid 10001).
+ *
+ * Agents ran as root until 2026-08-24, so a volume created before then is
+ * root-owned, and the non-root image cannot write it: the agent would lose its
+ * memory, pending approvals and checkpoints the first time it is rebuilt. That
+ * was a manual step noted in the Dockerfile, which nothing ever ran. Now every
+ * start does it, with a throwaway container that has no network. Idempotent —
+ * on a volume already owned by the agent it changes nothing.
+ */
+async function ensureDataOwnedByAgent(volume: string): Promise<void> {
+  try {
+    await docker.getImage("alpine:3.20").inspect();
+  } catch {
+    const stream = await docker.pull("alpine:3.20");
+    await new Promise<void>((res, rej) =>
+      docker.modem.followProgress(stream, (err: Error | null) => (err ? rej(err) : res())),
+    );
+  }
+  const helper = await docker.createContainer({
+    Image: "alpine:3.20",
+    Cmd: ["chown", "-R", "10001:10001", "/data"],
+    HostConfig: { Binds: [`${volume}:/data`], NetworkMode: "none" },
+    Labels: { "marketplace.role": "volume-chown" },
+  });
+  try {
+    await helper.start();
+    const { StatusCode } = await helper.wait();
+    if (StatusCode !== 0) {
+      throw new Error(`chown of ${volume} exited ${StatusCode}`);
+    }
+  } finally {
+    await helper.remove({ force: true }).catch(() => {});
+  }
+}
+
+/** The outside hosts a package's manifest declares; none if it is unreadable. */
+function declaredHostsOfPackage(packageDir: string): string[] {
+  try {
+    return declaredHosts(JSON.parse(readFileSync(join(packageDir, "marketplace.json"), "utf-8")));
+  } catch {
+    return [];
+  }
+}
 import { stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { startNetgate, stopEgressProxy, netgateName } from "../clients/egress-proxy.js";
 import { startPoller, stopPoller } from "./poller-manager.js";
@@ -247,11 +293,17 @@ export async function spawnCustomAgent(
           `default bridge, which would give the agent unrestricted outbound access.`,
       );
     }
+    // Outside sites this version declared, read from the package being run —
+    // the same file the reviewer approved — so a hire reaches exactly what its
+    // version lists and nothing else.
     const { proxyUrl, hostPort: gatewayPort } = await startNetgate(
       deploymentId,
       networkName,
       containerName,
+      declaredHostsOfPackage(resolvedDir),
     );
+
+    await ensureDataOwnedByAgent(`custom-data-${deploymentId.slice(0, 8)}`);
 
     const container = await docker.createContainer({
       Image: imageName,

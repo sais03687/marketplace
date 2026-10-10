@@ -2,10 +2,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { docker } from "./docker.js";
 import { config } from "../config.js";
+import { checkConnectsTo } from "@marketplace/agent-package-schema";
+
+/** Declared hosts that pass the manifest rules; any failure admits none. */
+function declaredHostsFromList(hosts: string[]): string[] {
+  const { hosts: ok, errors } = checkConnectsTo(hosts);
+  if (errors.length) {
+    console.warn(`[netgate] declared hosts refused (${errors.join("; ")}) — admitting none`);
+    return [];
+  }
+  return ok;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export const EGRESS_IMAGE = "marketplace/netgate:latest";
+// Versioned so a change to the gate rebuilds it: the image is built only when
+// absent, so reusing a tag would leave every new gate on the old code. Running
+// gates keep the image they started with until they are next restarted.
+// v2: exact matching for creator-declared hosts, and private destinations
+// refused by address (entrypoint.sh).
+export const EGRESS_IMAGE = "marketplace/netgate:v2";
 export const EGRESS_PORT = 8888;
 
 /**
@@ -87,20 +103,40 @@ export async function startNetgate(
   deploymentId: string,
   networkName: string,
   agentHost: string,
-  extraDomains: string[] = [],
+  declaredHosts: string[] = [],
 ): Promise<{ proxyUrl: string; hostPort: number }> {
   await ensureEgressImage();
   const name = netgateName(deploymentId);
 
   await stopEgressProxy(deploymentId);
 
-  const allowed = [...new Set([...baselineAllowedDomains(), ...extraDomains])];
-  console.log(`[netgate] ${name} allows: ${allowed.join(", ")}`);
+  // Re-checked here, not trusted from the caller: this is the last point before
+  // a host is admitted, and a list that fails the rules admits nothing.
+  const exact = declaredHostsFromList(declaredHosts);
+  const allowed = baselineAllowedDomains();
+  console.log(
+    `[netgate] ${name} allows: ${allowed.join(", ")}` +
+      (exact.length ? ` + declared (exact): ${exact.join(", ")}` : ""),
+  );
+
+  // The agent's own network is the one private range the gate must still reach
+  // (it forwards the platform's requests in to the agent). Read from Docker
+  // rather than assumed; without it the gate cannot do its job, so it is fatal.
+  const net = await docker.getNetwork(networkName).inspect();
+  const agentSubnet: string | undefined = net?.IPAM?.Config?.[0]?.Subnet;
+  if (!agentSubnet) {
+    throw new Error(`[netgate] Could not read the subnet of ${networkName}`);
+  }
 
   const container = await docker.createContainer({
     Image: EGRESS_IMAGE,
     name,
-    Env: [`ALLOWED_DOMAINS=${allowed.join(",")}`, `AGENT_HOST=${agentHost}`],
+    Env: [
+      `ALLOWED_DOMAINS=${allowed.join(",")}`,
+      `EXACT_DOMAINS=${exact.join(",")}`,
+      `AGENT_SUBNET=${agentSubnet}`,
+      `AGENT_HOST=${agentHost}`,
+    ],
     ExposedPorts: { "4000/tcp": {} },
     HostConfig: {
       // The agent's gateway is published here rather than on the agent itself:
@@ -119,6 +155,10 @@ export async function startNetgate(
       NanoCpus: 250_000_000,
       PidsLimit: 64,
       SecurityOpt: ["no-new-privileges"],
+      // NET_ADMIN lets the entrypoint install the rules that refuse private
+      // destinations. It is the gate's own code that uses it, before tinyproxy
+      // starts as an unprivileged user; agent code never runs in this container.
+      CapAdd: ["NET_ADMIN"],
       // This container keeps the host route the agent no longer has.
       ExtraHosts: ["host.docker.internal:host-gateway"],
       // Primary network is the default bridge, deliberately. Docker configures

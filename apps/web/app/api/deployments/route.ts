@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { acceptsAll, hostsOfVersion } from "@/lib/connects-to";
 import {
   jsonError,
   jsonSuccess,
@@ -19,6 +20,8 @@ const createDeploymentSchema = z.object({
   slackAppToken: z.string().optional(),
   // Onboarding answers collected during the hire wizard (skips INTERVIEW stage)
   onboardingAnswers: z.record(z.string()).optional(),
+  // The outside sites the buyer agreed to on the confirmation step.
+  acceptedHosts: z.array(z.string()).max(20).optional(),
   workspaceProvider: z.enum(["GOOGLE", "MICROSOFT", "NONE"]).optional().default("NONE"),
   // Buyer's Microsoft 365 tenant ID (from admin consent OAuth flow)
   buyerMicrosoftTenantId: z.string().optional(),
@@ -75,6 +78,18 @@ export async function POST(request: Request) {
 
   if (!agent || agent.status !== "LIVE") {
     return jsonError("Agent not found or not available", 404);
+  }
+
+  // An agent that reaches outside sites is hired only by a buyer who saw and
+  // accepted that list. Checked here, not just in the wizard, so no other route
+  // to this endpoint can skip it.
+  const requiredHosts = await hostsOfVersion(agent.id, agent.currentVersion);
+  if (!acceptsAll(requiredHosts, data.acceptedHosts)) {
+    return jsonError(
+      `This agent connects to sites outside Microsoft 365 (${requiredHosts.join(", ")}). ` +
+        `Review and accept them before hiring.`,
+      400,
+    );
   }
 
   // Process onboarding answers (collected during hire wizard) into autonomyConfig

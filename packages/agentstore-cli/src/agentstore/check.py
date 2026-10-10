@@ -82,6 +82,68 @@ HTTP_CALLS = {
 REACHABLE_HOSTS = ("graph.microsoft.com", "sharepoint.com", "openrouter.ai", "localhost", "127.0.0.1")
 
 
+# Mirrors packages/agent-package-schema/src/hosts.ts — the platform's upload uses
+# that file; tests/test_agentstore_check.py runs the same cases against both.
+MAX_DECLARED_HOSTS = 10
+_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_RESERVED_HOSTS = {"localhost", "host.docker.internal", "gateway.docker.internal", "metadata.google.internal", "metadata"}
+_RESERVED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".corp", ".intranet",
+                      ".private", ".arpa", ".test", ".invalid", ".example", ".onion")
+
+
+def host_problem(raw) -> str | None:
+    """Why `raw` cannot be listed in connectsTo, or None if it can."""
+    if not isinstance(raw, str):
+        return "each entry must be a host name in quotes"
+    host = raw.strip().lower()
+    if not host:
+        return "an entry is empty"
+    if "://" in host:
+        return f'"{raw}" is a URL — give the host only, e.g. "api.example.com"'
+    if re.search(r"[/?#]", host):
+        return f'"{raw}" has a path — give the host only'
+    if "*" in host:
+        return f'"{raw}" is a wildcard — list each host exactly'
+    if ":" in host or host.startswith("["):
+        return f'"{raw}" has a port or is an IPv6 address — give the host name only'
+    if re.search(r"\s", host):
+        return f'"{raw}" contains a space'
+    if len(host) > 253:
+        return f'"{raw}" is longer than a host name can be'
+    labels = host.rstrip(".").split(".")
+    if len(labels) < 2:
+        return f'"{raw}" is not a full host name (expected something like api.example.com)'
+    if not all(_LABEL.match(l) for l in labels):
+        return f'"{raw}" is not a valid host name'
+    if labels[-1].isdigit():
+        return f'"{raw}" is an IP address — declare the service\'s host name instead'
+    if host in _RESERVED_HOSTS or host.endswith(_RESERVED_SUFFIXES):
+        return f'"{raw}" is a private or internal name, which agents cannot reach'
+    return None
+
+
+def check_connects_to(value) -> tuple[list[str], list[str]]:
+    """(normalised hosts, errors) for a manifest's connectsTo."""
+    if value is None:
+        return [], []
+    if not isinstance(value, list):
+        return [], ["connectsTo must be a list of host names"]
+    hosts, errors = [], []
+    for entry in value:
+        problem = host_problem(entry)
+        if problem:
+            errors.append(problem)
+            continue
+        host = entry.strip().lower().rstrip(".")
+        if host in hosts:
+            errors.append(f'"{host}" is listed twice')
+        else:
+            hosts.append(host)
+    if len(hosts) > MAX_DECLARED_HOSTS:
+        errors.append(f"connectsTo lists {len(hosts)} hosts; the most an agent may declare is {MAX_DECLARED_HOSTS}")
+    return hosts, errors
+
+
 @dataclass
 class Finding:
     level: str
@@ -92,9 +154,10 @@ class Finding:
 
 
 class _Visitor(ast.NodeVisitor):
-    def __init__(self, rel: str, out: list[Finding]):
+    def __init__(self, rel: str, out: list[Finding], declared: list[str] | None = None):
         self.rel = rel
         self.out = out
+        self.declared = set(declared or [])
         self.aliases: dict[str, str] = {}  # local name -> module path
 
     def add(self, level: str, node: ast.AST | None, message: str, fix: str) -> None:
@@ -112,9 +175,9 @@ class _Visitor(ast.NodeVisitor):
                 return
             if name in BLOCKED_SERVICES:
                 svc = BLOCKED_SERVICES[name]
-                self.add(WARN, node, f"imports {name}: {svc} is not reachable from the platform",
-                         "only Microsoft Graph and the platform are reachable today; agents whose value is "
-                         "connecting other services cannot run there yet")
+                self.add(WARN, node, f"imports {name}: {svc} needs an account or API key, which agents cannot hold yet",
+                         "a site can be listed in connectsTo, but there is no safe place for its key until key "
+                         "storage ships; services that need no key work today")
                 return
             if name in SERVER_LIBS:
                 self.add(WARN, node, f"imports {name}: {SERVER_LIBS[name]} runs a server, and the platform runs none for you",
@@ -167,9 +230,11 @@ class _Visitor(ast.NodeVisitor):
         if target in HTTP_CALLS and node.args and isinstance(node.args[0], ast.Constant) \
                 and isinstance(node.args[0].value, str):
             host = urlparse(node.args[0].value).hostname or ""
-            if host and not any(host == h or host.endswith("." + h) for h in REACHABLE_HOSTS):
-                self.add(WARN, node, f"calls {host}, which is not reachable from the platform",
-                         "only Microsoft Graph and the platform are reachable today")
+            reachable = any(host == h or host.endswith("." + h) for h in REACHABLE_HOSTS)
+            if host and host not in self.declared and not reachable:
+                self.add(WARN, node, f"calls {host}, which is not listed in connectsTo",
+                         f'add "{host}" to "connectsTo" in marketplace.json — buyers see the list — '
+                         "if the agent needs it; unlisted sites are unreachable")
         if target and target[0] in ("os.environ", "os") and target[1] in ("get", "getenv") and node.args \
                 and isinstance(node.args[0], ast.Constant) and node.args[0].value in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
             self.add(WARN, node, f"reads {node.args[0].value}, which is empty on the platform",
@@ -262,6 +327,10 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
                 out.append(Finding(ERROR, "marketplace.json", 0, "still has TODO: placeholders",
                                    "replace each one — the name, tagline, description and capabilities "
                                    "become your public listing"))
+            _, host_errors = check_connects_to(data.get("connectsTo"))
+            for message in host_errors:
+                out.append(Finding(ERROR, "marketplace.json", 0, f"connectsTo: {message}",
+                                   "see Reaching other sites in the creator docs"))
             if not data.get("model"):
                 out.append(Finding(WARN, "marketplace.json", 0, 'no "model" is named, so the platform default runs',
                                    "pick any text model from https://openrouter.ai/models and put its id in \"model\""))
@@ -286,9 +355,18 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
                                    "remove it; the platform supplies what it provides"))
 
 
+def _declared(root: Path) -> list[str]:
+    try:
+        hosts, errors = check_connects_to(json.loads((root / "marketplace.json").read_text(encoding="utf-8")).get("connectsTo"))
+        return [] if errors else hosts
+    except Exception:
+        return []
+
+
 def check(folder: str | Path) -> list[Finding]:
     root = Path(folder)
     out: list[Finding] = []
+    declared = _declared(root)
     _check_package_files(root, out)
     _check_entry_points(root, out)
     for path in _python_files(root):
@@ -299,6 +377,6 @@ def check(folder: str | Path) -> list[Finding]:
             if rel != "agent.py":  # agent.py's syntax error is already reported
                 out.append(Finding(ERROR, rel, 0, f"{rel} does not parse", "fix the syntax error"))
             continue
-        _Visitor(rel, out).visit(tree)
+        _Visitor(rel, out, declared).visit(tree)
     out.sort(key=lambda f: (f.level != ERROR, f.file, f.line))
     return out

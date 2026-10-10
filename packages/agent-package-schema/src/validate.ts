@@ -12,6 +12,8 @@ const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 /** "vendor/model", optionally with a :variant suffix the provider uses. */
 const MODEL_ID_RE = /^[a-z0-9][\w.-]*\/[\w.:-]+$/i;
 
+import { checkConnectsTo } from "./hosts.js";
+
 const VALID_CATEGORIES: Set<string> = new Set([
   "SALES_OPERATIONS",
   "CUSTOMER_SUCCESS",
@@ -149,6 +151,11 @@ export function validateManifest(m: unknown): ValidationError[] {
   // Autonomy defaults
   if (!manifest.autonomyDefaults || typeof manifest.autonomyDefaults !== "object") {
     errors.push({ field: "autonomyDefaults", message: "autonomyDefaults is required" });
+  }
+
+  // Outside sites the agent may reach (optional). See hosts.ts.
+  for (const message of checkConnectsTo(manifest.connectsTo).errors) {
+    errors.push({ field: "connectsTo", message });
   }
 
   // Runtime (optional, defaults to "custom" — the only supported runtime)
