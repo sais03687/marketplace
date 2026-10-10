@@ -101,6 +101,8 @@ export interface MarketplaceManifest {
   connectsTo?: string[];
   /** The longest one run may take, in minutes (1–240, default 60). */
   maxRunMinutes?: number;
+  /** Compute tier: "standard" (512 MB, 1 CPU) or "large" (2 GB, 2 CPUs). Default standard. */
+  resources?: "standard" | "large";
 }
 
 /**

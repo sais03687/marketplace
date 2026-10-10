@@ -148,7 +148,7 @@ export async function POST(
   const versionPriceDollars = manifest.pricePerMonth as number | undefined;
   const versionPrice =
     versionPriceDollars === undefined ? undefined : versionPriceDollars * 100;
-  const priceError = priceRejection(versionPrice, versionModelTier);
+  const priceError = priceRejection(versionPrice, versionModelTier, manifest.resources as string | undefined);
   if (priceError) return jsonError(priceError, 400);
 
   // Publishing a version does not change what the agent costs.

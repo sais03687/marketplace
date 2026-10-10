@@ -44,3 +44,10 @@ export {
   declaredHosts,
   addedHosts,
 } from "./hosts.js";
+
+export {
+  RESOURCE_TIERS,
+  RESOURCE_TIER_NAMES,
+  resourceTierOf,
+  type ResourceTier,
+} from "./resources.js";

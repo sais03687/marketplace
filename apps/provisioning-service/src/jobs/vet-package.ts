@@ -18,7 +18,8 @@ import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import Dockerode from "dockerode";
 import { prisma } from "@marketplace/db";
-import { declaredHosts, validateManifest } from "@marketplace/agent-package-schema";
+import { declaredHosts, resourceTierOf, validateManifest } from "@marketplace/agent-package-schema";
+import { assertCapacity, limitsFor } from "../clients/capacity.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor } from "../utils/agent-token.js";
 import { registerVetRun, endVetRun } from "../utils/vet-broker.js";
@@ -484,6 +485,11 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
           // reviewer sees the agent working with the access it is asking for.
           vetNetgate = await startNetgate(vetId!, vetNetwork, containerName, declaredHosts(manifest));
 
+          const vetTier = resourceTierOf(manifest);
+          const vetLimits = limitsFor(vetTier);
+          if (vetTier !== "standard") {
+            await assertCapacity(vetLimits.memoryBytes, `the ${vetTier} vetting sandbox`);
+          }
           container = await docker.createContainer({
             Image: imageName!,
             name: containerName,
@@ -504,9 +510,11 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
               // an Internal network. The netgate publishes the gateway instead,
               // exactly as in production.
               NetworkMode: vetNetwork,
-              Memory: 512 * 1024 * 1024,
-              MemorySwap: 512 * 1024 * 1024,
-              NanoCpus: 1_000_000_000,
+              // The limits a hire of this version would get, so the reviewer
+              // sees the agent run as buyers will.
+              Memory: vetLimits.memoryBytes,
+              MemorySwap: vetLimits.memoryBytes,
+              NanoCpus: vetLimits.nanoCpus,
               PidsLimit: 256,
               SecurityOpt: ["no-new-privileges"],
             },

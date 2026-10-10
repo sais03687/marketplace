@@ -878,8 +878,8 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
       <Table
         headers={["Limit", "Value"]}
         rows={[
-          ["Memory", "512 MB hard, with swap disabled"],
-          ["CPU", "1 core"],
+          ["Memory", "512 MB hard, with swap disabled — 2 GB on large compute"],
+          ["CPU", "1 core — 2 on large compute"],
           ["Processes", "256 (a fork bomb is capped, not tolerated)"],
           ["Privileges", "no-new-privileges; the container starts unprivileged"],
         ]}
@@ -888,6 +888,14 @@ WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buy
         512 MB is the one people meet first. Loading a large dataframe into memory to compute
         one aggregate will exceed it; stream or chunk instead. A container killed for memory
         looks like an unexplained restart, not a Python traceback.
+      </P>
+      <P>
+        For simulation, optimisation or data work that needs more, set{" "}
+        <Code>{`"resources": "large"`}</Code> in your manifest: 2&nbsp;GB of memory and two
+        CPUs. A large agent costs the platform more to run, so its price floor is $40 a month
+        above its model tier&apos;s and it cannot be free. It starts only when the host has room
+        for it — if not, the hire or vetting run says so rather than squeezing the agents
+        already running.
       </P>
 
       <H3 id="long-runs">Long-running work</H3>
@@ -1011,6 +1019,7 @@ async def run_agent(content: str, context: dict, progress_fn) -> dict:
           ["graphScopes", "array", "No", "What the agent reaches in the buyer’s Microsoft 365, e.g. [\"files.read\", \"mail.send\"]. Shown on your listing and enforced at runtime. See Declaring what your agent reaches."],
           ["connectsTo", "array", "No", "Outside hosts the agent may reach, exactly as written — e.g. [\"api.weather.gov\"]. Shown to reviewers and buyers; nothing unlisted is reachable. See Reaching other sites."],
           ["maxRunMinutes", "number", "No", "The longest one run may take, 1–240 minutes (default 60). The platform stops a run that reaches it and tells the sender. See Long-running work."],
+          ["resources", "string", "No", "standard (512 MB, 1 CPU — the default) or large (2 GB, 2 CPUs; price floor +$40/month, cannot be free). See Resource limits."],
           ["structuredOutput", "enum", "No", "auto | json | schema | none. How platform_llm asks your model for structured output. Default auto picks per vendor; use none for an agent that wants prose back. See Calling the model."],
         ]}
       />

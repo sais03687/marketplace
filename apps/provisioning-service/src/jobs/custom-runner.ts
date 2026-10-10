@@ -26,7 +26,8 @@ import { config } from "../config.js";
 import type { ContainerEnv } from "../clients/docker.js";
 import { removeAgentNetwork } from "../clients/docker.js";
 import { buildAgentImage } from "../clients/image-build.js";
-import { declaredHosts } from "@marketplace/agent-package-schema";
+import { declaredHosts, resourceTierOf, type ResourceTier } from "@marketplace/agent-package-schema";
+import { assertCapacity, limitsFor } from "../clients/capacity.js";
 
 /**
  * Give an agent's data volume to the user the agent runs as (uid 10001).
@@ -61,6 +62,15 @@ async function ensureDataOwnedByAgent(volume: string): Promise<void> {
     }
   } finally {
     await helper.remove({ force: true }).catch(() => {});
+  }
+}
+
+/** The compute tier a package's manifest asks for; standard if unreadable. */
+function resourceTierOfPackage(packageDir: string): ResourceTier {
+  try {
+    return resourceTierOf(JSON.parse(readFileSync(join(packageDir, "marketplace.json"), "utf-8")));
+  } catch {
+    return "standard";
   }
 }
 
@@ -305,6 +315,14 @@ export async function spawnCustomAgent(
 
     await ensureDataOwnedByAgent(`custom-data-${deploymentId.slice(0, 8)}`);
 
+    // Compute tier from the package being run. A larger tier is admitted only
+    // if the host can reserve it (capacity.ts); standard is unchanged.
+    const tier = resourceTierOfPackage(resolvedDir);
+    const limits = limitsFor(tier);
+    if (tier !== "standard") {
+      await assertCapacity(limits.memoryBytes, `this ${tier} agent`);
+    }
+
     const container = await docker.createContainer({
       Image: imageName,
       name: containerName,
@@ -334,9 +352,9 @@ export async function spawnCustomAgent(
           `custom-data-${deploymentId.slice(0, 8)}:/data`,
         ],
         // Security: resource limits
-        Memory: 512 * 1024 * 1024,        // 512 MB hard limit
-        MemorySwap: 512 * 1024 * 1024,    // no swap (same as memory = swap disabled)
-        NanoCpus: 1_000_000_000,           // 1 CPU core
+        Memory: limits.memoryBytes,        // per compute tier; 512 MB standard
+        MemorySwap: limits.memoryBytes,    // no swap (same as memory = swap disabled)
+        NanoCpus: limits.nanoCpus,         // per compute tier; 1 CPU standard
         PidsLimit: 256,                    // max 256 processes (prevents fork bombs)
         SecurityOpt: ["no-new-privileges"],
         // Drop every Linux capability. The agent is a Python HTTP server that

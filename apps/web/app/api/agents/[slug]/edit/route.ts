@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { resourceTierOf } from "@marketplace/agent-package-schema";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { z } from "zod";
 import { priceRejection } from "@/lib/agent-pricing";
@@ -78,7 +79,19 @@ export async function PATCH(
   // so it is the one place that could put the agent row and its version manifest
   // out of step. It previously enforced no floor at all — `min(0)` and no tier
   // check — so an edit could set a price no upload would have accepted.
-  const priceError = priceRejection(fields.pricePerMonth, agent.modelTier);
+  // The compute tier lives in the current version's manifest, not on the agent
+  // row, and a large agent's price must stay above the larger floor.
+  const current = agent.currentVersion
+    ? await prisma.agentVersion.findUnique({
+        where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
+        select: { manifestData: true },
+      })
+    : null;
+  const priceError = priceRejection(
+    fields.pricePerMonth,
+    agent.modelTier,
+    resourceTierOf(current?.manifestData),
+  );
   if (priceError) return jsonError(priceError, 400);
 
   const updated = await prisma.$transaction(async (tx) => {

@@ -280,7 +280,7 @@ export async function POST(request: Request) {
     ? parseInt(pricePerMonthRaw, 10) * 100
     : (manifest.pricePerMonth as number) * 100;
 
-  const uploadPriceError = priceRejection(priceCheck, modelTierRaw);
+  const uploadPriceError = priceRejection(priceCheck, modelTierRaw, manifest.resources as string | undefined);
   if (uploadPriceError) {
     return jsonError(
       uploadPriceError,

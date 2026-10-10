@@ -38,16 +38,44 @@ export function minPriceFor(modelTier: string | null | undefined): number {
  * a tier floor to it meant a free agent could never publish a version at all,
  * because zero is below every minimum.
  */
+/**
+ * Extra floor for a larger compute tier, in cents. A "large" agent reserves
+ * four times the memory and twice the CPU of a standard one on hardware the
+ * platform pays for, so it cannot sell at the standard floor.
+ * LARGE_COMPUTE_SURCHARGE_USD changes it.
+ */
+export function computeSurchargeCents(resources: string | null | undefined): number {
+  if ((resources || "standard").toLowerCase() !== "large") return 0;
+  const usd = Number(process.env.LARGE_COMPUTE_SURCHARGE_USD);
+  return (Number.isFinite(usd) && usd >= 0 ? usd : 40) * 100;
+}
+
+/**
+ * Reject a price, or return null if it is allowed.
+ *
+ * Zero is exempt on purpose. It is not a cheap price, it is a free agent, and
+ * the platform supports those deliberately — the hire flow guards on
+ * `pricePerMonth > 0` and provisions without payment when it is zero. Applying
+ * a tier floor to it meant a free agent could never publish a version at all,
+ * because zero is below every minimum.
+ *
+ * Except on a larger compute tier: the hardware it reserves is a real cost
+ * to the platform whatever the creator charges, so a large agent cannot be free.
+ */
 export function priceRejection(
   price: number | undefined,
   modelTier: string | null | undefined,
+  resources?: string | null,
 ): string | null {
   if (price === undefined) return null; // caller has no opinion; not our business
-  if (price === 0) return null; // free agent
-  const min = minPriceFor(modelTier);
+  const surcharge = computeSurchargeCents(resources);
+  if (price === 0 && surcharge === 0) return null; // free agent
+  const min = minPriceFor(modelTier) + surcharge;
   if (price < min) {
     const tier = (modelTier || "this").toLowerCase();
-    return `Minimum price for ${tier} tier is $${(min / 100).toFixed(0)}/month`;
+    return surcharge
+      ? `Minimum price for a ${tier}-tier agent on large compute is $${(min / 100).toFixed(0)}/month`
+      : `Minimum price for ${tier} tier is $${(min / 100).toFixed(0)}/month`;
   }
   return null;
 }

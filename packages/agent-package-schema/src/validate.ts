@@ -13,6 +13,7 @@ const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 const MODEL_ID_RE = /^[a-z0-9][\w.-]*\/[\w.:-]+$/i;
 
 import { checkConnectsTo } from "./hosts.js";
+import { RESOURCE_TIERS, RESOURCE_TIER_NAMES } from "./resources.js";
 
 const VALID_CATEGORIES: Set<string> = new Set([
   "SALES_OPERATIONS",
@@ -156,6 +157,11 @@ export function validateManifest(m: unknown): ValidationError[] {
   // Outside sites the agent may reach (optional). See hosts.ts.
   for (const message of checkConnectsTo(manifest.connectsTo).errors) {
     errors.push({ field: "connectsTo", message });
+  }
+
+  // Compute tier (optional; "standard" when absent). See resources.ts.
+  if (manifest.resources !== undefined && !(typeof manifest.resources === "string" && manifest.resources in RESOURCE_TIERS)) {
+    errors.push({ field: "resources", message: `resources must be one of: ${RESOURCE_TIER_NAMES.join(", ")}` });
   }
 
   // How long one run may take, in minutes (optional; the platform default is 60).
