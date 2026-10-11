@@ -173,3 +173,19 @@ def test_a_bad_connects_to_is_an_error(tmp_path):
     f = _agent(tmp_path, CLEAN_AGENT, manifest={
         "name": "T", "slug": "t", "version": "1.0.0", "model": "m/x", "connectsTo": ["10.0.0.1"]})
     assert any(x.level == ERROR and "connectsTo" in x.message for x in f)
+
+
+def test_a_price_below_the_tier_floor_is_caught_before_upload(tmp_path):
+    import json as _json
+    from agentstore.check import ERROR, check
+    (tmp_path / "agent.py").write_text("async def run_agent(content, context):\n    return {}\n"
+                                       "async def resume_agent(t, r, **k):\n    return {}\n")
+    def errors_for(**manifest):
+        (tmp_path / "marketplace.json").write_text(_json.dumps({"name": "T", "slug": "t", "version": "1.0.0",
+                                                                "modelTier": "standard", **manifest}))
+        return [f.message for f in check(tmp_path) if f.level == ERROR and "pricePerMonth" in f.message]
+    assert errors_for(pricePerMonth=19)
+    assert not errors_for(pricePerMonth=29)
+    assert not errors_for(pricePerMonth=0)            # free agents are allowed
+    assert errors_for(pricePerMonth=29, resources="large")
+    assert errors_for(pricePerMonth=99, modelTier="premium")

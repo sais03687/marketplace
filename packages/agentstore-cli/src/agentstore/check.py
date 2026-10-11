@@ -288,6 +288,32 @@ def _check_entry_points(root: Path, out: list[Finding]) -> None:
                                f"`await asyncio.to_thread(your_function, ...)`"))
 
 
+# Mirrors apps/web/lib/agent-pricing.ts. Without it a price below the floor
+# passed every local check and was refused only on the last step of publishing.
+MIN_PRICE_USD = {"standard": 29, "pro": 59, "premium": 149, "haiku": 29, "sonnet": 59, "opus": 149}
+LARGE_COMPUTE_SURCHARGE_USD = 40
+
+
+def _check_price(data: dict, out: list) -> None:
+    price = data.get("pricePerMonth")
+    if price is None:
+        return
+    if not isinstance(price, (int, float)) or price < 0:
+        out.append(Finding(ERROR, "marketplace.json", 0, '"pricePerMonth" must be a number of dollars, 0 or more',
+                           'for example "pricePerMonth": 29'))
+        return
+    large = str(data.get("resources") or "standard").lower() == "large"
+    if price == 0 and not large:
+        return   # a free agent is allowed on purpose
+    tier = str(data.get("modelTier") or "standard").lower()
+    floor = MIN_PRICE_USD.get(tier, 29) + (LARGE_COMPUTE_SURCHARGE_USD if large else 0)
+    if price < floor:
+        out.append(Finding(ERROR, "marketplace.json", 0,
+                           f"pricePerMonth ${price:g} is below the ${floor} minimum for a {tier}"
+                           + (" large-compute" if large else "") + " agent",
+                           f'raise it to at least {floor}' + ("" if large else ", or set 0 for a free agent")))
+
+
 def _check_package_files(root: Path, out: list[Finding]) -> None:
     for name in RESERVED_FILES:
         if (root / name).exists():
@@ -327,6 +353,7 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
                 out.append(Finding(ERROR, "marketplace.json", 0, "still has TODO: placeholders",
                                    "replace each one — the name, tagline, description and capabilities "
                                    "become your public listing"))
+            _check_price(data, out)
             pkgs = data.get("systemPackages")
             if pkgs is not None and not (
                 isinstance(pkgs, list) and len(pkgs) <= 25
