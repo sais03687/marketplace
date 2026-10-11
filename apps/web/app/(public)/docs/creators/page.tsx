@@ -466,6 +466,12 @@ async def run_agent(
       file_resolver_fn: turn a handle back into bytes
       file_describer_fn: the real shape of a file (actual column names, ragged
                          rows) before you write code against it
+      attach_fn: attach_fn("chart.png", png_bytes) sends a file you made with
+                 the reply (up to 25 MB; name it in "deliverables" to choose
+                 which files go)
+
+    Long jobs:
+      progress_fn: tell the sender the work has started (see Long-running work)
 
     Checking your own claims against what you delivered:
       verify_fn: figures in your summary that appear in none of your files

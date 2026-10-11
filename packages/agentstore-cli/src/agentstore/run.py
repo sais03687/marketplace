@@ -97,6 +97,20 @@ class _Tools:
         def no_problems(*args, **kwargs):
             return []
 
+        def attach_fn(name, data, *args, **kwargs):
+            # The platform sends these with the reply; locally they are saved
+            # where you can open them.
+            if isinstance(data, str):
+                data = data.encode("utf-8")
+            safe = os.path.basename(str(name or "").replace("\\", "/")).strip()
+            if not safe or not data:
+                return None
+            out = Path.cwd() / "agentstore-out"
+            out.mkdir(exist_ok=True)
+            (out / safe).write_bytes(bytes(data))
+            self._say(f"attached {safe} ({len(data):,} bytes) — saved to agentstore-out/{safe}")
+            return f"local:{safe}"
+
         progress = {"sent": 0}
 
         async def progress_fn(text, *args, **kwargs):
@@ -115,6 +129,7 @@ class _Tools:
             "verify_fn": no_problems, "ranking_fn": no_problems, "headline_fn": no_problems,
             "mcp_fn": mcp_fn, "thread_id": "local-thread", "verify_attempts": 0,
             "progress_fn": progress_fn,
+            "attach_fn": attach_fn,
         }
         for name in ("contribute_fn", "search_fn", "use_fn"):
             offered[name] = skipped(name)

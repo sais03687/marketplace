@@ -1262,6 +1262,39 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
     return mcp_result
 
 
+def attach_file(name: str, data: bytes) -> str | None:
+    """Attach a file the agent made itself to this run's reply.
+
+    Files used to reach a reply only by being produced in the Python sandbox,
+    so an agent that drew a chart or wrote a CSV in its own code had no way to
+    send it. This registers the bytes exactly as a sandbox file is registered —
+    against the run in flight — so the same rules apply: they go out with the
+    reply, `deliverables` can name them, names starting with "_" are scratch,
+    and the reply check reads them. Returns the file's handle, or None for an
+    empty or oversized file (over 25 MB) or a missing name.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    if not isinstance(data, (bytes, bytearray)) or not data or len(data) > _ATTACHMENT_HANDLE_LIMIT:
+        return None
+    safe = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    if not safe or safe in (".", ".."):
+        return None
+    file_id = f"sandbox:{uuid.uuid4().hex[:12]}"
+    raw = bytes(data)
+    _SANDBOX_FILES[file_id] = {"name": safe, "bytes": raw}
+    _SANDBOX_FILE_NAMES[file_id] = safe
+    _persist_sandbox_file(file_id, safe, raw)
+    _evict_to_fit(_SANDBOX_FILES, _SANDBOX_FILE_LIMIT, _INBOUND_BYTES_LIMIT)
+    run_files = current_run_files()
+    if file_id not in run_files:
+        run_files.append(file_id)
+        while len(run_files) > _SANDBOX_FILE_LIMIT:
+            run_files.pop(0)
+        _persist_run_files(_current_run.get(""))
+    return file_id
+
+
 async def _read_back_summary(mcp_result: Any) -> Any:
     """Hand the model the summary figures out of the workbook it just wrote.
 
@@ -5471,6 +5504,8 @@ def _creator_tool_kwargs(fn, *, mcp_fn=None, thread_id=None, verify_attempts=Non
         "file_resolver_fn": resolve_sandbox_file,
         "file_registrar_fn": _register_inbound_file,
         "file_describer_fn": describe_file_shape,
+        # Files the agent made itself, sent with the reply.
+        "attach_fn": attach_file,
         # Claim checks against the files actually delivered.
         "verify_fn": verify_deliverables,
         "ranking_fn": check_rankings_against_file,
