@@ -114,6 +114,16 @@ for _env_key in list(os.environ):
         _integration = _env_key[4:-4].lower().replace("_", "-")  # MCP_PYTHON_SANDBOX_URL → python-sandbox
         _mcp_servers[_integration] = os.environ.pop(_env_key)
 
+# Creator code imports its own helper modules the way it did on the creator's
+# machine — `from helpers import x`, beside agent.py — and `agentstore test`
+# runs it that way. Without the folder on the path, that import passed locally
+# and failed here, at startup, after vetting had already built the image.
+import sys as _sys
+
+_CREATOR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "creator")
+if os.path.isdir(_CREATOR_DIR) and _CREATOR_DIR not in _sys.path:
+    _sys.path.insert(0, _CREATOR_DIR)
+
 # NOW safe to import creator code — secrets and MCP URLs are no longer in os.environ
 from creator.agent import run_agent, resume_agent
 
