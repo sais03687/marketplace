@@ -83,3 +83,15 @@ def test_the_email_tier_explains_what_it_is():
     assert "cannot reach anything you don" in STEP, (
         "the smaller blast radius is the selling point, not a caveat"
     )
+
+
+def test_email_only_buyers_are_told_how_to_keep_replies_out_of_spam():
+    """Every reply from every email-only test hire on 2026-10-10 landed in Gmail's
+    Spam folder, the introduction included. The buyer has to hear it from the
+    platform, before activation — not from an email that is itself in spam."""
+    help_src = (WEB / "components" / "hire" / "inbox-help.tsx").read_text(encoding="utf-8")
+    panel = (WEB / "components" / "dashboard" / "onboarding-panel.tsx").read_text(encoding="utf-8")
+    assert 'state.mailboxLocation === "platform" && <InboxHelp' in STEP
+    assert "{emailOnly && <InboxHelp />}" in panel
+    assert "Never send it to Spam" in help_src and "Safe senders and domains" in help_src
+    assert 'AGENT_MAIL_DOMAIN = "agents.agentstore.it.com"' in help_src

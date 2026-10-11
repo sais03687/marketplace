@@ -447,7 +447,9 @@ export default function AgentOverviewPage({
       )}
 
       {/* Onboarding panel */}
-      {isOnboarding && <OnboardingPanel deploymentId={deploymentId} />}
+      {isOnboarding && (
+        <OnboardingPanel deploymentId={deploymentId} emailOnly={deployment.mailboxLocation === "platform"} />
+      )}
 
       {/* Stats */}
       {!isOnboarding && (

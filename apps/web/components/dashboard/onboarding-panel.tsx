@@ -4,12 +4,15 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Loader2, Zap } from "lucide-react";
+import { InboxHelp } from "@/components/hire/inbox-help";
 
 interface OnboardingPanelProps {
   deploymentId: string;
+  /** Email-only hires mail from the platform's domain, which spam filters may catch. */
+  emailOnly?: boolean;
 }
 
-export function OnboardingPanel({ deploymentId }: OnboardingPanelProps) {
+export function OnboardingPanel({ deploymentId, emailOnly = false }: OnboardingPanelProps) {
   const [activating, setActivating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +46,7 @@ export function OnboardingPanel({ deploymentId }: OnboardingPanelProps) {
           from your agent to your team and activate them. They&apos;ll start
           operating immediately under your configured approval policy.
         </p>
+        {emailOnly && <InboxHelp />}
         {error && (
           <p className="text-sm text-destructive">{error}</p>
         )}

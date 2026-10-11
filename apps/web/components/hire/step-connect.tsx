@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useHire } from "@/lib/hire-context";
 import { Badge } from "@/components/ui/badge";
 import { MessageSquare, Info, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
+import { InboxHelp } from "@/components/hire/inbox-help";
 
 // Microsoft 365 is the only workspace an agent can be provisioned into. Google was
 // removed entirely, and "Neither" depended on AgentMail, which is no longer an agent
@@ -501,6 +502,8 @@ export function StepConnect() {
           </div>
         </div>
       )}
+
+      {state.mailboxLocation === "platform" && <InboxHelp compact />}
 
       <div className="space-y-2">
         <div className="flex gap-2">
