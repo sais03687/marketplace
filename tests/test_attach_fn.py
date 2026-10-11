@@ -76,3 +76,26 @@ def test_attachments_are_listed_in_context_with_handles_that_open():
     assert adapter.resolve_any_file(by_name["receipt.png"]["handle"]) == b"\x89PNG receipt"
     assert adapter.resolve_any_file(by_name["stops.csv"]["handle"]).startswith(b"name,lat,lon")
     assert "A,39.7,-86.1" in note   # text files are still inlined for the model, as before
+
+
+def test_a_creators_own_file_is_not_held_against_the_reply():
+    """Production Planner, 2026-10-11: its CSV held the plan per product, the reply
+    gave the total and the value of an extra hour, and the buyer was told those
+    correct figures "appear in my summary but not in the file... go with the file"."""
+    import asyncio
+    _fresh_run()
+    adapter.attach_file("production_plan.csv", "product,quantity\nchair,24\ntable,14\n")
+    reply = "Best plan, profit 2,200.00: 24 chairs and 14 tables. Extra wood is worth 1.00 a unit, labour 4.00 an hour."
+    assert asyncio.run(adapter.verify_deliverables(reply)) == []
+
+
+def test_a_sandbox_file_that_disagrees_with_the_reply_is_still_flagged():
+    """The check still does its job on what the platform's sandbox computed."""
+    import asyncio, base64
+    _fresh_run()
+    adapter._register_sandbox_files({"files": [{
+        "name": "summary.csv",
+        "base64_content": base64.b64encode(b"region,total\nWest,1234.56\nEast,999.10\n").decode(),
+    }]})
+    flagged = asyncio.run(adapter.verify_deliverables("West came to 1,234.56 and East to 4,321.00."))
+    assert any("4,321" in f for f in flagged)

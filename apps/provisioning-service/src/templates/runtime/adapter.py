@@ -1272,6 +1272,21 @@ def _register_sandbox_files(mcp_result: Any) -> Any:
     return mcp_result
 
 
+# Files creator code attached itself with attach_fn. The reply checks below -
+# figures in the summary but not the file, rankings, the headline against a
+# Summary sheet - assume the file is the computation the reply summarises, which
+# holds for what the platform's sandbox produced. A creator's file is whatever the
+# creator chose to put in it: on 2026-10-11 Production Planner attached the plan
+# per product and was told its correct total profit and the value of an extra
+# hour "appear in my summary but not in the file... go with the file".
+_CREATOR_ATTACHED: set[str] = set()
+
+
+def _reviewable_run_files() -> list[str]:
+    """This run's files that the reply checks may hold the reply to."""
+    return [f for f in current_run_files() if f not in _CREATOR_ATTACHED]
+
+
 def attach_file(name: str, data: bytes) -> str | None:
     """Attach a file the agent made itself to this run's reply.
 
@@ -1294,6 +1309,7 @@ def attach_file(name: str, data: bytes) -> str | None:
     raw = bytes(data)
     _SANDBOX_FILES[file_id] = {"name": safe, "bytes": raw}
     _SANDBOX_FILE_NAMES[file_id] = safe
+    _CREATOR_ATTACHED.add(file_id)
     _persist_sandbox_file(file_id, safe, raw)
     _evict_to_fit(_SANDBOX_FILES, _SANDBOX_FILE_LIMIT, _INBOUND_BYTES_LIMIT)
     run_files = current_run_files()
@@ -2549,7 +2565,7 @@ async def verify_deliverables(summary_text: str, file_ids: list[str] | None = No
     is why a parse failure is silent rather than an accusation.
     """
     if file_ids is None:
-        file_ids = list(current_run_files())
+        file_ids = list(_reviewable_run_files())
 
     figures = _summary_figures(summary_text)
     if not figures or not file_ids:
@@ -2929,7 +2945,7 @@ async def check_rankings_against_file(summary_text: str, file_ids: list[str] | N
     since an unparseable file is not evidence of a wrong claim.
     """
     if file_ids is None:
-        file_ids = list(current_run_files())
+        file_ids = list(_reviewable_run_files())
     if not summary_text or not file_ids or not _RANKING_WORD_RE.search(summary_text):
         return []
 
@@ -3097,7 +3113,7 @@ async def check_headline_against_summary(
     summary sheet, which is the common case and not evidence of anything.
     """
     if file_ids is None:
-        file_ids = list(current_run_files())
+        file_ids = list(_reviewable_run_files())
     if not summary_text or not file_ids or not _summary_figures(summary_text):
         return []
 
