@@ -1,7 +1,9 @@
 # Agent image, built in two stages.
 #
-# BUILD stage: has git, a C/C++/Fortran toolchain and CMake, so a creator can
-# depend on packages that are only on GitHub or have to be compiled, and can
+# BUILD stage: has git, curl/wget, a C/C++/Fortran toolchain and CMake, so a
+# creator can depend on packages that are only on GitHub or have to be
+# compiled — many build scripts fetch their own sources with curl or wget
+# (Ipopt's MUMPS does, and fails without one) — and can
 # ship an optional build.sh for anything pip cannot do (a C++ library with
 # Python bindings, say). This stage has the internet and runs creator-supplied
 # code — pip's setup.py and build.sh — so it holds no secrets: keys only ever
@@ -16,7 +18,7 @@ FROM python:3.12-slim AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         git build-essential gfortran cmake pkg-config \
+         git build-essential gfortran cmake pkg-config curl wget ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build

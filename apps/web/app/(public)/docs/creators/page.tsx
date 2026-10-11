@@ -298,7 +298,8 @@ agentstore pack                 # builds the upload zip (never includes .env)`}<
 
       <H3 id="build">Packages from GitHub, and compiled code</H3>
       <P>
-        Your agent is built in two stages. The build stage has <Code>git</Code>, a C, C++ and
+        Your agent is built in two stages. The build stage has <Code>git</Code>,{" "}
+        <Code>curl</Code> and <Code>wget</Code>, a C, C++ and
         Fortran compiler, and CMake, so <Code>requirements.txt</Code> may name a package
         straight from a repository —{" "}
         <Code>mypkg @ git+https://github.com/org/mypkg.git@v1.2</Code> — or one that has to
@@ -323,6 +324,33 @@ cp solver/build/libsolver.so .     # agent.py loads ./libsolver.so`}</Pre>
         version that was reviewed is the version that is built. Nothing secret is present
         while building — keys reach the agent only when it starts.
       </Note>
+
+      <H3 id="prebuilt">Shipping a library you built yourself</H3>
+      <P>
+        Some projects take longer than the 20-minute build limit, or need fixes to build at
+        all — a C++ solver that downloads and compiles its own dependencies, say. Build those
+        once, on your machine, in the same base image agents run on, and include the result in
+        your package:
+      </P>
+      <Pre>{`docker run --rm -v "$PWD":/out python:3.12-slim sh -c '
+  apt-get update && apt-get install -y --no-install-recommends \\
+    git build-essential gfortran cmake curl wget ca-certificates &&
+  git clone https://github.com/org/solver /src && cd /src && git checkout v1.4 &&
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4 &&
+  cp build/lib/*.so* /out/'`}</Pre>
+      <P>
+        Then check what the library still needs at runtime, and list anything missing under{" "}
+        <Code>systemPackages</Code>:
+      </P>
+      <Pre>{`docker run --rm -v "$PWD":/w python:3.12-slim sh -c 'ldd /w/libsolver.so | grep "not found"'`}</Pre>
+      <Warning>
+        <strong>A reviewer cannot read a compiled file.</strong> Put the source repository and
+        the exact tag or commit you built from in a <Code>BUILD.md</Code> next to it, with the
+        commands you ran — a reviewer may rebuild it to check it matches, and a library with no
+        stated source may be declined. It runs with the same limits as the rest of your agent:
+        unprivileged, and only reaching the sites you declare. The whole package must still
+        zip to under 50&nbsp;MB.
+      </Warning>
 
       <P>
         Some packages load system libraries at runtime that pip cannot install — SUMO&apos;s
