@@ -493,9 +493,9 @@ export function StepConnect() {
                 <span className="font-mono">
                   {state.agentSlug}-&lt;your-org&gt;@agents.agentstore.it.com
                 </span>
-                ). Email it a spreadsheet and a question; it replies with the
-                workbook, the charts, and a notebook showing every step it ran.
-                It cannot reach anything you don{"'"}t send it.
+                ). Email it the work and it replies with the results and any
+                files it made. It works only on what you send it, plus any
+                outside sites listed on its page.
               </p>
             </div>
           </div>
