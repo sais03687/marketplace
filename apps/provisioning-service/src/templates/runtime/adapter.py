@@ -6463,6 +6463,7 @@ async def receive_hook(body: HookPayload, request: Request):
         "company_domain": COMPANY_DOMAIN,
         "hook_name": body.name,
         "session_key": body.sessionKey,
+        "deliver": body.deliver,
         "agentmind_prompt": AGENTMIND_PROMPT,
         # The buyer's approval policy, so the agent's own gate can answer the same
         # question this adapter would. Without it that gate was a hardcoded set
@@ -7210,6 +7211,17 @@ async def _handle_message(message: str, context: dict):
 
         action = result.get("action", "none")
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)
+
+        # A hook sent with deliver=false is context for the agent — the
+        # onboarding brief, the buyer's setup answers — not a message from
+        # anyone. Nobody asked a question, so a reply to it has no reader. It
+        # used to be routed to the manager anyway: on 2026-10-10 a new buyer's
+        # first email from Currency Desk, minutes before its introduction, was
+        # "I couldn't find a conversion or rate to look up in that message."
+        if context.get("deliver") is False and action == "reply_email":
+            print(f"[adapter] Not sending a reply to the {context.get('hook_name') or 'hook'} brief "
+                  f"(deliver=false): {(result.get('text') or '')[:120]!r}", flush=True)
+            return
 
         # A reply with nowhere to go. The creator's agent composed text and
         # labelled it action=none — this one did it through a truthy "none"

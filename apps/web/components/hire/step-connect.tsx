@@ -494,8 +494,8 @@ export function StepConnect() {
                   {state.agentSlug}-&lt;your-org&gt;@agents.agentstore.it.com
                 </span>
                 ). Email it the work and it replies with the results and any
-                files it made. It works only on what you send it, plus any
-                outside sites listed on its page.
+                files it made. It cannot reach anything you don{"'"}t send it,
+                apart from any outside sites listed on its page.
               </p>
             </div>
           </div>
