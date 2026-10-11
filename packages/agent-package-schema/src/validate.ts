@@ -14,6 +14,7 @@ const MODEL_ID_RE = /^[a-z0-9][\w.-]*\/[\w.:-]+$/i;
 
 import { checkConnectsTo } from "./hosts.js";
 import { RESOURCE_TIERS, RESOURCE_TIER_NAMES } from "./resources.js";
+import { hireTiersProblems } from "./tiers.js";
 
 const VALID_CATEGORIES: Set<string> = new Set([
   "SALES_OPERATIONS",
@@ -231,6 +232,11 @@ export function validateManifest(m: unknown): ValidationError[] {
         }
       }
     }
+  }
+
+  // Which hire tiers it can be hired on (optional; derived from graphScopes when absent).
+  for (const message of hireTiersProblems(manifest)) {
+    errors.push({ field: "hireTiers", message });
   }
 
   // Runtime config (optional)

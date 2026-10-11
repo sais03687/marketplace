@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { hostsOfVersion } from "@/lib/connects-to";
+import { tierOfVersion } from "@/lib/agent-tier";
 import { setDeploymentPaused } from "@marketplace/db";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { getStripe } from "@/lib/stripe";
@@ -36,7 +37,10 @@ export async function GET(
   // The outside sites the current version reaches, for the hire wizard's
   // consent step.
   const connectsTo = await hostsOfVersion(agent.id, agent.currentVersion);
-  return jsonSuccess({ ...agent, connectsTo });
+  // Whether it can be hired on Email only, for the wizard's tier step. The
+  // hire endpoint enforces the same rule; this is so the buyer is told first.
+  const { requiresOrg, orgScopes } = await tierOfVersion(agent.id, agent.currentVersion);
+  return jsonSuccess({ ...agent, connectsTo, requiresOrg, orgScopes });
 }
 
 /**

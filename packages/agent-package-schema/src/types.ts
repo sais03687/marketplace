@@ -94,6 +94,12 @@ export interface MarketplaceManifest {
    */
   graphScopes?: GraphScope[];
   /**
+   * Tiers it can be hired on: "platform" (Email only) and/or "buyer_org" (Connect
+   * Microsoft 365). Optional; when left out, an agent declaring any scope beyond
+   * mail.send is connected-only. See tiers.ts.
+   */
+  hireTiers?: ("platform" | "buyer_org")[];
+  /**
    * Outside sites this agent may reach, as exact host names
    * (e.g. "api.weather.gov"). Shown to the reviewer and to the buyer before
    * they hire; nothing outside this list and the platform is reachable.

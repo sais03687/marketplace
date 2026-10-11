@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { undeclaredGraphUse } from "@/lib/package-checks";
 import { Prisma } from "@prisma/client";
 import { isAdminUser, jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { claimUploadSlot } from "@/lib/upload-limit";
@@ -220,6 +221,9 @@ export async function POST(request: Request) {
         400,
       );
     }
+
+    const graphProblem = await undeclaredGraphUse(zip, manifest);
+    if (graphProblem) return jsonError(graphProblem, 400);
 
     const SHADOWED_MODULES = [
       "fastapi.py", "uvicorn.py", "httpx.py", "pydantic.py",

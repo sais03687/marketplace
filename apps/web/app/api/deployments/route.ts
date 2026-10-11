@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { acceptsAll, hostsOfVersion } from "@/lib/connects-to";
+import { tierOfVersion } from "@/lib/agent-tier";
 import {
   jsonError,
   jsonSuccess,
@@ -88,6 +89,20 @@ export async function POST(request: Request) {
     return jsonError(
       `This agent connects to sites outside Microsoft 365 (${requiredHosts.join(", ")}). ` +
         `Review and accept them before hiring.`,
+      400,
+    );
+  }
+
+  // An agent that needs the buyer's Microsoft 365 cannot do its job on the
+  // email tier: there its files, spreadsheet, calendar and directory calls are
+  // refused, so the buyer would pay for an agent that fails at what it is for.
+  // Provisioning treats a hire with no buyer tenant as email tier, so that is
+  // what is checked, not only the label the wizard sent.
+  const tier = await tierOfVersion(agent.id, agent.currentVersion);
+  if (tier.requiresOrg && (data.mailboxLocation !== "buyer_org" || !data.buyerMicrosoftTenantId)) {
+    return jsonError(
+      `${agent.name} needs your Microsoft 365 (${tier.orgScopes.join(", ")}), so it can't be ` +
+        `hired on Email only. Choose Connect Microsoft 365.`,
       400,
     );
   }

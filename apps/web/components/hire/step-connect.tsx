@@ -7,6 +7,7 @@ import { useHire } from "@/lib/hire-context";
 import { Badge } from "@/components/ui/badge";
 import { MessageSquare, Info, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
 import { InboxHelp } from "@/components/hire/inbox-help";
+import { GRAPH_SCOPE_LABELS, type GraphScope } from "@marketplace/agent-package-schema";
 
 // Microsoft 365 is the only workspace an agent can be provisioned into. Google was
 // removed entirely, and "Neither" depended on AgentMail, which is no longer an agent
@@ -318,6 +319,41 @@ export function StepConnect() {
   // Stable identity so the child's effect doesn't refire on every parent render.
   const setLicensingStatus = useCallback((s: LicensingStatus) => setLicensingStatusRaw(s), []);
 
+  // Whether this agent can work on Email only. An agent that declares files,
+  // spreadsheets, calendar or the directory cannot: on that tier those calls are
+  // refused, and the hire endpoint rejects the combination anyway. Asked here so
+  // the buyer learns it on this step rather than from an error after paying.
+  // undefined while loading; a failed lookup counts as no requirement, because
+  // the server still enforces it.
+  const [tierNeed, setTierNeed] = useState<{ requiresOrg: boolean; orgScopes: GraphScope[] } | undefined>();
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/agents/${encodeURIComponent(state.agentSlug)}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((agent) => {
+        if (cancelled) return;
+        setTierNeed({
+          requiresOrg: agent?.requiresOrg === true,
+          orgScopes: Array.isArray(agent?.orgScopes) ? agent.orgScopes : [],
+        });
+      })
+      .catch(() => !cancelled && setTierNeed({ requiresOrg: false, orgScopes: [] }));
+    return () => {
+      cancelled = true;
+    };
+  }, [state.agentSlug]);
+
+  const emailTierUnavailable = tierNeed?.requiresOrg === true;
+  useEffect(() => {
+    if (emailTierUnavailable && state.mailboxLocation === "platform") {
+      updateState({ mailboxLocation: "buyer_org", workspaceProvider: "MICROSOFT" });
+    }
+  }, [emailTierUnavailable, state.mailboxLocation, updateState]);
+  const orgNeedText = (tierNeed?.orgScopes ?? [])
+    .map((s) => GRAPH_SCOPE_LABELS[s]?.toLowerCase())
+    .filter(Boolean)
+    .join(", ");
+
   // Nothing past this step is recoverable: the next step takes payment, and an agent
   // with no mailbox-capable seat cannot be provisioned no matter what is paid. This
   // used to be a warning the buyer could click straight past, which meant they could
@@ -325,7 +361,9 @@ export function StepConnect() {
   // The email tier can never be blocked here: it asks nothing of the buyer's
   // tenant, so there is nothing to check and nothing that can be missing.
   const blockedReason: string | null =
-    state.mailboxLocation === "platform"
+    tierNeed === undefined
+      ? "Checking what this agent needs…"
+      : state.mailboxLocation === "platform"
       ? null
       : !msConnected
       ? "Connect your Microsoft 365 organization to continue — or choose Email only above, which needs no admin approval."
@@ -383,10 +421,17 @@ export function StepConnect() {
             Either option gives {state.hireName} its own email address and identity.
             You can start with email and connect Microsoft 365 later.
           </p>
-          {TIER_OPTIONS.map(({ value, label, desc }) => (
+          {TIER_OPTIONS.map(({ value, label, desc }) => {
+            const unavailable = value === "platform" && emailTierUnavailable;
+            return (
             <label
               key={value}
-              className={`flex items-center gap-3 cursor-pointer rounded-lg border p-4 transition-colors hover:border-primary/50 ${
+              aria-disabled={unavailable}
+              className={`flex items-center gap-3 rounded-lg border p-4 transition-colors ${
+                unavailable
+                  ? "cursor-not-allowed opacity-60"
+                  : "cursor-pointer hover:border-primary/50"
+              } ${
                 state.mailboxLocation === value
                   ? "border-primary bg-primary/5"
                   : ""
@@ -397,6 +442,7 @@ export function StepConnect() {
                 name="mailboxLocation"
                 value={value}
                 checked={state.mailboxLocation === value}
+                disabled={unavailable}
                 onChange={() => {
                   // workspaceProvider stays MICROSOFT either way: the agent's
                   // own mailbox is a Microsoft 365 mailbox whichever tenant it
@@ -422,9 +468,21 @@ export function StepConnect() {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">{desc}</p>
+                {unavailable && (
+                  <p className="mt-1 text-xs text-amber-800">
+                    Not available for {state.hireName}: it needs your Microsoft 365
+                    {orgNeedText ? ` to ${orgNeedText}` : ""}.
+                  </p>
+                )}
+                {value === "buyer_org" && !emailTierUnavailable && orgNeedText && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Connecting also lets {state.hireName} {orgNeedText}.
+                  </p>
+                )}
               </div>
             </label>
-          ))}
+            );
+          })}
         </div>
       </div>
 

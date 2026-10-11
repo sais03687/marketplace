@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDate, formatPrice } from "@/lib/utils";
+import { orgOnlyScopes, requiresOrgTier } from "@marketplace/agent-package-schema";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
@@ -312,6 +313,37 @@ function OverviewTab({ version }: { version: VersionData }) {
                   agent plausibly needs, and not one the creator controls or anyone can write to.
                 </p>
               </>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Which tiers it can be hired on, and what it reaches. Approving it lets
+          buyers hire it accordingly, so the reviewer checks the declaration
+          against what the description and code actually do. */}
+      {(() => {
+        const declared = Array.isArray(manifest?.graphScopes) ? (manifest!.graphScopes as unknown[]).map(String) : null;
+        const orgScopes = orgOnlyScopes(manifest);
+        const connectedOnly = requiresOrgTier(manifest);
+        const explicit = Array.isArray(manifest?.hireTiers);
+        return (
+          <div>
+            <h4 className="mb-1 font-semibold text-muted-foreground">Hire tiers</h4>
+            <p className="text-xs">
+              {connectedOnly
+                ? `Connect Microsoft 365 only${orgScopes.length ? ` — it declares ${orgScopes.join(", ")}` : ""}.`
+                : declared === null
+                  ? "Email only or connected — it does not declare graphScopes (legacy)."
+                  : orgScopes.length
+                    ? `Email only or connected — on Email only it works without ${orgScopes.join(", ")}.`
+                    : "Email only or connected — it needs nothing in the buyer's Microsoft 365."}
+              {explicit ? " (stated in hireTiers)" : ""}
+            </p>
+            {!connectedOnly && orgScopes.length > 0 && (
+              <p className="mt-1 text-xs text-amber-900">
+                Check the agent really does its job by email alone: on Email only every call for these
+                scopes is refused.
+              </p>
             )}
           </div>
         );

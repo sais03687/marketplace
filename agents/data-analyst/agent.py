@@ -78,12 +78,19 @@ _WORKSPACE_SCOPE = os.environ.get("WORKSPACE_SCOPE", "platform")
 # existed.
 _EMAIL_ONLY = os.environ.get("AGENT_TIER", "org").strip().lower() == "email"
 
-# Actions that read or write the buyer's workspace. Every one needs tenant
-# access, so none of them exist on the email tier.
+# Actions that go through Microsoft Graph. The email tier has no Graph access at
+# all - the platform issues it no token, because its mailbox lives in the
+# platform's own tenant beside other buyers' agents - so none of them exist
+# there. Mail still works on that tier: send_email and reply_email go through the
+# platform's send endpoint, and incoming mail arrives with the request.
 _ORG_ONLY_ACTIONS = frozenset({
     "drive_list", "drive_search", "drive_read_text", "drive_fetch",
     "drive_upload", "drive_share", "drive_create_link", "sharepoint_read",
+    "my_drive_list", "my_drive_read", "my_drive_search", "my_drive_upload",
+    "my_drive_share", "my_drive_create_link",
     "excel_list_sheets", "excel_read", "excel_write", "excel_append",
+    "inbox_list", "inbox_read", "inbox_search",
+    "calendar_list", "calendar_create",
 })
 
 
@@ -739,7 +746,9 @@ class AgentState(BaseModel):
 
 async def enrich_context(state: AgentState) -> AgentState:
     """Auto-enrich the message with calendar data and SharePoint file listing."""
-    if _WORKSPACE_PROVIDER == "MICROSOFT" and _MICROSOFT_AVAILABLE and _mt:
+    # Not on the email tier: the calendar lookup is a Graph call, which that tier
+    # does not have.
+    if _WORKSPACE_PROVIDER == "MICROSOFT" and _MICROSOFT_AVAILABLE and _mt and not _EMAIL_ONLY:
         try:
             if hasattr(_mt, "enrich_message"):
                 state.enriched_content = await _mt.enrich_message(state.content)

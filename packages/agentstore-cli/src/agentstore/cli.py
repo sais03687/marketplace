@@ -6,7 +6,7 @@ import os
 import sys
 
 from . import __version__
-from .check import ERROR, check
+from .check import ERROR, check, tier_summary
 
 
 def _cmd_check(args: argparse.Namespace) -> int:
@@ -30,6 +30,9 @@ def _cmd_check(args: argparse.Namespace) -> int:
     else:
         print(f"\n{errors} error(s), {warnings} warning(s). "
               + ("Errors stop the upload; fix them first." if errors else "Warnings will not stop the upload."))
+    summary = tier_summary(args.folder)
+    if summary and not in_actions:
+        print(summary)
     return 1 if errors else 0
 
 

@@ -314,6 +314,71 @@ def _check_price(data: dict, out: list) -> None:
                            f'raise it to at least {floor}' + ("" if large else ", or set 0 for a free agent")))
 
 
+# Mirrors packages/agent-package-schema/src/tiers.ts. Email only ("platform")
+# gives the agent no Microsoft Graph access at all; mail.send is the one scope it
+# can honour, through the platform's own send path.
+HIRE_TIERS = ("platform", "buyer_org")
+EMAIL_TIER_SCOPES = {"mail.send"}
+_USES_GRAPH = re.compile(r"\bgraph_fn\b")
+
+
+def hire_tiers(data: dict) -> list[str]:
+    """The tiers the platform will offer this agent on, declared or derived."""
+    raw = data.get("hireTiers")
+    if isinstance(raw, list):
+        tiers = [t for t in HIRE_TIERS if t in raw]
+        if tiers:
+            return tiers
+    scopes = data.get("graphScopes") if isinstance(data.get("graphScopes"), list) else []
+    return ["buyer_org"] if any(s not in EMAIL_TIER_SCOPES for s in scopes) else list(HIRE_TIERS)
+
+
+def _uses_graph(root: Path) -> str | None:
+    for path in _python_files(root):
+        try:
+            if _USES_GRAPH.search(path.read_text(encoding="utf-8")):
+                return path.relative_to(root).as_posix()
+        except (OSError, UnicodeDecodeError):
+            continue
+    return None
+
+
+def _check_tiers(root: Path, data: dict, out: list) -> None:
+    raw = data.get("hireTiers")
+    if raw is not None and (not isinstance(raw, list) or not raw or any(t not in HIRE_TIERS for t in raw)):
+        out.append(Finding(ERROR, "marketplace.json", 0,
+                           'hireTiers must list "platform" (Email only) and/or "buyer_org" (Connect Microsoft 365)',
+                           'for example "hireTiers": ["platform", "buyer_org"], or leave it out'))
+        return
+    graph_file = _uses_graph(root)
+    if graph_file and not isinstance(data.get("graphScopes"), list):
+        out.append(Finding(ERROR, graph_file, 0,
+                           "the code uses graph_fn but marketplace.json declares no graphScopes",
+                           'declare what it reaches, e.g. "graphScopes": ["files.read", "files.write"]; '
+                           'the upload refuses this package until you do'))
+        return
+    # Only when Email only was derived rather than stated: a creator who lists
+    # "platform" in hireTiers has said the agent copes without Graph. Derived,
+    # it means graph_fn is in the code while the declared scopes need nothing
+    # beyond mail.send - every one of those calls is refused on Email only.
+    if graph_file and raw is None and "platform" in hire_tiers(data):
+        out.append(Finding(WARN, graph_file, 0,
+                           "the code uses graph_fn, but its declared scopes put it on Email only too, "
+                           "where every Graph call is refused",
+                           'declare the scopes it really uses, or set "hireTiers": ["buyer_org"]; if it '
+                           'genuinely works by email alone, say so with "hireTiers": ["platform", "buyer_org"]'))
+
+
+def tier_summary(folder: str | Path) -> str:
+    """One line naming the tiers this agent will be offered on."""
+    try:
+        data = json.loads((Path(folder) / "marketplace.json").read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    names = {"platform": "Email only", "buyer_org": "Connect Microsoft 365"}
+    return "Hire tiers: " + " and ".join(names[t] for t in hire_tiers(data if isinstance(data, dict) else {}))
+
+
 def _check_package_files(root: Path, out: list[Finding]) -> None:
     for name in RESERVED_FILES:
         if (root / name).exists():
@@ -354,6 +419,7 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
                                    "replace each one — the name, tagline, description and capabilities "
                                    "become your public listing"))
             _check_price(data, out)
+            _check_tiers(root, data, out)
             pkgs = data.get("systemPackages")
             if pkgs is not None and not (
                 isinstance(pkgs, list) and len(pkgs) <= 25

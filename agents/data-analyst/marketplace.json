@@ -57,5 +57,20 @@
   },
   "heartbeat": {
     "intervalHours": 8
-  }
+  },
+  "graphScopes": [
+    "mail.read",
+    "mail.send",
+    "files.read",
+    "files.write",
+    "files.share",
+    "excel.read",
+    "excel.write",
+    "calendar.read",
+    "calendar.write"
+  ],
+  "hireTiers": [
+    "platform",
+    "buyer_org"
+  ]
 }

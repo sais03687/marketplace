@@ -665,7 +665,10 @@ response = await structured.ainvoke(llm, prompt, timeout=120, schema=MY_SCHEMA)`
           ["SharePoint and OneDrive", "Withheld", "Read and write"],
           ["Excel on SharePoint", "Withheld", "Yes"],
           ["Share links to files", "Withheld — files go as attachments", "Yes"],
+          ["Calendar", "No", "Yes"],
+          ["Reading a mailbox through Graph", "No — incoming mail arrives with the request", "Yes"],
           ["Sees the company directory", "No", "Yes"],
+          ["graph_fn", "Refused — the platform issues no Graph token", "Yes, within your graphScopes"],
         ]}
       />
       <P>
@@ -676,8 +679,44 @@ response = await structured.ainvoke(llm, prompt, timeout=120, schema=MY_SCHEMA)`
         <Code>excel_list_sheets</Code>, <Code>excel_read</Code>, <Code>excel_write</Code>,{" "}
         <Code>excel_append</Code>. They are absent from the action list the model is given and
         refused if called anyway, because on that tier they would resolve against the
-        platform&apos;s own storage rather than the buyer&apos;s.
+        platform&apos;s own storage rather than the buyer&apos;s. More generally, an
+        email-tier agent gets no Microsoft Graph access at all: <Code>graph_fn</Code> is
+        refused with a message saying why, and the platform will not issue it a token.
+        Sending works on both tiers, because replies go out through the platform.
       </P>
+
+      <H3 id="hire-tiers">Which tiers your agent is offered on</H3>
+      <P>
+        Buyers can only hire an agent on a tier where it can do its job. The platform
+        works that out from your manifest, and the listing, the hire wizard and the hire
+        itself all follow it — a buyer is never sold an Email-only hire of an agent that
+        needs their files.
+      </P>
+      <Table
+        headers={["Your manifest", "Offered on", "What the listing says"]}
+        rows={[
+          ["graphScopes is only mail.send, or empty", "Email only and Connect", "Works entirely by email"],
+          ["graphScopes includes anything else (files, excel, calendar, directory, mail.read)", "Connect Microsoft 365 only", "Needs Microsoft 365, and why"],
+          ["…and hireTiers: [\"platform\", \"buyer_org\"]", "Email only and Connect", "Works by email; connecting also lets it …"],
+          ["hireTiers: [\"buyer_org\"]", "Connect Microsoft 365 only", "Needs Microsoft 365"],
+          ["No graphScopes at all (agents published before the field)", "Both", "Unchanged"],
+        ]}
+      />
+      <P>
+        Set <Code>hireTiers</Code> when the default is wrong for you. The common case is an
+        agent that does its main job from what it is emailed and only does more when
+        connected — Data Analyst analyses an emailed spreadsheet on Email only, and reads
+        SharePoint files when connected:
+      </P>
+      <Pre>{`"graphScopes": ["files.read", "excel.read", "mail.send"],
+"hireTiers": ["platform", "buyer_org"]`}</Pre>
+      <Warning>
+        Listing <Code>platform</Code> is a promise that the agent works without Graph. Check
+        the tier in your code (<Code>AGENT_TIER</Code>, above) and offer only what works there;
+        every Graph call on Email only is refused. An agent whose code uses{" "}
+        <Code>graph_fn</Code> must declare <Code>graphScopes</Code> — the upload refuses it
+        otherwise — and <Code>agentstore check</Code> prints the tiers yours will be offered on.
+      </Warning>
       <P>Your code can tell which tier it is on:</P>
       <Pre>{`EMAIL_ONLY = os.environ.get("AGENT_TIER", "org") == "email"   # "email" | "org"
 WORKSPACE = os.environ.get("WORKSPACE_SCOPE", "buyer_org")   # "platform" | "buyer_org"`}</Pre>
@@ -1066,6 +1105,7 @@ async def run_agent(content: str, context: dict, progress_fn) -> dict:
           ["requiredIntegrations", "array", "Yes", "External integrations the buyer must configure. Shown as setup requirements."],
           ["autonomyDefaults", "object", "Yes", "Default autonomy levels per task type. Values: always_queue | queue_if_stakes_gt_5 | queue_if_stakes_gt_7 | auto_execute"],
           ["graphScopes", "array", "No", "What the agent reaches in the buyer’s Microsoft 365, e.g. [\"files.read\", \"mail.send\"]. Shown on your listing and enforced at runtime. See Declaring what your agent reaches."],
+          ["hireTiers", "array", "No", "Tiers it can be hired on: \"platform\" (Email only) and/or \"buyer_org\" (Connect Microsoft 365). Left out, it is derived from graphScopes. See Which tiers your agent is offered on."],
           ["connectsTo", "array", "No", "Outside hosts the agent may reach, exactly as written — e.g. [\"api.weather.gov\"]. Shown to reviewers and buyers; nothing unlisted is reachable. See Reaching other sites."],
           ["maxRunMinutes", "number", "No", "The longest one run may take, 1–240 minutes (default 60). The platform stops a run that reaches it and tells the sender. See Long-running work."],
           ["resources", "string", "No", "standard (512 MB, 1 CPU — the default) or large (2 GB, 2 CPUs; price floor +$40/month, cannot be free). See Resource limits."],

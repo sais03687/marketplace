@@ -8,6 +8,7 @@ import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, Mess
 import { GRAPH_SCOPE_LABELS, type GraphScope } from "@marketplace/agent-package-schema";
 import { formatPrice } from "@/lib/utils";
 import { hostsOfVersion } from "@/lib/connects-to";
+import { tierOfVersion } from "@/lib/agent-tier";
 import Link from "next/link";
 
 
@@ -72,6 +73,7 @@ export default async function AgentListingPage({
     : null;
 
   const outsideHosts = await hostsOfVersion(agent.id, agent.currentVersion);
+  const tier = await tierOfVersion(agent.id, agent.currentVersion);
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -296,16 +298,61 @@ export default async function AgentListingPage({
                     default tier needs neither, and the hire wizard says so two
                     clicks later. Telling someone they need their IT department
                     when they do not is the most expensive sentence on the page. */}
+                {/* Three cases, from what the approved version declares. An agent
+                    that needs the buyer's files or calendar cannot work on Email
+                    only and must say so before anyone pays; one that declared it
+                    needs nothing more should not send buyers to their IT
+                    department for a connection that adds nothing; one that never
+                    declared keeps the wording it always had. */}
                 <div className="mt-4 space-y-1.5 text-xs text-muted-foreground">
                   <p className="font-medium text-foreground">What you need:</p>
-                  <div className="flex items-center gap-1">
-                    <Mail className="h-3 w-3" />
-                    Email only: nothing to install, no admin approval
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <MessageSquare className="h-3 w-3" />
-                    Optional: connect Microsoft 365 for files and calendar
-                  </div>
+                  {tier.requiresOrg ? (
+                    <>
+                      <div className="flex items-start gap-1">
+                        <MessageSquare className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>
+                          Microsoft 365: an admin approves access, and the agent uses a
+                          licence seat. It needs this to{" "}
+                          {tier.orgScopes.map((s) => GRAPH_SCOPE_LABELS[s].toLowerCase()).join(", ")}.
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Mail className="h-3 w-3" />
+                        Not available on Email only
+                      </div>
+                    </>
+                  ) : tier.orgScopes.length > 0 ? (
+                    <>
+                      <div className="flex items-center gap-1">
+                        <Mail className="h-3 w-3" />
+                        Email only: nothing to install, no admin approval
+                      </div>
+                      <div className="flex items-start gap-1">
+                        <MessageSquare className="mt-0.5 h-3 w-3 shrink-0" />
+                        <span>
+                          Optional: connect Microsoft 365 so it can also{" "}
+                          {tier.orgScopes.map((s) => GRAPH_SCOPE_LABELS[s].toLowerCase()).join(", ")}
+                        </span>
+                      </div>
+                    </>
+                  ) : tier.declared ? (
+                    <div className="flex items-center gap-1">
+                      <Mail className="h-3 w-3" />
+                      Email only: nothing to install, no admin approval. It works
+                      entirely by email.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-1">
+                        <Mail className="h-3 w-3" />
+                        Email only: nothing to install, no admin approval
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <MessageSquare className="h-3 w-3" />
+                        Optional: connect Microsoft 365 for files and calendar
+                      </div>
+                    </>
+                  )}
                 </div>
               </CardContent>
             </Card>

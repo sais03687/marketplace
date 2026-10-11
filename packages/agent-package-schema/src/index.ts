@@ -51,3 +51,13 @@ export {
   resourceTierOf,
   type ResourceTier,
 } from "./resources.js";
+
+export {
+  EMAIL_TIER_SCOPES,
+  HIRE_TIERS,
+  hireTiersProblems,
+  orgOnlyScopes,
+  requiresOrgTier,
+  supportedTiers,
+  type HireTier,
+} from "./tiers.js";
