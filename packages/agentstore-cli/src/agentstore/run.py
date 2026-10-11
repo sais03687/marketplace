@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import inspect
 import json
+import mimetypes
 import os
 import sys
 from pathlib import Path
@@ -158,22 +159,32 @@ def _accepted(fn, offered: dict) -> dict:
     return {k: v for k, v in offered.items() if k in params}
 
 
-def _format_email(text: str, sender: str, subject: str, attachments: list[Path], tools: _Tools) -> str:
+def _format_email(text: str, sender: str, subject: str, attachments: list[Path], tools: _Tools,
+                  listed: list | None = None) -> str:
     out = f"New email from {sender}\nSubject: {subject}\nThread ID: local-thread\n\n{text}"
     if not attachments:
         return out
     lines, handles = [], 0
     for path in attachments:
         raw = path.read_bytes()
+        ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         if path.suffix.lower() in TEXTUAL and len(raw) <= INLINE_LIMIT:
             try:
+                text_ok = raw.decode("utf-8")
+                if listed is not None:
+                    listed.append({"name": path.name, "content_type": ctype, "size": len(raw),
+                                   "handle": tools.register(path.name, raw), "inlined": True})
                 lines.append(f"- {path.name} ({len(raw)} bytes) — full contents below\n"
                              f"--- BEGIN {path.name} ---\n{raw.decode('utf-8')}\n--- END {path.name} ---")
                 continue
             except UnicodeDecodeError:
                 pass
         handles += 1
-        lines.append(f"- {path.name} ({len(raw)} bytes) — handle: {tools.register(path.name, raw)}")
+        handle = tools.register(path.name, raw)
+        if listed is not None:
+            listed.append({"name": path.name, "content_type": ctype, "size": len(raw),
+                           "handle": handle, "inlined": False})
+        lines.append(f"- {path.name} ({ctype}, {len(raw)} bytes) — handle: {handle}")
     note = ("\n\n=== ATTACHMENTS ON THIS EMAIL ===\n"
             "These arrived with the message. Where contents are shown, use them directly.\n" + "\n".join(lines))
     if handles:
@@ -247,10 +258,12 @@ def _run(folder: str, message: str, sender: str, subject: str, attachments: list
               f"model {model!r} is not applied. Use an OpenRouter key to test the exact model.")
 
     tools = _Tools(approve)
-    content = _format_email(message, sender, subject, [Path(a) for a in attachments], tools)
+    listed: list = []
+    content = _format_email(message, sender, subject, [Path(a) for a in attachments], tools, listed)
     context = {"sender": sender, "subject": subject, "thread_id": "local-thread",
                "message_id": "local-message", "agent_name": os.environ["AGENT_NAME"],
-               "company_name": os.environ["COMPANY_NAME"], "approval_policy": "external-only"}
+               "company_name": os.environ["COMPANY_NAME"], "approval_policy": "external-only",
+               "attachments": listed}
 
     try:
         agent = _import_agent(root)

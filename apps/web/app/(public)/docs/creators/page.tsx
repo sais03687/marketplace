@@ -445,7 +445,10 @@ async def run_agent(
     context: who sent it and where it came from —
              sender, subject, thread_id, message_id, session_key, hook_name,
              agent_name, agent_email, company_name, company_domain,
-             approval_policy
+             approval_policy, attachments
+             attachments: one {name, content_type, size, handle, inlined}
+             per file the email carried — pass a handle to
+             file_resolver_fn for its bytes
 
     Human approval — the buyer's safety rail:
       approve_fn: queue an action for a human, returns an approval id

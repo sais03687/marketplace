@@ -177,3 +177,26 @@ def test_the_bundled_platform_llm_is_the_platforms_own():
     runtime = REPO / "apps" / "provisioning-service" / "src" / "templates" / "runtime" / "platform_llm.py"
     assert bundled.read_bytes().replace(b"\r\n", b"\n") == runtime.read_bytes().replace(b"\r\n", b"\n"), \
         "copy apps/.../runtime/platform_llm.py into packages/agentstore-cli/src/agentstore/_platform/"
+
+
+ATTACH_AGENT = '''
+async def run_agent(content: str, context: dict, file_resolver_fn) -> dict:
+    files = context["attachments"]
+    sizes = [f"{a['name']}:{len(file_resolver_fn(a['handle']))}:{a['inlined']}" for a in files]
+    return {"action": "reply_email", "text": " ".join(sizes)}
+
+async def resume_agent(thread_id: str, resolution: dict, **tools) -> dict:
+    return {"action": "none"}
+'''
+
+
+def test_test_lists_attachments_in_context_like_the_platform(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    img = tmp_path / "scan.png"
+    img.write_bytes(b"\x89PNG" + b"0" * 96)
+    csv = tmp_path / "stops.csv"
+    csv.write_bytes(b"a,b\n1,2\n")
+    folder = _agent(tmp_path / "a", ATTACH_AGENT)
+    assert run(str(folder), "see attached", "a@b.c", "s", [str(img), str(csv)], None) == 0
+    out = capsys.readouterr().out
+    assert "scan.png:100:False" in out and "stops.csv:8:True" in out

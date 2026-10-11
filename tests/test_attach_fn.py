@@ -58,3 +58,21 @@ def test_a_sandbox_file_still_resolves_and_nonsense_does_not():
     resolver = adapter._creator_tool_kwargs(lambda content, context, file_resolver_fn: None)["file_resolver_fn"]
     assert resolver(handle) == b"png"
     assert resolver("inbound:doesnotexist") is None and resolver(None) is None
+
+
+def test_attachments_are_listed_in_context_with_handles_that_open():
+    import base64
+
+    collected = []
+    note = adapter._describe_inbound_attachments([
+        {"filename": "receipt.png", "contentType": "image/png",
+         "content_base64": base64.b64encode(b"\x89PNG receipt").decode()},
+        {"filename": "stops.csv", "contentType": "text/csv",
+         "content_base64": base64.b64encode(b"name,lat,lon\nA,39.7,-86.1\n").decode()},
+    ], "msg-1", collected)
+    by_name = {a["name"]: a for a in collected}
+    assert set(by_name) == {"receipt.png", "stops.csv"}
+    assert by_name["receipt.png"]["inlined"] is False and by_name["stops.csv"]["inlined"] is True
+    assert adapter.resolve_any_file(by_name["receipt.png"]["handle"]) == b"\x89PNG receipt"
+    assert adapter.resolve_any_file(by_name["stops.csv"]["handle"]).startswith(b"name,lat,lon")
+    assert "A,39.7,-86.1" in note   # text files are still inlined for the model, as before

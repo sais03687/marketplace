@@ -6478,8 +6478,13 @@ _ATTACHMENT_INLINE_TOTAL = 60_000
 _TEXTUAL_SUFFIXES = {".csv", ".txt", ".md", ".json", ".xml", ".yaml", ".yml", ".log", ".tsv"}
 
 
-def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
+def _describe_inbound_attachments(attachments: list, message_id: str, collected: list | None = None) -> str:
     """Save inbound attachments and describe them for the agent.
+
+    `collected`, when given, receives one dict per attachment — name,
+    content_type, size, handle, inlined — which becomes context["attachments"]:
+    the documented, structured way for creator code to find what was attached,
+    rather than parsing the description lines below.
 
     Text files are inlined, because that is the only form the agent can reason over
     without another round trip — and inlining a CSV is what makes "what is the total
@@ -6535,6 +6540,9 @@ def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
 
         if decoded is not None:
             inlined_total += len(raw)
+            if collected is not None:
+                collected.append({"name": name, "content_type": ctype, "size": len(raw),
+                                  "handle": _register_inbound_file(safe_name, raw), "inlined": True})
             lines.append(
                 f"- {name} ({ctype}, {len(raw)} bytes) — full contents below\n"
                 f"--- BEGIN {name} ---\n{decoded}\n--- END {name} ---"
@@ -6544,6 +6552,9 @@ def _describe_inbound_attachments(attachments: list, message_id: str) -> str:
             # but unreadable — the agent knew a workbook had arrived and had no
             # way to open it. A handle gives it one.
             handle = _register_inbound_file(safe_name, raw)
+            if collected is not None:
+                collected.append({"name": name, "content_type": ctype, "size": len(raw),
+                                  "handle": handle, "inlined": False})
             if handle:
                 handles += 1
                 shape = describe_file_shape(safe_name, raw)
@@ -6613,7 +6624,8 @@ async def receive_agentmail_webhook(request: Request):
         f"{text}"
     )
 
-    attachment_note = _describe_inbound_attachments(msg.get("attachments") or [], message_id)
+    attachment_list: list[dict] = []
+    attachment_note = _describe_inbound_attachments(msg.get("attachments") or [], message_id, attachment_list)
     if attachment_note:
         formatted += attachment_note
 
@@ -6648,6 +6660,10 @@ async def receive_agentmail_webhook(request: Request):
         # Lessons the poller injected into the text above, so the run can report
         # back whether they led to anything.
         "agentmind_ids": msg.get("agentmind_ids") or payload.get("agentmind_ids") or [],
+        # Each attachment as {name, content_type, size, handle, inlined}. Pass a
+        # handle to file_resolver_fn for the bytes. Text files are also inlined
+        # in the message text, as before.
+        "attachments": attachment_list,
     }
 
     asyncio.create_task(_handle_message(formatted, context))
