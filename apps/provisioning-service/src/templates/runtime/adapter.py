@@ -1370,6 +1370,19 @@ def resolve_sandbox_file(ref: str) -> bytes | None:
     return entry["bytes"] if entry else None
 
 
+def resolve_any_file(ref: str) -> bytes | None:
+    """Bytes for an inbound attachment's handle or a sandbox file's, or None.
+
+    What creator code is given as file_resolver_fn. It used to be
+    resolve_sandbox_file alone, so the handle of a file the buyer attached —
+    "inbound:…", the form every attachment that is not inlined arrives in —
+    resolved to None, and an agent could not open an emailed image, PDF or
+    workbook unless it went through the sandbox.
+    """
+    entry = resolve_file_handle(ref)
+    return entry["bytes"] if entry else None
+
+
 # How much of a file is read to describe it. Enough to characterise the columns
 # of anything realistic, small enough that a 24 MB CSV costs milliseconds.
 _PROFILE_SAMPLE_BYTES = 2 * 1024 * 1024
@@ -5501,7 +5514,7 @@ def _creator_tool_kwargs(fn, *, mcp_fn=None, thread_id=None, verify_attempts=Non
         # buyer's policy; the agent never gets one of its own.
         "graph_fn": graph_request,
         # Attachments and sandbox files, passed as handles rather than bytes.
-        "file_resolver_fn": resolve_sandbox_file,
+        "file_resolver_fn": resolve_any_file,
         "file_registrar_fn": _register_inbound_file,
         "file_describer_fn": describe_file_shape,
         # Files the agent made itself, sent with the reply.

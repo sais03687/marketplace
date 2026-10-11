@@ -44,3 +44,17 @@ def test_only_an_agent_that_asks_for_attach_fn_gets_it():
 
     assert adapter._creator_tool_kwargs(wants)["attach_fn"] is adapter.attach_file
     assert "attach_fn" not in adapter._creator_tool_kwargs(does_not)
+
+
+def test_an_emailed_attachment_can_be_opened_by_creator_code():
+    handle = adapter._register_inbound_file("receipt.png", b"\x89PNG receipt")
+    resolver = adapter._creator_tool_kwargs(lambda content, context, file_resolver_fn: None)["file_resolver_fn"]
+    assert resolver(handle) == b"\x89PNG receipt"
+
+
+def test_a_sandbox_file_still_resolves_and_nonsense_does_not():
+    _fresh_run()
+    handle = adapter.attach_file("chart.png", b"png")
+    resolver = adapter._creator_tool_kwargs(lambda content, context, file_resolver_fn: None)["file_resolver_fn"]
+    assert resolver(handle) == b"png"
+    assert resolver("inbound:doesnotexist") is None and resolver(None) is None
