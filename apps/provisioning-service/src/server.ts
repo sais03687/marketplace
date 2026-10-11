@@ -144,6 +144,34 @@ const STALE_WARN_INTERVAL_MS = 5 * 60 * 1000;
  * Returns the tenantId, or null if the deployment has no tenant configured.
  * Throws only when the DB is unavailable AND there is no cached value to serve.
  */
+/**
+ * True for an email-tier deployment (no buyer tenant), false for a connected one,
+ * null when it cannot be told — the database is unreachable and nothing is
+ * cached. The caller refuses on anything but false.
+ *
+ * Read from buyerMicrosoftTenantId, not from the tenant id it resolves to: a
+ * connected buyer whose organisation *is* the platform's tenant resolves to the
+ * same id as an email-tier agent, and is entitled to its token.
+ */
+const _tierCache = new Map<string, { emailTier: boolean; cachedAt: number }>();
+async function isEmailTierDeployment(deploymentId: string): Promise<boolean | null> {
+  const cached = _tierCache.get(deploymentId);
+  try {
+    const deployment = await prisma.deployment.findUnique({
+      where: { id: deploymentId },
+      select: { buyerMicrosoftTenantId: true },
+    });
+    if (!deployment) return null;
+    const emailTier = !deployment.buyerMicrosoftTenantId;
+    _tierCache.set(deploymentId, { emailTier, cachedAt: Date.now() });
+    return emailTier;
+  } catch {
+    // Same stale-on-error stance as the tenant lookup below, bounded by its TTL.
+    if (cached && Date.now() - cached.cachedAt < TENANT_CACHE_TTL_MS) return cached.emailTier;
+    return null;
+  }
+}
+
 async function resolveTenantId(deploymentId: string): Promise<string | null> {
   const cached = _tenantCache.get(deploymentId);
   if (cached && Date.now() - cached.cachedAt < TENANT_CACHE_TTL_MS) {
@@ -731,6 +759,28 @@ export function startProxyServer() {
           if (!isPlatformCaller && !agentTokenMatches(presented, deploymentId, SECRET)) {
             console.warn(`[microsoft-token] Rejected unauthenticated request for ${deploymentId}`);
             return send(res, 401, { error: "Unauthorized" });
+          }
+
+          // An email-tier agent gets no Graph token. Its mailbox lives in the
+          // platform's own tenant, and a token minted here is app-only for that
+          // whole tenant — every other buyer's email-tier agent, their mailboxes
+          // and the directory — guarded only by what the agent's own code chose
+          // to declare. It has no legitimate use for one: mail arrives through
+          // the poller and leaves through /internal/outlook-send. The pollers
+          // present the platform secret and are not affected.
+          if (!isPlatformCaller) {
+            const emailTier = await isEmailTierDeployment(deploymentId);
+            if (emailTier !== false) {
+              console.warn(
+                `[microsoft-token] Refused ${deploymentId}: ` +
+                  (emailTier ? "email-tier agents get no Graph token" : "could not confirm its tier"),
+              );
+              return send(res, 403, {
+                error: emailTier
+                  ? "This agent is on the email tier, which has no Microsoft 365 access"
+                  : "Could not confirm this agent's tier; try again shortly",
+              });
+            }
           }
 
           const tenantId = await resolveTenantId(deploymentId);

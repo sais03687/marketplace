@@ -35,8 +35,11 @@ PROVISION = ROOT / "apps" / "provisioning-service" / "src" / "jobs" / "provision
 needs_python = pytest.mark.skipif(shutil.which("python") is None, reason="python needed")
 
 
-def scope_for(method: str, path: str, declared: str = ""):
-    """Drive the adapter's own _required_scope / _enforce_declared_scope."""
+def scope_for(method: str, path: str, declared: str = "", declared_flag: bool = False):
+    """Drive the adapter's own _required_scope / _enforce_declared_scope.
+
+    declared_flag is GRAPH_SCOPES_DECLARED: the manifest declared graphScopes,
+    which matters when the list is empty."""
     src = ADAPTER.read_text(encoding="utf-8")
 
     def grab(name):
@@ -51,6 +54,8 @@ def scope_for(method: str, path: str, declared: str = ""):
         f"os.environ['GRAPH_SCOPES'] = {json.dumps(declared)}",
         "class ActionRefused(RuntimeError): pass",
         "_DECLARED_SCOPES = {s.strip() for s in os.environ.get('GRAPH_SCOPES','').split(',') if s.strip()}",
+        f"os.environ['GRAPH_SCOPES_DECLARED'] = {json.dumps('1' if declared_flag else '')}",
+        "_SCOPES_DECLARED = os.environ.get('GRAPH_SCOPES_DECLARED') == '1' or bool(_DECLARED_SCOPES)",
         grab("_required_scope"),
         grab("_enforce_declared_scope"),
         f"scope = _required_scope({json.dumps(method)}, {json.dumps(path)})",
@@ -192,3 +197,25 @@ def test_both_entrypoints_are_documented():
         assert fn in upload, f"{fn} should be required at upload"
         assert fn in docs, f"{fn} is required but undocumented"
     assert "must export two async functions" in docs
+
+
+
+@needs_python
+def test_an_agent_that_declared_it_reaches_nothing_is_held_to_it():
+    """graphScopes: [] used to reach the container as the same empty string as
+    never declaring, and enforced nothing - an agent that told buyers it needs
+    nothing in their tenant could read their files."""
+    got = scope_for("GET", "/users/a@b.c/drive/root/children", declared="", declared_flag=True)
+    assert got["refused"] and "files.read" in got["refused"]
+
+
+@needs_python
+def test_never_declaring_still_enforces_nothing():
+    """The other half: agents published before graphScopes existed keep working."""
+    assert scope_for("GET", "/users/a@b.c/drive/root/children")["refused"] is None
+
+
+def test_provisioning_tells_the_container_an_empty_list_was_declared():
+    src = PROVISION.read_text(encoding="utf-8")
+    assert 'GRAPH_SCOPES_DECLARED: "1"' in src
+    assert "Array.isArray(manifest?.graphScopes) ? { GRAPH_SCOPES_DECLARED" in src

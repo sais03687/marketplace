@@ -4891,6 +4891,18 @@ _DECLARED_SCOPES = {
     s.strip() for s in os.environ.get("GRAPH_SCOPES", "").split(",") if s.strip()
 }
 
+# Whether the manifest declared graphScopes at all. An empty list is a claim -
+# "this agent reaches nothing in your tenant" - and has to be held to it; it used
+# to arrive as the same empty string as "never declared" and enforce nothing.
+_SCOPES_DECLARED = os.environ.get("GRAPH_SCOPES_DECLARED") == "1" or bool(_DECLARED_SCOPES)
+
+# The email tier. Its mailbox lives in the platform's own tenant, beside every
+# other buyer's email-tier agent, and it has nothing of the buyer's to reach: work
+# arrives by email and replies leave through the platform. So it makes no Graph
+# calls at all. The token endpoint refuses it a token too; this says why, in
+# words a creator can act on, instead of a bare 403.
+_EMAIL_TIER = os.environ.get("AGENT_TIER", "org").strip().lower() == "email"
+
 
 def _required_scope(method: str, path: str) -> str | None:
     """Which declared scope a Graph call needs, or None if it maps to no scope.
@@ -4932,7 +4944,7 @@ def _enforce_declared_scope(method: str, path: str) -> None:
     novel Graph call — Planner, To Do — has no scope to match; those are still
     caught, because an unclassified *write* already requires a human.
     """
-    if not _DECLARED_SCOPES:
+    if not _SCOPES_DECLARED:
         return
     scope = _required_scope(method, path)
     if scope is None or scope in _DECLARED_SCOPES:
@@ -4940,7 +4952,8 @@ def _enforce_declared_scope(method: str, path: str) -> None:
     raise ActionRefused(
         f"This agent did not declare {scope}, so it cannot make that call "
         f"({method} {path.split('?')[0]}). Its listing tells the buyer it reaches "
-        f"{', '.join(sorted(_DECLARED_SCOPES))} and nothing else. Add {scope} to "
+        f"{', '.join(sorted(_DECLARED_SCOPES)) or 'nothing in their Microsoft 365'} "
+        f"and nothing else. Add {scope} to "
         f"graphScopes in marketplace.json and publish a new version if the agent "
         f"genuinely needs it."
     )
@@ -5071,6 +5084,16 @@ async def graph_request(
     anything that mutates or shares is classified and checked, and blocks on a
     human when the buyer's policy says so.
     """
+    if _EMAIL_TIER:
+        raise ActionRefused(
+            f"This agent was hired on the email tier, which has no access to the "
+            f"buyer's Microsoft 365, so it cannot make Graph calls ({method} "
+            f"{path.split('?')[0]}). Work arrives by email and replies go out with "
+            f"reply_email. An agent that needs files, spreadsheets, calendar or the "
+            f"directory declares those graphScopes, and is then hired on the "
+            f"connected tier only."
+        )
+
     # Before anything else, including the approval policy: a call the agent never
     # declared is refused outright, so it can never become a prompt asking the
     # buyer to permit a capability the listing told them was not needed.

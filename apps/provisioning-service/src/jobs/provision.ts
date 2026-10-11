@@ -503,6 +503,10 @@ export async function provisionJob(
     // than "nothing allowed" — an agent published before this existed must keep
     // working. The listing says which of the two it is.
     GRAPH_SCOPES: Array.isArray(manifest?.graphScopes) ? manifest.graphScopes.join(",") : "",
+    // An empty list is a declaration too — "reaches nothing in your tenant" — and
+    // joined it is the same "" as never declaring. This keeps the two apart so
+    // the adapter holds the first to it instead of enforcing nothing.
+    ...(Array.isArray(manifest?.graphScopes) ? { GRAPH_SCOPES_DECLARED: "1" } : {}),
     ...(brokerOn ? { LLM_BROKER_URL: config.llmBrokerContainerUrl } : {}),
     APPROVAL_POLICY: approvalPolicy,
     APPROVAL_RISK_THRESHOLD: approvalRiskThreshold,

@@ -159,6 +159,7 @@ export interface ContainerEnv {
   STRUCTURED_OUTPUT?: string;
   /** The manifest's graphScopes, comma-separated. Empty means none declared. */
   GRAPH_SCOPES?: string;
+  GRAPH_SCOPES_DECLARED?: string;     // "1" when the manifest declared graphScopes, even as []
   // When set, the adapter routes the creator's LLM client through this broker
   // (overwriting LLM_BASE_URL/LLM_API_KEY before creator code imports) so the real
   // model key never enters the container. See config.llmBrokerEnabled.
