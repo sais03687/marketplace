@@ -95,3 +95,12 @@ def test_email_only_buyers_are_told_how_to_keep_replies_out_of_spam():
     assert "{emailOnly && <InboxHelp />}" in panel
     assert "Never send it to Spam" in help_src and "Safe senders and domains" in help_src
     assert 'AGENT_MAIL_DOMAIN = "agents.agentstore.it.com"' in help_src
+
+
+def test_the_spam_screenshots_exist_and_start_collapsed():
+    help_src = (WEB / "components" / "hire" / "inbox-help.tsx").read_text(encoding="utf-8")
+    for n in (1, 2, 3):
+        assert f"/help/gmail-filter-{n}.png" in help_src
+        assert (WEB / "public" / "help" / f"gmail-filter-{n}.png").exists()
+    # Behind a <details>, closed unless the buyer asks — the page stays short.
+    assert "<details" in help_src and "<details open" not in help_src

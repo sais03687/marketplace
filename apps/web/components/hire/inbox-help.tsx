@@ -30,7 +30,14 @@ const PROVIDERS = {
       <>Click <b>Create filter</b>.</>,
       <>Tick <b>Never send it to Spam</b>, then click <b>Create filter</b>.</>,
     ],
-    note: "This covers every agent you hire, now and later.",
+    note:
+      "This covers every agent you hire, now and later. Emails already in Spam stay there — " +
+      "open one and click Report not spam.",
+    screenshots: [
+      { src: "/help/gmail-filter-1.png", alt: "The sliders icon at the right end of the Gmail search bar, circled", caption: "1. Open search options" },
+      { src: "/help/gmail-filter-2.png", alt: "Search options with @agents.agentstore.it.com in From, and Create filter circled", caption: "2. Enter the domain in From, then click Create filter" },
+      { src: "/help/gmail-filter-3.png", alt: "Never send it to Spam ticked, and the Create filter button circled", caption: "3. Tick Never send it to Spam, then Create filter" },
+    ],
   },
   outlook: {
     label: "Outlook / Microsoft 365",
@@ -45,6 +52,7 @@ const PROVIDERS = {
     note:
       "In classic desktop Outlook: Home → Junk → Junk E-mail Options → Safe Senders → Add. " +
       "If your company filters mail centrally and replies still go missing, ask IT to allow this domain.",
+    screenshots: [],
   },
   other: {
     label: "Other",
@@ -57,6 +65,7 @@ const PROVIDERS = {
       </>,
     ],
     note: "",
+    screenshots: [],
   },
 } as const;
 
@@ -107,6 +116,27 @@ export function InboxHelp({ compact = false }: { compact?: boolean }) {
                 ))}
               </ol>
               {p.note && <p className="text-amber-800">{p.note}</p>}
+              {p.screenshots.length > 0 && (
+                // Collapsed by default: most people need the three lines above,
+                // and the pictures are there for the ones who don't.
+                <details className="group">
+                  <summary className="cursor-pointer select-none underline">Show screenshots</summary>
+                  <ol className="mt-2 space-y-3">
+                    {p.screenshots.map((shot) => (
+                      <li key={shot.src} className="space-y-1">
+                        <p className="font-medium">{shot.caption}</p>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={shot.src}
+                          alt={shot.alt}
+                          loading="lazy"
+                          className="w-full rounded border border-amber-200 bg-white"
+                        />
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              )}
             </div>
           )}
         </div>
