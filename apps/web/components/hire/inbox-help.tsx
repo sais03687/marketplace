@@ -130,7 +130,7 @@ export function InboxHelp({ compact = false }: { compact?: boolean }) {
                           src={shot.src}
                           alt={shot.alt}
                           loading="lazy"
-                          className="w-full rounded border border-amber-200 bg-white"
+                          className="w-full max-w-lg rounded border border-amber-200 bg-white"
                         />
                       </li>
                     ))}
