@@ -214,7 +214,7 @@ export function buildVettingDecisionEmail({
   version,
   decision,
   feedback,
-  creatorDashboardUrl = "https://marketplace.agentmind.to/creator",
+  creatorDashboardUrl = `${process.env.NEXT_PUBLIC_APP_URL || "https://www.agentstore.it.com"}/creator`,
 }: BuildVettingDecisionEmailParams): { subject: string; html: string } {
   const approved = decision === "MANUALLY_APPROVED" || decision === "PASSED";
   // No leading glyph. A subject that opens with ✓ or ✗ reads as bulk mail to a
