@@ -105,7 +105,7 @@ def test_the_notebook_is_included_when_there_are_steps_to_show():
         {"stdout": "hi\n", "returncode": 0},
     )
     names = [a["name"] for a in adapter.run_attachments(request="do a thing")]
-    assert "working.ipynb" in names
+    assert "do-thing-working.ipynb" in names
 
 
 def test_the_notebook_comes_after_the_deliverables():
@@ -195,3 +195,29 @@ def test_the_resume_path_attaches():
             assert len(attaching) >= 2, "the approved-run delivery path lost its files again"
             return
     pytest.fail("_deliver_email_result not found")
+
+
+# ── the notebook is named for what it was working on ──────────────────────
+
+def test_the_notebook_is_named_after_the_subject():
+    assert adapter.notebook_name(subject="Re: Q3 revenue by region") == "q3-revenue-by-region-working.ipynb"
+
+
+def test_without_a_subject_the_request_names_it():
+    assert adapter.notebook_name(subject="", request="Can you find the churn rate for March?") == (
+        "find-churn-rate-march-working.ipynb"
+    )
+
+
+def test_a_long_subject_stays_a_sensible_length():
+    name = adapter.notebook_name(subject="one two three four five six seven eight nine ten")
+    assert name == "one-two-three-four-five-six-working.ipynb"
+
+
+def test_nothing_usable_falls_back_to_working():
+    assert adapter.notebook_name(subject="Re:", request="!!!") == "working.ipynb"
+
+
+def test_the_reply_names_the_file_it_actually_attached():
+    text = adapter.note_the_notebook("Total was 42.", [{"name": "q3-revenue-working.ipynb"}])
+    assert "attached as q3-revenue-working.ipynb" in text

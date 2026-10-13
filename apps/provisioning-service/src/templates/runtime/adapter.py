@@ -1231,10 +1231,37 @@ def notebook_attachment(steps: list, *, request: str = "", subject: str = "") ->
         print(f"[adapter] Could not build the working notebook: {exc}", flush=True)
         return None
     return {
-        "name": "working.ipynb",
+        "name": notebook_name(subject=subject, request=request),
         "content_base64": base64.b64encode(body.encode("utf-8")).decode(),
         "contentType": "application/x-ipynb+json",
     }
+
+
+# Words that say nothing about what a run was for, dropped from the file name.
+_NAME_FILLER = {
+    "re", "fw", "fwd", "a", "an", "the", "and", "or", "of", "for", "to", "in", "on",
+    "please", "can", "could", "you", "me", "my", "our", "we", "i", "is", "it", "this",
+    "that", "with", "what", "how", "hi", "hello", "hey",
+}
+
+
+def notebook_name(*, subject: str = "", request: str = "") -> str:
+    """A file name that says what the working is for, e.g. q3-revenue-by-region-working.ipynb.
+
+    Every run's notebook used to be working.ipynb, so a buyer saving a few of
+    them had a folder of identically named files. Taken from the email's
+    subject, or the first words of the request when there is none; working.ipynb
+    only when neither has anything usable.
+    """
+    for source in (subject, request):
+        words = [
+            w for w in re.findall(r"[a-z0-9]+", (source or "").lower())
+            if w not in _NAME_FILLER
+        ][:6]
+        stem = "-".join(words)[:50].strip("-")
+        if stem:
+            return f"{stem}-working.ipynb"
+    return "working.ipynb"
 
 def _register_sandbox_files(mcp_result: Any) -> Any:
     """Swap base64 file contents in an MCP result for handles the agent can pass on."""
@@ -1906,7 +1933,7 @@ def _unresolved_handle_error(unresolved: list[str]) -> dict:
 
 
 _NOTEBOOK_NOTE = (
-    "The working is attached as working.ipynb — every step I ran, in order, with "
+    "The working is attached as {name} — every step I ran, in order, with "
     "its output. If a figure looks wrong, that file will show you where it came "
     "from."
 )
@@ -1929,9 +1956,13 @@ def note_the_notebook(text: str, attachments: list[dict] | None) -> str:
     body = (text or "").rstrip()
     if not body or "ipynb" in body:
         return text
-    if not any(str(a.get("name", "")).endswith(".ipynb") for a in attachments or []):
+    name = next(
+        (str(a.get("name")) for a in attachments or [] if str(a.get("name", "")).endswith(".ipynb")),
+        None,
+    )
+    if not name:
         return text
-    return body + "\n\n" + _NOTEBOOK_NOTE
+    return body + "\n\n" + _NOTEBOOK_NOTE.format(name=name)
 
 
 
