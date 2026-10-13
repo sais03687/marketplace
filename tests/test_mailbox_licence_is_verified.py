@@ -55,3 +55,24 @@ def test_a_deployment_with_no_mailbox_fails_the_hire():
     assert "Could not give this agent a mailbox" in block
     # A re-provision that already has an identity keeps working.
     assert "existingEmail" in block
+
+
+# ── a tenant with no free seat fails once, with the reason ─────────────────
+
+def test_a_missing_seat_is_not_retried():
+    # Retrying cannot create a seat. It did hide the reason: the retry found the
+    # user the first attempt had made, and failed reading it back instead.
+    assert "class NoMailboxSeatError" in WS
+    block = WS[WS.index("async function ensureMailboxLicence"):]
+    block = block[: block.index("\n}\n")]
+    assert block.count("throw new NoMailboxSeatError(") == 2, "both no-seat cases must be the non-retried kind"
+    retry = PROV[PROV.index("async function withRetry"):]
+    retry = retry[: retry.index("\n}\n")]
+    assert "err instanceof NoMailboxSeatError" in retry
+
+
+def test_a_user_that_could_not_be_licensed_is_not_left_behind():
+    block = WS[WS.index("export async function createMicrosoftUser"):]
+    block = block[: block.index("\n}\n")]
+    guard = block.index("err instanceof NoMailboxSeatError")
+    assert "deleteMicrosoftUser(user.id)" in block[guard: guard + 200]

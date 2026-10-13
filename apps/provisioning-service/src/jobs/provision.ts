@@ -8,7 +8,7 @@ import {
 } from "../clients/docker.js";
 import { spawnMcpSidecars, stopMcpSidecars } from "../mcp/sidecar-manager.js";
 import { createDeploymentServiceAccount } from "../clients/google-iam.js";
-import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError, getVerifiedDomains } from "../clients/microsoft-workspace.js";
+import { createMicrosoftUser, createSharePointFolder, deleteMicrosoftUser, createAgentMailbox, getBuyerDomain, installTeamsAppForTenant, BuyerTenantProvisioningError, NoMailboxSeatError, getVerifiedDomains } from "../clients/microsoft-workspace.js";
 import { isBlobStoragePath, downloadBlobPackage } from "../utils/blob-download.js";
 import { agentTokenFor, hooksTokenFor } from "../utils/agent-token.js";
 import { findModel, PROVIDER_CREDENTIALS } from "@marketplace/agent-package-schema";
@@ -50,7 +50,7 @@ async function withRetry<T>(
       // Not retryable: no amount of retrying creates a licence seat, and the mailbox
       // wait is already 20 minutes on its own — retrying it would stall the hire for
       // an hour before failing with the same message.
-      if (err instanceof BuyerTenantProvisioningError) {
+      if (err instanceof BuyerTenantProvisioningError || err instanceof NoMailboxSeatError) {
         await log(opts.deploymentId, opts.step, "failed", attempt, duration, err.message);
         throw err;
       }

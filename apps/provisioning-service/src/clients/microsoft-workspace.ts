@@ -208,6 +208,22 @@ async function getPlatformDomain(): Promise<string> {
 const PLATFORM_MAILBOX_SKU = "3b555118-da6a-4418-894f-7df1e2096870";
 
 /**
+ * Raised when the platform tenant has no mailbox licence seat to give an agent.
+ *
+ * Its own class so provisioning does not retry it. On 2026-10-13 a hire met a
+ * tenant with 3 of 3 seats in use: the first attempt created the user and failed
+ * here, the retries then found that user "already exists", read it back before
+ * the directory had caught up, and the hire failed with a 404 for a user that
+ * was there — the one message that named the fix was never shown.
+ */
+export class NoMailboxSeatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NoMailboxSeatError";
+  }
+}
+
+/**
  * Give this user a mailbox licence, and prove it landed.
  *
  * assignLicense answering 2xx does not mean the user is licensed. On
@@ -239,14 +255,14 @@ async function ensureMailboxLicence(userId: string, upn: string): Promise<void> 
   };
   const sku = skus.value?.find((s) => s.skuId === PLATFORM_MAILBOX_SKU);
   if (!sku) {
-    throw new Error(
+    throw new NoMailboxSeatError(
       `The platform tenant has no ${PLATFORM_MAILBOX_SKU} subscription, so no agent ` +
         `mailbox can be created. Buy M365 Business Basic seats in the admin centre.`,
     );
   }
   const total = sku.prepaidUnits?.enabled ?? 0;
   if (sku.consumedUnits >= total) {
-    throw new Error(
+    throw new NoMailboxSeatError(
       `No free ${sku.skuPartNumber} seats: ${sku.consumedUnits} of ${total} in use. ` +
         `Every email-tier agent needs one for its mailbox — add a seat in the M365 ` +
         `admin centre, or release one from a deployment that has been torn down.`,
@@ -319,7 +335,16 @@ export async function createMicrosoftUser(
     throw err;
   }
 
-  await ensureMailboxLicence(user.id, user.userPrincipalName);
+  try {
+    await ensureMailboxLicence(user.id, user.userPrincipalName);
+  } catch (err) {
+    // No seat for it: remove the user this call just created, so the hire does
+    // not leave an unlicensed account behind in the tenant.
+    if (err instanceof NoMailboxSeatError) {
+      await deleteMicrosoftUser(user.id).catch(() => {});
+    }
+    throw err;
+  }
 
   // Queue OneDrive personal site provisioning (async, takes 1–5 min).
   // Non-fatal — SharePoint shared storage still works without it.
