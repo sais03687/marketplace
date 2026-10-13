@@ -1375,6 +1375,40 @@ export function startProxyServer() {
     //
     // Same shape as forward-resolve above, for the same reason: this service can
     // reach the container and the web app cannot.
+    // Start a prepared hire — the buyer clicked Activate. Answers once the agent
+    // is running and healthy (or could not be started), so the marketplace sends
+    // the introduction only to an agent that can answer the reply. Platform
+    // secret only, and refused outright when none is configured: this starts
+    // containers.
+    if (req.method === "POST" && req.url === "/internal/activate") {
+      const presented = String(req.headers["authorization"] ?? "");
+      if (!SECRET || presented !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", async () => {
+        let deploymentId: string | undefined;
+        try {
+          deploymentId = (JSON.parse(body) as { deploymentId?: string }).deploymentId;
+        } catch {
+          return send(res, 400, { error: "Invalid JSON" });
+        }
+        if (!deploymentId) return send(res, 400, { error: "deploymentId required" });
+        try {
+          const { activateDeployment } = await import("./jobs/activate.js");
+          const result = await activateDeployment(deploymentId);
+          console.log(`[activate] ${deploymentId} ${result.alreadyRunning ? "was already running" : "started"}`);
+          send(res, 200, { ok: true, ...result });
+        } catch (err: any) {
+          const status = typeof err?.status === "number" ? err.status : 500;
+          console.error(`[activate] ${deploymentId}: ${err?.message ?? err}`);
+          send(res, status, { error: err?.message ?? "Activation failed" });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/forward-policy") {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

@@ -94,7 +94,18 @@ export async function provisionJob(
    * agent uses it to avoid demoting an ACTIVE deployment back to ONBOARDING.
    */
   statusBefore?: string,
+  /**
+   * start: run the agent — network, sidecars, container, mail poller, the
+   *   onboarding brief. Left out, it is true only for a deployment that was
+   *   already ACTIVE (an update to a live agent). A new hire is prepared without
+   *   it — mailbox and image ready, nothing running — and started by
+   *   activateDeployment when the buyer clicks Activate, so no part of the
+   *   agent reads mail or acts before they have said go.
+   * reuseImage: start from the image built at hire rather than rebuilding it.
+   */
+  opts: { start?: boolean; reuseImage?: boolean } = {},
 ): Promise<void> {
+  const startAgent = opts.start ?? statusBefore === "ACTIVE";
   // 1. Validate deployment exists and is in PROVISIONING state
   const deployment = await prisma.deployment.findUnique({
     where: { id: deploymentId },
@@ -609,6 +620,18 @@ export async function provisionJob(
       data: { approvalWebhookToken: config.approvalWebhookToken },
     });
 
+    if (!startAgent) {
+      // Prepared, not started: the image is built now so Activate is quick, and
+      // nothing of the agent — network, sidecars, container, poller — exists
+      // until the buyer activates it.
+      const { prepareCustomAgent } = await import("./custom-runner.js");
+      const { resolve } = await import("node:path");
+      const pkgPath = resolvedPkgPath ?? resolve(config.customStarterPath);
+      await withRetry(
+        () => prepareCustomAgent(deploymentId, pkgPath),
+        { step: "prepare_custom_agent", deploymentId },
+      );
+    } else {
     // Create isolated Docker network for this deployment (agent + sidecars)
     // Custom runtime also needs a network when MCP sidecars are required.
     // Every agent gets its isolated network now, not only those with sidecars.
@@ -650,11 +673,12 @@ export async function provisionJob(
     const pkgPath = resolvedPkgPath ?? resolve(config.customStarterPath);
 
     const result = await withRetry(
-      () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId, agentNetworkName ?? undefined),
+      () => spawnCustomAgent(deploymentId, containerEnv, pkgPath, inboxId, agentNetworkName ?? undefined, opts.reuseImage ?? false),
       { step: "spawn_custom_agent", deploymentId },
     );
     containerName = `http://localhost:${result.port}`;
     healthPort = result.port;
+    }
   } catch (err: any) {
     // Nothing creates an inbox any more, so there is never one to roll back —
     // an inboxId here can only be a legacy value carried on the row.
@@ -712,9 +736,9 @@ export async function provisionJob(
   }
 
   // 4. Wait for health check
-  {
+  if (startAgent) {
     await withRetry(
-      () => waitForCustomHealth(healthHost, healthPort),
+      () => waitForCustomHealth(healthHost, healthPort!),
       { step: "health_check", deploymentId },
     );
   }
@@ -732,8 +756,12 @@ export async function provisionJob(
   // Mail arrives via the Outlook poller — see startPoller below.
   if (workspaceProvider === "MICROSOFT" && workspaceUserId) {
     // Wait for the M365 user to propagate across Microsoft's directory before
-    // touching resources that hang off it.
-    await new Promise((r) => setTimeout(r, 20_000));
+    // touching resources that hang off it. Only for a user this run created:
+    // activation re-runs this job against the mailbox made at hire, and the buyer
+    // is watching a button for that one.
+    if (workspaceUserId !== preExistingWorkspaceUserId) {
+      await new Promise((r) => setTimeout(r, 20_000));
+    }
 
     // Create per-agent SharePoint folder for file storage (Excel tracker, docs, etc.)
     try {
@@ -812,7 +840,9 @@ export async function provisionJob(
     `\nAn introduction email will be sent to the hiring manager shortly. Once they reply, assist them with whatever they need.`,
   ].join("\n");
 
-  await withRetry(
+  // Only to an agent that is running: a prepared hire has no container yet, and
+  // gets this brief when it is started at activation.
+  if (startAgent) await withRetry(
     async () => {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -822,7 +852,7 @@ export async function provisionJob(
         // endpoint that quietly stayed open.
         Authorization: `Bearer ${hooksTokenFor(deploymentId, config.provisioningSecret)}`,
       };
-      const res = await fetch(`http://${healthHost}:${healthPort}/hooks/agent`, {
+      const res = await fetch(`http://${healthHost}:${healthPort!}/hooks/agent`, {
         method: "POST",
         headers,
         body: JSON.stringify({

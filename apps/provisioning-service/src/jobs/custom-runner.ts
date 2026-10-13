@@ -249,8 +249,46 @@ async function buildCustomImage(
   console.log(`[custom-runner] Image ${imageName} built successfully`);
 }
 
+function customImageName(deploymentId: string): string {
+  return `marketplace/custom-${deploymentId.slice(0, 12)}:latest`;
+}
+
+async function imageExists(imageName: string): Promise<boolean> {
+  try {
+    await docker.getImage(imageName).inspect();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the agent's image and nothing else — no network, container or poller.
+ *
+ * A new hire is prepared at payment and started only when the buyer clicks
+ * Activate, so the slow part (minutes, for an agent with a scientific stack)
+ * happens while they are still on the setup page, and nothing of the agent runs
+ * before they have said go.
+ */
+export async function prepareCustomAgent(deploymentId: string, packageDir: string): Promise<void> {
+  const buildDir = assembleBuildContext(resolve(packageDir), deploymentId);
+  try {
+    await buildCustomImage(buildDir, customImageName(deploymentId));
+  } finally {
+    try {
+      rmSync(buildDir, { recursive: true, force: true });
+    } catch {
+      console.warn(`[custom-runner] Failed to clean up temp dir: ${buildDir}`);
+    }
+  }
+}
+
 /**
  * Build image, create container, and spawn AgentMail poller.
+ *
+ * `reuseImage` starts from the image prepareCustomAgent already built, when
+ * there is one — activation must not spend minutes rebuilding what was built at
+ * hire. Anything that changes the package (an update) leaves it false.
  */
 export async function spawnCustomAgent(
   deploymentId: string,
@@ -258,6 +296,7 @@ export async function spawnCustomAgent(
   packageDir: string,
   inboxId?: string,
   networkName?: string,
+  reuseImage = false,
 ): Promise<{ containerName: string; port: number }> {
   const resolvedDir = resolve(packageDir);
 
@@ -266,8 +305,12 @@ export async function spawnCustomAgent(
 
   try {
     // Build the Docker image
-    const imageName = `marketplace/custom-${deploymentId.slice(0, 12)}:latest`;
-    await buildCustomImage(buildDir, imageName);
+    const imageName = customImageName(deploymentId);
+    if (reuseImage && (await imageExists(imageName))) {
+      console.log(`[custom-runner] Starting from the image built at hire: ${imageName}`);
+    } else {
+      await buildCustomImage(buildDir, imageName);
+    }
 
     // Create and start container
     const containerName = `custom-agent-${deploymentId.slice(0, 8)}`;

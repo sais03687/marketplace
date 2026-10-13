@@ -40,11 +40,12 @@ export function OnboardingPanel({ deploymentId, emailOnly = false }: OnboardingP
   return (
     <Card>
       <CardContent className="p-6 space-y-4">
-        <h3 className="text-lg font-semibold">Your agent is ready</h3>
+        <h3 className="text-lg font-semibold">Your agent is ready to start</h3>
         <p className="text-sm text-muted-foreground">
-          Provisioning is complete. Click below to send an introduction email
-          from your agent to your team and activate them. They&apos;ll start
-          operating immediately under your configured approval policy.
+          Its mailbox is set up, but it isn&apos;t running yet — nothing reads or
+          answers your email until you activate it. Activating starts it (usually
+          under a minute), then it emails you an introduction and works under your
+          approval policy from then on.
         </p>
         {emailOnly && <InboxHelp />}
         {error && (
@@ -56,7 +57,7 @@ export function OnboardingPanel({ deploymentId, emailOnly = false }: OnboardingP
           ) : (
             <Zap className="mr-2 h-4 w-4" />
           )}
-          Activate Agent
+          {activating ? "Starting your agent…" : "Activate Agent"}
         </Button>
       </CardContent>
     </Card>

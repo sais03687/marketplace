@@ -95,8 +95,10 @@ function LiveHealth({
   status: string;
   lastHeartbeatAt: string | null;
 }) {
-  // Only meaningful for an agent that is supposed to be running.
-  if (status !== "ACTIVE" && status !== "ONBOARDING") return null;
+  // Only meaningful for an agent that is supposed to be running. A hire waiting
+  // to be activated is deliberately not running yet, so "waiting for first
+  // check-in" would read as a fault.
+  if (status !== "ACTIVE") return null;
 
   if (!lastHeartbeatAt) {
     return (

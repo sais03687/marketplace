@@ -10,12 +10,48 @@ import {
   buildIntroductionEmail,
 } from "@/lib/email";
 
+// Starting a heavy agent can take a minute; the default would cut it off.
+export const maxDuration = 120;
+
+const PROVISIONING_URL =
+  process.env.PROVISIONING_SERVICE_URL || process.env.PROVISIONING_URL || "https://api.agentstore.it.com";
+
+async function startAgent(
+  deploymentId: string,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const secret = process.env.PROVISIONING_SECRET || "";
+  if (!secret) {
+    return { ok: false, status: 503, error: "Activation is not configured on this server." };
+  }
+  try {
+    const resp = await fetch(`${PROVISIONING_URL}/internal/activate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+      body: JSON.stringify({ deploymentId }),
+      signal: AbortSignal.timeout(110_000),
+    });
+    if (resp.ok) return { ok: true };
+    const body = await resp.json().catch(() => ({}));
+    return {
+      ok: false,
+      status: resp.status === 409 ? 409 : 502,
+      error: `${body?.error ?? "Your agent could not be started"}. Nothing was sent — try Activate again.`,
+    };
+  } catch {
+    return {
+      ok: false,
+      status: 504,
+      error: "Starting your agent is taking longer than expected. Refresh in a minute; if it isn't active, try again.",
+    };
+  }
+}
+
 /**
  * POST /api/deployments/[id]/onboarding/advance
  *
- * Single-step activation: sends the introduction email from the agent's inbox
- * and immediately sets the deployment ACTIVE. Called once by the onboarding
- * panel "Activate Agent" button.
+ * Activation: starts the prepared agent, then sends the introduction email from
+ * its inbox and sets the deployment ACTIVE. Called by the onboarding panel's
+ * "Activate Agent" button.
  */
 export async function POST(
   _request: Request,
@@ -34,6 +70,13 @@ export async function POST(
   if (deployment.status !== "ONBOARDING") {
     return jsonError("Deployment is not in the onboarding state", 409);
   }
+
+  // Start the agent first. A hire is prepared at payment but nothing of it runs
+  // until now, and the introduction invites a reply — so it goes out only once
+  // the provisioning service says the agent is up and healthy. If it cannot be
+  // started, nothing is sent and the hire stays ready to activate.
+  const started = await startAgent(id);
+  if (!started.ok) return jsonError(started.error, started.status);
 
   // Fetch agent capabilities for the intro email
   const agent = await prisma.agent.findUnique({
