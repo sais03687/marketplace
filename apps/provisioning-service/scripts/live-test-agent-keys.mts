@@ -117,26 +117,29 @@ try {
   check("buying more re-admits", (await allowStore.admit(id, "standard")).status === "ok");
 
   // Safety stop: a tiny hourly stop on the same hire.
+  // Its own key: the allowance half's key carries a one-cent OpenRouter limit,
+  // which OpenRouter may already be enforcing.
+  const id2 = `${id}-stop`;
   const stopStore = new AgentKeyStore(file, openRouterKeys, () => Date.now(), tiny, { standard: 10, pro: 10, premium: 10 });
-  const s = await stopStore.admit(id, "standard");
+  const s = await stopStore.admit(id2, "standard");
   const key = (s as any).key as string;
   let alert = null;
   for (let i = 0; i < 10 && !alert; i++) {
     const r = await chat(key);
-    if (r.status === 200 && r.cost) alert = await stopStore.recordSpend(id, "standard", r.cost);
+    if (r.status === 200 && r.cost) alert = await stopStore.recordSpend(id2, "standard", r.cost);
   }
   check("safety stop trips on real spend, at once", alert !== null);
-  const hash = stopStore.describe().find((d) => d.deploymentId === id)?.hash!;
+  const hash = stopStore.describe().find((d) => d.deploymentId === id2)?.hash!;
   check("key switched off at OpenRouter", (await openRouterKeys.get(hash))?.disabled === true);
   let refused = 200;
   for (let i = 0; i < 6 && refused === 200; i++) { refused = (await chat(key)).status; if (refused === 200) await sleep(5000); }
   check("OpenRouter refuses the switched-off key", refused !== 200, `status=${refused}`);
-  check("store refuses it too", (await stopStore.admit(id, "standard")).status === "stopped");
-  await stopStore.resume(id);
+  check("store refuses it too", (await stopStore.admit(id2, "standard")).status === "stopped");
+  await stopStore.resume(id2);
   let back = 0;
   for (let i = 0; i < 6 && back !== 200; i++) { back = (await chat(key)).status; if (back !== 200) await sleep(5000); }
   check("resume: works again", back === 200, `status=${back}`);
-  await stopStore.revoke(id);
+  await stopStore.revoke(id2);
   check("revoke deletes it at OpenRouter", (await openRouterKeys.get(hash)) === null);
 } finally {
   for (const k of await openRouterKeys.list()) {
