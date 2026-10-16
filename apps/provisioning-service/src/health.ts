@@ -107,6 +107,19 @@ export function cachedHealth(probes: HealthProbes, cacheMs = CACHE_MS): () => Pr
   };
 }
 
+/**
+ * Whether a request is for the public health check.
+ *
+ * HEAD as well as GET: UptimeRobot checks with HEAD, and anything this did not
+ * match fell through to the secret check and came back 401 — "down" to the
+ * monitor while a browser saw "ok". The query string is ignored because some
+ * monitors append one to defeat caches.
+ */
+export function isHealthzRequest(method: string | undefined, url: string | undefined): boolean {
+  if (method !== "GET" && method !== "HEAD") return false;
+  return (url ?? "").split("?")[0] === "/healthz";
+}
+
 export async function diskUsedFraction(path = "/"): Promise<number> {
   const s = await statfs(path);
   // bavail, not bfree: blocks reserved for root are not space we can use.

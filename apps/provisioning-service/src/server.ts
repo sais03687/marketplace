@@ -35,7 +35,7 @@ import { config } from "./config.js";
 import { sendViaResend, resendConfigured } from "./clients/resend.js";
 import { agentTokenFor, agentTokenMatches, hooksTokenFor } from "./utils/agent-token.js";
 import { isVetDeploymentId, vetRunActive, vetRunModel } from "./utils/vet-broker.js";
-import { cachedHealth, diskUsedFraction } from "./health.js";
+import { cachedHealth, diskUsedFraction, isHealthzRequest } from "./health.js";
 import { provisioningQueue } from "./queue.js";
 import { hasPoller } from "./jobs/poller-manager.js";
 
@@ -764,13 +764,13 @@ export function startProxyServer() {
     }
 
     // Public, for the uptime monitor; see health.ts for why it says so little.
-    if (req.method === "GET" && req.url === "/healthz") {
+    if (isHealthzRequest(req.method, req.url)) {
       const result = await publicHealth();
       res.writeHead(result.status === "ok" ? 200 : 503, {
         "Content-Type": "application/json",
         "Cache-Control": "no-store",
       });
-      res.end(JSON.stringify(result));
+      res.end(req.method === "HEAD" ? undefined : JSON.stringify(result));
       return;
     }
 

@@ -1,4 +1,4 @@
-import { runHealthChecks, cachedHealth, type HealthProbes } from "./health.js";
+import { runHealthChecks, cachedHealth, isHealthzRequest, type HealthProbes } from "./health.js";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = "") => {
@@ -95,6 +95,15 @@ console.log("\n-- caching --");
   await get(); await get();
   check("expired cache -> checks again", calls === 2, `calls=${calls}`);
 }
+
+console.log("\n-- which requests are the health check --");
+check("GET /healthz", isHealthzRequest("GET", "/healthz"));
+check("HEAD /healthz (UptimeRobot)", isHealthzRequest("HEAD", "/healthz"));
+check("GET /healthz?cachebust=123", isHealthzRequest("GET", "/healthz?cachebust=123"));
+check("POST /healthz refused", !isHealthzRequest("POST", "/healthz"));
+check("GET /healthz/extra refused", !isHealthzRequest("GET", "/healthz/extra"));
+check("GET /health (the locked one) not matched", !isHealthzRequest("GET", "/health"));
+check("missing url refused", !isHealthzRequest("GET", undefined));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
