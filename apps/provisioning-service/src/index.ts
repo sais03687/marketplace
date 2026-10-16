@@ -10,6 +10,7 @@ import { getContainerPort } from "./clients/docker.js";
 import { startPoller, startStrayPollerSweep } from "./jobs/poller-manager.js";
 import { startProxyServer } from "./server.js";
 import { startHeartbeatMonitor } from "./jobs/heartbeat-monitor.js";
+import { startAgentKeyMonitor } from "./jobs/agent-key-monitor.js";
 import Dockerode from "dockerode";
 
 const docker = new Dockerode();
@@ -103,6 +104,7 @@ async function recoverDockerPollers(): Promise<void> {
 const worker = startWorker();
 startProxyServer();
 startHeartbeatMonitor();
+startAgentKeyMonitor();
 
 // Recover pollers for any Docker deployments that survived the last restart,
 // then keep watching for strays.

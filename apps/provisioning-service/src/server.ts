@@ -38,6 +38,9 @@ import { isVetDeploymentId, vetRunActive, vetRunModel } from "./utils/vet-broker
 import { cachedHealth, diskUsedFraction, isHealthzRequest } from "./health.js";
 import { provisioningQueue } from "./queue.js";
 import { hasPoller } from "./jobs/poller-manager.js";
+import { agentKeys } from "./jobs/agent-key-monitor.js";
+import { managementKeyConfigured } from "./clients/openrouter-keys.js";
+import { asTier, type Tier } from "./agent-keys.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -87,6 +90,23 @@ async function allowedModelFor(deploymentId: string): Promise<string> {
     // DB blip — serve the fallback rather than failing the agent's LLM call.
     return cached?.model || fallback;
   }
+}
+
+// The hire's tier (which sets its key's monthly allowance) and whether it may
+// still run at all. Short cache: a fired hire must stop getting keys quickly.
+const _brokerHireCache = new Map<string, { tier: Tier; fired: boolean; cachedAt: number }>();
+const BROKER_HIRE_TTL_MS = 60 * 1000;
+
+async function hireFor(deploymentId: string): Promise<{ tier: Tier; fired: boolean }> {
+  const cached = _brokerHireCache.get(deploymentId);
+  if (cached && Date.now() - cached.cachedAt < BROKER_HIRE_TTL_MS) return cached;
+  const dep = await prisma.deployment.findUnique({
+    where: { id: deploymentId },
+    select: { status: true, agent: { select: { modelTier: true } } },
+  });
+  const hire = { tier: asTier(dep?.agent?.modelTier), fired: !dep || dep.status === "FIRED", cachedAt: Date.now() };
+  _brokerHireCache.set(deploymentId, hire);
+  return hire;
 }
 
 // Per-deployment usage cap: a simple fixed-window request rate limit so a hostile
@@ -899,11 +919,44 @@ export function startProxyServer() {
             return send(res, 400, { error: "Invalid JSON body" });
           }
 
+          // The hire's own capped key (see agent-keys.ts). Vetting runs are not
+          // hires and keep the shared key. If the hire's key cannot be made right
+          // now (OpenRouter unreachable), the call goes out on the shared key
+          // rather than failing the buyer's task — but never for a hire that is
+          // fired or under a safety stop.
+          let upstreamKey = realKey;
+          if (managementKeyConfigured() && !isVetDeploymentId(deploymentId)) {
+            let hire: { tier: Tier; fired: boolean } | null = null;
+            try {
+              hire = await hireFor(deploymentId);
+            } catch (err: any) {
+              console.warn(`[llm-broker] hire lookup failed for ${deploymentId}: ${err.message}`);
+            }
+            if (hire?.fired) {
+              return send(res, 403, { error: "This agent has been fired.", code: "agent_fired" });
+            }
+            if (hire) {
+              try {
+                const look = await agentKeys.keyFor(deploymentId, hire.tier);
+                if (look.status === "stopped") {
+                  console.warn(`[llm-broker] refused ${deploymentId}: ${look.reason}`);
+                  return send(res, 403, {
+                    error: "This agent's AI usage is paused by the platform's safety stop.",
+                    code: "agent_safety_stop",
+                  });
+                }
+                upstreamKey = look.key;
+              } catch (err: any) {
+                console.warn(`[llm-broker] own key unavailable for ${deploymentId}, using the shared key: ${err.message}`);
+              }
+            }
+          }
+
           const upstream = await fetch(`${upstreamBase}${subPath}`, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${realKey}`,
+              Authorization: `Bearer ${upstreamKey}`,
             },
             body: forwardBody,
           });
@@ -1234,6 +1287,27 @@ export function startProxyServer() {
     //
     // Runs the job inline rather than re-queueing it: re-queueing would depend on
     // the very thing that just failed.
+    // Operator only: lift an agent's safety stop after looking at why it tripped.
+    if (req.method === "POST" && req.url === "/internal/agent-key/resume") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (!SECRET || authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let raw = "";
+      req.on("data", (chunk: string) => { raw += chunk; });
+      req.on("end", async () => {
+        try {
+          const { deploymentId } = JSON.parse(raw) as { deploymentId?: string };
+          if (!deploymentId) return send(res, 400, { error: "deploymentId is required" });
+          const lifted = await agentKeys.resume(deploymentId);
+          send(res, lifted ? 200 : 404, { lifted });
+        } catch (err: any) {
+          send(res, 500, { error: err.message });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/internal/deprovision") {
       const authHeader = req.headers["authorization"] ?? "";
       if (SECRET && authHeader !== `Bearer ${SECRET}`) {

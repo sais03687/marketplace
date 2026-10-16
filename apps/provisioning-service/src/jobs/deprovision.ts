@@ -121,6 +121,16 @@ export async function deprovisionJob(deploymentId: string): Promise<void> {
     console.warn(`[deprovision] Volume cleanup failed: ${err.message}`);
   }
 
+  // 3c. The hire's own model key. Best effort: the hourly sweep deletes it
+  // later if OpenRouter cannot be reached now, and revoke() already stops this
+  // process from handing the hire a key again.
+  try {
+    const { agentKeys } = await import("./agent-key-monitor.js");
+    await agentKeys.revoke(deploymentId);
+  } catch (err: any) {
+    console.warn(`[deprovision] Model key cleanup failed: ${err.message}`);
+  }
+
   // 4. Update deployment status
   await prisma.deployment.update({
     where: { id: deploymentId },
