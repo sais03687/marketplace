@@ -38,9 +38,9 @@ import { isVetDeploymentId, vetRunActive, vetRunModel } from "./utils/vet-broker
 import { cachedHealth, diskUsedFraction, isHealthzRequest } from "./health.js";
 import { provisioningQueue } from "./queue.js";
 import { hasPoller } from "./jobs/poller-manager.js";
-import { agentKeys } from "./jobs/agent-key-monitor.js";
+import { agentKeys, tellOperator } from "./jobs/agent-key-monitor.js";
 import { managementKeyConfigured } from "./clients/openrouter-keys.js";
-import { asTier, type Tier } from "./agent-keys.js";
+import { asTier, extractCost, type Tier } from "./agent-keys.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -919,12 +919,13 @@ export function startProxyServer() {
             return send(res, 400, { error: "Invalid JSON body" });
           }
 
-          // The hire's own capped key (see agent-keys.ts). Vetting runs are not
-          // hires and keep the shared key. If the hire's key cannot be made right
-          // now (OpenRouter unreachable), the call goes out on the shared key
-          // rather than failing the buyer's task — but never for a hire that is
-          // fired or under a safety stop.
+          // The hire's own key, and the platform's own meter of its spend (see
+          // agent-keys.ts for why OpenRouter's limits cannot be the cap).
+          // Vetting runs are not hires: shared key, not metered. If the hire's
+          // key cannot be made right now the call goes out on the shared key,
+          // still metered and capped.
           let upstreamKey = realKey;
+          let metered: { tier: Tier } | null = null;
           if (managementKeyConfigured() && !isVetDeploymentId(deploymentId)) {
             let hire: { tier: Tier; fired: boolean } | null = null;
             try {
@@ -936,19 +937,23 @@ export function startProxyServer() {
               return send(res, 403, { error: "This agent has been fired.", code: "agent_fired" });
             }
             if (hire) {
-              try {
-                const look = await agentKeys.keyFor(deploymentId, hire.tier);
-                if (look.status === "stopped") {
-                  console.warn(`[llm-broker] refused ${deploymentId}: ${look.reason}`);
-                  return send(res, 403, {
-                    error: "This agent's AI usage is paused by the platform's safety stop.",
-                    code: "agent_safety_stop",
-                  });
-                }
-                upstreamKey = look.key;
-              } catch (err: any) {
-                console.warn(`[llm-broker] own key unavailable for ${deploymentId}, using the shared key: ${err.message}`);
+              const admission = await agentKeys.admit(deploymentId, hire.tier);
+              if (admission.status === "stopped") {
+                console.warn(`[llm-broker] refused ${deploymentId}: ${admission.reason}`);
+                return send(res, 403, {
+                  error: "This agent's AI usage is paused by the platform's safety stop.",
+                  code: "agent_safety_stop",
+                });
               }
+              if (admission.status === "allowance_reached") {
+                console.warn(`[llm-broker] refused ${deploymentId}: monthly allowance reached`);
+                return send(res, 402, {
+                  error: "This agent has used this month's AI allowance.",
+                  code: "agent_allowance_reached",
+                });
+              }
+              if (admission.key) upstreamKey = admission.key;
+              metered = { tier: hire.tier };
             }
           }
 
@@ -965,15 +970,34 @@ export function startProxyServer() {
           res.writeHead(upstream.status, {
             "Content-Type": upstream.headers.get("content-type") || "application/json",
           });
+          // Pass the response through untouched, keeping a copy of its end for
+          // the cost: the whole body when small, the last part of a long one
+          // (a stream's cost is in its final event).
+          const KEEP = 256 * 1024;
+          let seen = "";
+          const decoder = new TextDecoder();
           if (upstream.body) {
             const reader = upstream.body.getReader();
             for (;;) {
               const { done, value } = await reader.read();
               if (done) break;
               res.write(Buffer.from(value));
+              if (metered) {
+                seen += decoder.decode(value, { stream: true });
+                if (seen.length > 2 * KEEP) seen = seen.slice(-KEEP);
+              }
             }
           }
           res.end();
+          if (metered && upstream.ok) {
+            const cost = extractCost(seen.length > KEEP ? seen.slice(-KEEP) : seen);
+            if (cost === null) {
+              console.warn(`[llm-broker] no cost reported for a call by ${deploymentId}; not metered`);
+            } else {
+              const alert = await agentKeys.recordSpend(deploymentId, metered.tier, cost);
+              if (alert) tellOperator(alert).catch((e) => console.error(`[llm-broker] stop email failed: ${e.message}`));
+            }
+          }
         } catch (err: any) {
           console.error("[llm-broker] upstream error:", err.message);
           if (!res.headersSent) send(res, 502, { error: "LLM upstream failed" });

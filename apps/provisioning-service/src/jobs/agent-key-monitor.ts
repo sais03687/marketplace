@@ -3,7 +3,7 @@ import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { mintTokenForTenant } from "../clients/microsoft-workspace.js";
 import { managementKeyConfigured, openRouterKeys } from "../clients/openrouter-keys.js";
-import { AgentKeyStore, type RunawayAlert } from "../agent-keys.js";
+import { AgentKeyStore, type StopAlert } from "../agent-keys.js";
 
 /** The one key store for this process: the broker reads it, deprovision revokes from it. */
 export const agentKeys = new AgentKeyStore(
@@ -11,10 +11,10 @@ export const agentKeys = new AgentKeyStore(
   openRouterKeys,
 );
 
-const RUNAWAY_EVERY_MS = 5 * 60 * 1000;
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
 
-async function tellOperator(alert: RunawayAlert): Promise<void> {
+/** Email the operator that a hire's safety stop tripped. Called by the broker. */
+export async function tellOperator(alert: StopAlert): Promise<void> {
   const mailbox = config.platformMailbox;
   if (!mailbox || !config.microsoftTenantId) {
     console.error("[agent-key-monitor] cannot email the safety stop — PLATFORM_MAILBOX or tenant not configured");
@@ -65,13 +65,9 @@ export function startAgentKeyMonitor(): void {
     console.log("[agent-key-monitor] OPENROUTER_MANAGEMENT_KEY not set — per-agent keys off, broker uses the shared key");
     return;
   }
-  console.log("[agent-key-monitor] Enabled — safety stop every 5 min, key sweep hourly");
-  setInterval(() => {
-    agentKeys
-      .checkRunaway()
-      .then((stopped) => Promise.all(stopped.map((a) => tellOperator(a).catch((e) => console.error(`[agent-key-monitor] ${e.message}`)))))
-      .catch((err) => console.error("[agent-key-monitor] safety check failed:", err.message));
-  }, RUNAWAY_EVERY_MS);
+  // The safety stop is not polled here: OpenRouter's per-key usage lags too far
+  // to catch a runaway, so the broker meters each call's cost as it returns.
+  console.log("[agent-key-monitor] Enabled — broker meters spend per hire; key sweep hourly");
   const sweep = () =>
     agentKeys.sweep(liveHires).catch((err) => console.error("[agent-key-monitor] sweep failed:", err.message));
   setTimeout(sweep, 60 * 1000);

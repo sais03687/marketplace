@@ -3,21 +3,25 @@ import path from "node:path";
 import type { KeyManagementApi } from "./clients/openrouter-keys.js";
 
 /**
- * One OpenRouter key per hire, so each agent's model spend is visible on its
- * own and capped by OpenRouter itself rather than only by our code.
+ * One OpenRouter key per hire, and the broker's own meter of what each hire
+ * spends.
  *
- * - Created the first time a hire calls the model, which also moves hires that
- *   existed before this onto their own key without a restart.
- * - Monthly limit by tier, reset by OpenRouter on the 1st: the allowance agreed
- *   in docs/monitoring-plan.md (A1). Top-ups (B2) raise it.
- * - Deleted when the hire is fired; a sweep removes any key whose hire is gone.
- * - Safety stop: a key that spends more than its tier's hourly limit is
- *   disabled and the operator told. Buying more never re-enables it; the
- *   operator does, after looking.
+ * Keys: created the first time a hire calls the model (which also moves hires
+ * that predate this onto their own key), deleted when it is fired, and swept
+ * if the hire is gone. They make each agent's spend visible in OpenRouter and
+ * carry a monthly limit there as a backstop.
  *
- * Secrets are kept in a root-only file on this server, not in the database:
- * the broker that uses them runs here, and a database leak then leaks no keys.
- * Losing the file costs nothing but recreation; the sweep removes the old keys.
+ * Only a backstop: measured on 2026-10-16, OpenRouter's per-key usage still
+ * read $0 ten minutes after paid calls, and a key limited to $0.01 completed
+ * $0.02 of calls without a refusal. Its counters lag, so they cannot stop a
+ * runaway. Every response does state that call's exact cost at once, so the
+ * broker meters spend itself and enforces, before each call:
+ *   - the monthly allowance by tier (A1 in docs/monitoring-plan.md), plus any
+ *     usage the buyer has bought (B2) — refused with "allowance reached";
+ *   - the hourly safety stop — the key is disabled and the operator told, and
+ *     only the operator lifts it.
+ *
+ * Secrets and spend live in a root-only file on this server, not the database.
  * Nothing in this module logs a key's secret value.
  */
 
@@ -34,20 +38,30 @@ interface StoredKey {
   key: string;
   tier: Tier;
   createdAt: string;
+}
+
+interface Ledger {
+  /** UTC month the totals below belong to, "YYYY-MM". */
+  month: string;
+  spent: number;
+  /** Usage the buyer bought on top of the allowance this month (B2). */
+  extra: number;
   stoppedAt?: string;
   stopReason?: string;
 }
 
 interface StoreFile {
-  version: 1;
+  version: 2;
   keys: Record<string, StoredKey>;
+  ledger: Record<string, Ledger>;
 }
 
-export type KeyLookup =
-  | { status: "ok"; key: string }
+export type Admission =
+  | { status: "ok"; key: string | null }
+  | { status: "allowance_reached"; spent: number; allowance: number }
   | { status: "stopped"; reason: string };
 
-export interface RunawayAlert {
+export interface StopAlert {
   deploymentId: string;
   tier: Tier;
   spentLastHour: number;
@@ -58,11 +72,41 @@ export function asTier(value: unknown): Tier {
   return value === "pro" || value === "premium" ? value : "standard";
 }
 
+function monthOf(t: number): string {
+  return new Date(t).toISOString().slice(0, 7);
+}
+
+/**
+ * The cost OpenRouter reports for one call, from the tail of its response.
+ * Non-streamed: a JSON body with usage.cost. Streamed: server-sent events whose
+ * last data line carries usage.cost. Null when the response does not say.
+ */
+export function extractCost(bodyTail: string): number | null {
+  const tryJson = (text: string): number | null => {
+    try {
+      const cost = JSON.parse(text)?.usage?.cost;
+      return typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null;
+    } catch {
+      return null;
+    }
+  };
+  const whole = tryJson(bodyTail.trim());
+  if (whole !== null) return whole;
+  const lines = bodyTail.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith("data:")) continue;
+    const cost = tryJson(line.slice(5).trim());
+    if (cost !== null) return cost;
+  }
+  return null;
+}
+
 export class AgentKeyStore {
   private data: StoreFile | null = null;
-  private creating = new Map<string, Promise<KeyLookup>>();
-  /** Lifetime usage readings per deployment, for the hourly window. In memory: a restart just restarts the window. */
-  private samples = new Map<string, { t: number; usage: number }[]>();
+  private creating = new Map<string, Promise<string>>();
+  /** Each call's cost in the last hour, per hire. In memory: a restart restarts the hour. */
+  private recent = new Map<string, { t: number; cost: number }[]>();
   /** Hires revoked since this process started: a late model call must not mint them a new key. */
   private revokedIds = new Set<string>();
 
@@ -72,14 +116,15 @@ export class AgentKeyStore {
     private readonly now: () => number = () => Date.now(),
     /** Overridable only so a live test can trip the stop with a cent of real spend. */
     private readonly stops: Record<Tier, number> = HOURLY_STOP,
+    private readonly allowances: Record<Tier, number> = MONTHLY_ALLOWANCE,
   ) {}
 
   private load(): StoreFile {
     if (this.data) return this.data;
     try {
       const parsed = JSON.parse(fs.readFileSync(this.file, "utf8"));
-      if (parsed?.version === 1 && parsed.keys && typeof parsed.keys === "object") {
-        this.data = parsed as StoreFile;
+      if ((parsed?.version === 1 || parsed?.version === 2) && parsed.keys && typeof parsed.keys === "object") {
+        this.data = { version: 2, keys: parsed.keys, ledger: parsed.ledger ?? {} };
         return this.data;
       }
       throw new Error("unrecognised shape");
@@ -95,7 +140,7 @@ export class AgentKeyStore {
         }
         console.error(`[agent-keys] key store unreadable (${err?.message}); moved aside, starting empty`);
       }
-      this.data = { version: 1, keys: {} };
+      this.data = { version: 2, keys: {}, ledger: {} };
       return this.data;
     }
   }
@@ -113,28 +158,55 @@ export class AgentKeyStore {
     }
   }
 
-  /** The hire's own key, creating it on first use. Concurrent first calls share one creation. */
-  async keyFor(deploymentId: string, tier: Tier): Promise<KeyLookup> {
-    if (this.revokedIds.has(deploymentId)) return { status: "stopped", reason: "fired" };
-    const existing = this.load().keys[deploymentId];
-    if (existing) {
-      return existing.stoppedAt
-        ? { status: "stopped", reason: existing.stopReason || "safety stop" }
-        : { status: "ok", key: existing.key };
+  /** This month's ledger, rolled over on a new UTC month. */
+  private ledger(deploymentId: string): Ledger {
+    const month = monthOf(this.now());
+    const all = this.load().ledger;
+    const cur = all[deploymentId];
+    if (!cur) return (all[deploymentId] = { month, spent: 0, extra: 0 });
+    if (cur.month !== month) {
+      // A safety stop is not lifted by the calendar.
+      all[deploymentId] = { month, spent: 0, extra: 0, stoppedAt: cur.stoppedAt, stopReason: cur.stopReason };
     }
+    return all[deploymentId];
+  }
+
+  /**
+   * May this hire make a model call now, and with which key?
+   * `key` is null when the hire's own key could not be made; the caller then
+   * uses the shared key — the spend is still metered and capped here.
+   */
+  async admit(deploymentId: string, tier: Tier): Promise<Admission> {
+    if (this.revokedIds.has(deploymentId)) return { status: "stopped", reason: "fired" };
+    const l = this.ledger(deploymentId);
+    if (l.stoppedAt) return { status: "stopped", reason: l.stopReason || "safety stop" };
+    const allowance = this.allowances[tier] + (l.extra || 0);
+    if (l.spent >= allowance) return { status: "allowance_reached", spent: l.spent, allowance };
+    try {
+      return { status: "ok", key: await this.keyFor(deploymentId, tier) };
+    } catch (err: any) {
+      console.warn(`[agent-keys] own key unavailable for ${deploymentId}: ${err.message}`);
+      return { status: "ok", key: null };
+    }
+  }
+
+  /** The hire's own key, creating it on first use. Concurrent first calls share one creation. */
+  private async keyFor(deploymentId: string, tier: Tier): Promise<string> {
+    const existing = this.load().keys[deploymentId];
+    if (existing) return existing.key;
     const pending = this.creating.get(deploymentId);
     if (pending) return pending;
 
-    const creation = (async (): Promise<KeyLookup> => {
+    const creation = (async () => {
       const { key, info } = await this.api.create({
         name: `${KEY_PREFIX}${deploymentId}`,
-        limit: MONTHLY_ALLOWANCE[tier],
+        limit: this.allowances[tier],
         limitReset: "monthly",
       });
       this.load().keys[deploymentId] = { hash: info.hash, key, tier, createdAt: new Date(this.now()).toISOString() };
       this.save();
-      console.log(`[agent-keys] created key for ${deploymentId} (${tier}, $${MONTHLY_ALLOWANCE[tier]}/month)`);
-      return { status: "ok", key };
+      console.log(`[agent-keys] created key for ${deploymentId} (${tier}, $${this.allowances[tier]}/month)`);
+      return key;
     })();
     this.creating.set(deploymentId, creation);
     try {
@@ -144,6 +216,61 @@ export class AgentKeyStore {
     }
   }
 
+  /**
+   * Add one call's cost. Trips the safety stop if the last hour now exceeds it:
+   * the hire is refused from its next call, its key is switched off at
+   * OpenRouter, and the alert is returned for the operator.
+   */
+  async recordSpend(deploymentId: string, tier: Tier, cost: number): Promise<StopAlert | null> {
+    if (!(cost > 0)) return null;
+    const t = this.now();
+    const l = this.ledger(deploymentId);
+    l.spent += cost;
+    const series = (this.recent.get(deploymentId) ?? []).filter((s) => t - s.t < HOUR_MS);
+    series.push({ t, cost });
+    this.recent.set(deploymentId, series);
+    const spentLastHour = series.reduce((a, s) => a + s.cost, 0);
+    const stop = this.stops[tier];
+    let alert: StopAlert | null = null;
+    if (!l.stoppedAt && spentLastHour > stop) {
+      l.stoppedAt = new Date(t).toISOString();
+      l.stopReason = `spent $${spentLastHour.toFixed(2)} in under an hour (stop is $${stop})`;
+      console.warn(`[agent-keys] SAFETY STOP ${deploymentId}: ${l.stopReason}`);
+      alert = { deploymentId, tier, spentLastHour, stop };
+    }
+    this.save();
+    if (alert) {
+      const key = this.load().keys[deploymentId];
+      if (key) {
+        await this.api.update(key.hash, { disabled: true }).catch((err) => {
+          console.error(`[agent-keys] could not switch off key for ${deploymentId}: ${err.message}`);
+        });
+      }
+    }
+    return alert;
+  }
+
+  /** Lift a safety stop. Operator action only. */
+  async resume(deploymentId: string): Promise<boolean> {
+    const l = this.load().ledger[deploymentId];
+    if (!l?.stoppedAt) return false;
+    const key = this.load().keys[deploymentId];
+    if (key) await this.api.update(key.hash, { disabled: false });
+    delete l.stoppedAt;
+    delete l.stopReason;
+    this.recent.delete(deploymentId);
+    this.save();
+    console.log(`[agent-keys] safety stop lifted for ${deploymentId}`);
+    return true;
+  }
+
+  /** Usage the buyer bought (B2): raises this month's allowance. */
+  addExtra(deploymentId: string, amount: number): void {
+    const l = this.ledger(deploymentId);
+    l.extra = (l.extra || 0) + amount;
+    this.save();
+  }
+
   /** Delete the hire's key at OpenRouter and forget it. Safe to call when there is none. */
   async revoke(deploymentId: string): Promise<boolean> {
     this.revokedIds.add(deploymentId);
@@ -151,22 +278,9 @@ export class AgentKeyStore {
     if (!entry) return false;
     await this.api.remove(entry.hash);
     delete this.load().keys[deploymentId];
-    this.samples.delete(deploymentId);
+    this.recent.delete(deploymentId);
     this.save();
     console.log(`[agent-keys] deleted key for ${deploymentId}`);
-    return true;
-  }
-
-  /** Lift a safety stop. Operator action only. */
-  async resume(deploymentId: string): Promise<boolean> {
-    const entry = this.load().keys[deploymentId];
-    if (!entry?.stoppedAt) return false;
-    await this.api.update(entry.hash, { disabled: false });
-    delete entry.stoppedAt;
-    delete entry.stopReason;
-    this.samples.delete(deploymentId);
-    this.save();
-    console.log(`[agent-keys] safety stop lifted for ${deploymentId}`);
     return true;
   }
 
@@ -177,7 +291,11 @@ export class AgentKeyStore {
    */
   async sweep(live: (ids: string[]) => Promise<Set<string>>): Promise<number> {
     const remote = (await this.api.list()).filter((k) => k.name.startsWith(KEY_PREFIX));
-    const ids = new Set([...Object.keys(this.load().keys), ...remote.map((k) => k.name.slice(KEY_PREFIX.length))]);
+    const ids = new Set([
+      ...Object.keys(this.load().keys),
+      ...Object.keys(this.load().ledger),
+      ...remote.map((k) => k.name.slice(KEY_PREFIX.length)),
+    ]);
     if (ids.size === 0) return 0;
     const alive = await live([...ids]);
     let removed = 0;
@@ -193,10 +311,11 @@ export class AgentKeyStore {
         removed++;
       }
     }
-    for (const id of Object.keys(this.load().keys)) {
-      if (!alive.has(id)) {
+    for (const id of ids) {
+      if (!alive.has(id) && !this.creating.has(id)) {
         delete this.load().keys[id];
-        this.samples.delete(id);
+        delete this.load().ledger[id];
+        this.recent.delete(id);
       }
     }
     if (removed) console.log(`[agent-keys] sweep removed ${removed} key(s)`);
@@ -204,50 +323,17 @@ export class AgentKeyStore {
     return removed;
   }
 
-  /** Disable any key that spent more than its hourly stop. Returns what was stopped. */
-  async checkRunaway(): Promise<RunawayAlert[]> {
-    const stopped: RunawayAlert[] = [];
-    const t = this.now();
-    for (const [deploymentId, entry] of Object.entries(this.load().keys)) {
-      if (entry.stoppedAt) continue;
-      let info;
-      try {
-        info = await this.api.get(entry.hash);
-      } catch (err: any) {
-        console.warn(`[agent-keys] usage check failed for ${deploymentId}: ${err.message}`);
-        continue;
-      }
-      if (!info) {
-        // Deleted outside the platform. Forget it; the next call makes a new one.
-        delete this.load().keys[deploymentId];
-        this.samples.delete(deploymentId);
-        this.save();
-        continue;
-      }
-      const series = (this.samples.get(deploymentId) ?? []).filter((s) => t - s.t <= HOUR_MS);
-      series.push({ t, usage: info.usage });
-      this.samples.set(deploymentId, series);
-      const spentLastHour = info.usage - series[0].usage;
-      const stop = this.stops[entry.tier];
-      if (spentLastHour > stop) {
-        await this.api.update(entry.hash, { disabled: true });
-        entry.stoppedAt = new Date(t).toISOString();
-        entry.stopReason = `spent $${spentLastHour.toFixed(2)} in under an hour (stop is $${stop})`;
-        this.save();
-        console.warn(`[agent-keys] SAFETY STOP ${deploymentId}: ${entry.stopReason}`);
-        stopped.push({ deploymentId, tier: entry.tier, spentLastHour, stop });
-      }
-    }
-    return stopped;
-  }
-
-  /** For tests and the operator: what is held, without secrets. */
-  describe(): { deploymentId: string; hash: string; tier: Tier; stopped: boolean }[] {
-    return Object.entries(this.load().keys).map(([deploymentId, e]) => ({
+  /** What is held, without secrets: for tests, the operator, and the usage bar (B1). */
+  describe(): { deploymentId: string; hash: string | null; month: string | null; spent: number; extra: number; stopped: boolean }[] {
+    const { keys, ledger } = this.load();
+    const ids = new Set([...Object.keys(keys), ...Object.keys(ledger)]);
+    return [...ids].map((deploymentId) => ({
       deploymentId,
-      hash: e.hash,
-      tier: e.tier,
-      stopped: Boolean(e.stoppedAt),
+      hash: keys[deploymentId]?.hash ?? null,
+      month: ledger[deploymentId]?.month ?? null,
+      spent: ledger[deploymentId]?.spent ?? 0,
+      extra: ledger[deploymentId]?.extra ?? 0,
+      stopped: Boolean(ledger[deploymentId]?.stoppedAt),
     }));
   }
 }
