@@ -30,8 +30,9 @@ Ground rules for every step:
         402 agent_allowance_reached / 403 agent_safety_stop / 403 agent_fired
   - [x] Live: real broker calls (plain + streamed) metered to the cent; fired hire refused; allowance and
         safety stop tripped on real spend; key switched off and refused by OpenRouter; resume; delete
-  - [ ] Safety-stop email seen by the operator (test sent 2026-10-16)
+  - [x] Safety-stop email received by the operator; now carries the status and lift commands
   - [ ] Fire path on a real hire: key deleted at OpenRouter (do with the A5 test hire)
+  - [x] Tier bug found live (DB stores PRO; read as standard) — fixed; live test 20/20 incl. broker uses the hire's key
   - Note: Data Analyst Two calls OpenRouter directly (predates the broker) — not capped until moved
 - [ ] A5 "Limit reached" reply + 80% warning email
 
