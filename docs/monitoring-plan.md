@@ -12,7 +12,11 @@ Ground rules for every step:
 - Records the creator's code could forge are labelled "reported by the agent".
 
 ## Part A — Protection and alerts
-- [ ] A1 Cost check: real cost per task per agent from OpenRouter; agree allowance and safety stop
+- [x] A1 Cost check (2026-10-16). Standard (gpt-oss-120b) ≈ $0.002/task; Pro (Claude Sonnet 5, Data Analyst)
+      ≈ $0.30–1.20/task. Agreed monthly model allowance per hire: Standard $0.50, Pro $7, Premium $30.
+      Top-ups: $10 of usage for $13, no creator share. Hourly runaway stop: $1 / $5 / $15.
+      Price floors stay $29/$59/$149; mailbox seat ($7, Business Basic since 2026-07-01) absorbed during the
+      pilot, mailbox fee (~$8 on Email-only) decided before public launch.
 - [x] A2 Public `/healthz` + outside uptime monitor (done 2026-10-16)
   - [x] `/healthz` live at https://api.agentstore.it.com/healthz (f435369): database, queue, disk < 85%,
         agents checking in, mail readers running; answers ok/down + check names only; cached 15 s
