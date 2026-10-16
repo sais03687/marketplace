@@ -76,6 +76,12 @@ console.log("\n-- keys --");
   check("named with the platform prefix, pro backstop limit $7 monthly", k.name === `${KEY_PREFIX}dep1` && k.limit === 7 && k.limit_reset === "monthly", `${k.name} ${k.limit}`);
   check("tiers: standard $0.50, premium $30", MONTHLY_ALLOWANCE.standard === 0.5 && MONTHLY_ALLOWANCE.premium === 30);
   check("unknown tier treated as standard", asTier("weird") === "standard" && asTier(undefined) === "standard");
+  check("database values STANDARD / PRO / PREMIUM read correctly", asTier("STANDARD") === "standard" && asTier("PRO") === "pro" && asTier("PREMIUM") === "premium");
+  const s2 = new AgentKeyStore(tmpFile(), api, () => OCT);
+  await s2.admit("t", "standard");
+  const tk = [...keys.values()].find((x) => x.name === `${KEY_PREFIX}t`)!;
+  await s2.admit("t", "pro");
+  check("key made under the wrong tier gets its OpenRouter limit corrected", tk.limit === 7, `limit=${tk.limit}`);
 }
 {
   const { api } = fakeOpenRouter({ failCreate: true });

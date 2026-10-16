@@ -68,8 +68,10 @@ export interface StopAlert {
   stop: number;
 }
 
+/** The database stores tiers as STANDARD / PRO / PREMIUM; anything unrecognised is the cheapest. */
 export function asTier(value: unknown): Tier {
-  return value === "pro" || value === "premium" ? value : "standard";
+  const v = typeof value === "string" ? value.toLowerCase() : "";
+  return v === "pro" || v === "premium" ? v : "standard";
 }
 
 function monthOf(t: number): string {
@@ -193,7 +195,21 @@ export class AgentKeyStore {
   /** The hire's own key, creating it on first use. Concurrent first calls share one creation. */
   private async keyFor(deploymentId: string, tier: Tier): Promise<string> {
     const existing = this.load().keys[deploymentId];
-    if (existing) return existing.key;
+    if (existing) {
+      if (existing.tier !== tier) {
+        // Made under another tier (or misread): bring OpenRouter's backstop
+        // limit in line. Best effort — the meter is what enforces.
+        try {
+          await this.api.update(existing.hash, { limit: this.allowances[tier] });
+          existing.tier = tier;
+          this.save();
+          console.log(`[agent-keys] ${deploymentId} key limit set to ${tier} ($${this.allowances[tier]}/month)`);
+        } catch (err: any) {
+          console.warn(`[agent-keys] could not update key limit for ${deploymentId}: ${err.message}`);
+        }
+      }
+      return existing.key;
+    }
     const pending = this.creating.get(deploymentId);
     if (pending) return pending;
 

@@ -17,7 +17,8 @@ import "../src/load-env.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AgentKeyStore, KEY_PREFIX, extractCost } from "../src/agent-keys.js";
+import { AgentKeyStore, KEY_PREFIX, MONTHLY_ALLOWANCE, asTier, extractCost } from "../src/agent-keys.js";
+import { prisma } from "@marketplace/db";
 import { openRouterKeys } from "../src/clients/openrouter-keys.js";
 import { agentTokenFor } from "../src/utils/agent-token.js";
 
@@ -60,6 +61,25 @@ console.log("\n-- part 1: through the real broker --");
   const hash = keyHashFor(liveHire);
   const remote = hash ? await openRouterKeys.get(hash) : null;
   check("hire's own key exists at OpenRouter, platform-named", remote?.name === `${KEY_PREFIX}${liveHire}`, remote?.name ?? "none");
+  const dbTier = (await prisma.deployment.findUnique({ where: { id: liveHire }, select: { agent: { select: { modelTier: true } } } }))?.agent?.modelTier;
+  const want = MONTHLY_ALLOWANCE[asTier(dbTier)];
+  check(`backstop limit matches the hire's tier (${dbTier} -> $${want})`, remote?.limit === want, `limit=${remote?.limit}`);
+  // Proof the broker really calls with this key, not the shared one: with the
+  // key switched off at OpenRouter, a call through the broker must fail.
+  await openRouterKeys.update(hash!, { disabled: true });
+  let off = 200;
+  for (let i = 0; i < 6 && off === 200; i++) {
+    off = (await fetch(BROKER, { method: "POST", headers: asHire(liveHire), body: ask(false) }).then(async (r) => { await r.text(); return r.status; }));
+    if (off === 200) await sleep(5000);
+  }
+  await openRouterKeys.update(hash!, { disabled: false });
+  check("broker uses the hire's own key (refused while it is switched off)", off !== 200, `status=${off}`);
+  let on = 0;
+  for (let i = 0; i < 6 && on !== 200; i++) {
+    on = (await fetch(BROKER, { method: "POST", headers: asHire(liveHire), body: ask(false) }).then(async (r) => { await r.text(); return r.status; }));
+    if (on !== 200) await sleep(5000);
+  }
+  check("...and works again once switched back on", on === 200, `status=${on}`);
   const r3 = await fetch(BROKER, { method: "POST", headers: asHire(firedHire), body: ask(false) });
   const t3 = await r3.text();
   check("fired hire refused (403 agent_fired)", r3.status === 403 && t3.includes("agent_fired"), `${r3.status} ${t3.slice(0, 80)}`);
