@@ -269,3 +269,7 @@ export function stopPoller(deploymentId: string): void {
 export function getPollerCount(): number {
   return pollers.size;
 }
+
+export function hasPoller(deploymentId: string): boolean {
+  return pollers.has(deploymentId);
+}

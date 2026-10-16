@@ -35,6 +35,9 @@ import { config } from "./config.js";
 import { sendViaResend, resendConfigured } from "./clients/resend.js";
 import { agentTokenFor, agentTokenMatches, hooksTokenFor } from "./utils/agent-token.js";
 import { isVetDeploymentId, vetRunActive, vetRunModel } from "./utils/vet-broker.js";
+import { cachedHealth, diskUsedFraction } from "./health.js";
+import { provisioningQueue } from "./queue.js";
+import { hasPoller } from "./jobs/poller-manager.js";
 
 const SECRET = process.env.PROVISIONING_SECRET || "";
 const PORT = parseInt(process.env.PROVISIONING_PORT || "3003", 10);
@@ -675,6 +678,32 @@ async function proxyContainer(
   }
 }
 
+// Matches the heartbeat monitor: quiet this long counts as stopped.
+const HEALTH_STALE_MS = 5 * 60 * 1000;
+
+const publicHealth = cachedHealth({
+  database: async () => {
+    await prisma.$queryRaw`SELECT 1`;
+  },
+  queue: async () => {
+    const client = await provisioningQueue.client;
+    await client.ping();
+  },
+  diskUsed: () => diskUsedFraction("/"),
+  staleAgents: () =>
+    prisma.deployment.count({
+      where: { status: "ACTIVE", lastHeartbeatAt: { not: null, lt: new Date(Date.now() - HEALTH_STALE_MS) } },
+    }),
+  agentsWithoutPoller: async () => {
+    // The same set recoverDockerPollers restarts readers for.
+    const active = await prisma.deployment.findMany({
+      where: { status: "ACTIVE", containerName: { not: null }, agentEmail: { not: null } },
+      select: { id: true },
+    });
+    return active.filter((d) => !hasPoller(d.id)).length;
+  },
+});
+
 export function startProxyServer() {
   // ─── Bot Framework adapter (Teams) ────────────────────────────────────────
   // Created here (not at module level) so env vars from pm2 env_file are loaded.
@@ -731,6 +760,17 @@ export function startProxyServer() {
     if (req.method === "POST" && req.url?.startsWith("/webhooks/microsoft")) {
       req.on("data", () => {});
       req.on("end", () => send(res, 202, { accepted: true }));
+      return;
+    }
+
+    // Public, for the uptime monitor; see health.ts for why it says so little.
+    if (req.method === "GET" && req.url === "/healthz") {
+      const result = await publicHealth();
+      res.writeHead(result.status === "ok" ? 200 : 503, {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify(result));
       return;
     }
 
