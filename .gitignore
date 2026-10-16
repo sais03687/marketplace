@@ -126,3 +126,6 @@ benchmark/*
 # commands failed. Its contents are untouched on disk; this repository just
 # stops claiming to track them.
 register/
+
+# Per-hire OpenRouter keys (secrets), kept on the server only. See agent-keys.ts.
+.agent-llm-keys.json*
