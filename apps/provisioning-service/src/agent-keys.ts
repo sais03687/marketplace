@@ -70,6 +70,8 @@ export class AgentKeyStore {
     private readonly file: string,
     private readonly api: KeyManagementApi,
     private readonly now: () => number = () => Date.now(),
+    /** Overridable only so a live test can trip the stop with a cent of real spend. */
+    private readonly stops: Record<Tier, number> = HOURLY_STOP,
   ) {}
 
   private load(): StoreFile {
@@ -226,7 +228,7 @@ export class AgentKeyStore {
       series.push({ t, usage: info.usage });
       this.samples.set(deploymentId, series);
       const spentLastHour = info.usage - series[0].usage;
-      const stop = HOURLY_STOP[entry.tier];
+      const stop = this.stops[entry.tier];
       if (spentLastHour > stop) {
         await this.api.update(entry.hash, { disabled: true });
         entry.stoppedAt = new Date(t).toISOString();
