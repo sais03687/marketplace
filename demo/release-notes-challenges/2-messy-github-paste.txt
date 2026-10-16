@@ -1,0 +1,22 @@
+## What's Changed
+* Add SSO login with Okta and Azure AD for Business plan by @mchen in #2041
+* Fix invoice PDF showing wrong currency symbol for CAD and AUD accounts by @priya-d in #2044
+* WIP cleanup by @tom-r in #2046
+* Bump axios from 1.6.8 to 1.7.4 by @dependabot in #2047
+* Bump axios from 1.6.8 to 1.7.4 (fixes CVE-2024-39338) by @dependabot in #2048
+* Revert "Add SSO login with Okta and Azure AD for Business plan" by @mchen in #2050
+* Re-land SSO login with Okta and Azure AD for Business plan, with the redirect loop fixed by @mchen in #2052
+* Admins can now see a log of who changed workspace settings, kept for 90 days by @aisha-k in #2053
+* address review comments by @priya-d in #2055
+* Merge branch 'main' into release/4.2 by @tom-r in #2056
+* Uploading files over 100MB no longer fails silently - users now see an error with the size limit by @lena-v in #2058
+* Rename internal FeatureFlag enum by @tom-r in #2059
+* Dark mode: charts and tables now readable (previously grey text on grey background) by @lena-v in #2061
+* Update snapshot tests by @aisha-k in #2062
+* Keyboard shortcut ? opens a list of all shortcuts by @mchen in #2064
+* fix typo by @priya-d in #2065
+* Bulk-delete up to 500 items at once (was 50) by @aisha-k in #2067
+* Remove legacy v1 API endpoints (deprecated since Jan, announced in 4.0 notes) by @tom-r in #2068
+* misc fixes by @lena-v in #2070
+
+**Full Changelog**: https://github.com/acme/ledgerly/compare/v4.1.3...v4.2.0

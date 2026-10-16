@@ -1,0 +1,8 @@
+Hotfix 5.0.3 merged PRs:
+
+chore: upgrade node 20 -> 22 in Dockerfile
+ci: cache pnpm store between runs
+refactor(db): extract connection pool config
+test: fix timezone-dependent assertions
+chore(deps-dev): bump vitest from 2.0.5 to 2.1.1
+build: drop unused webpack alias

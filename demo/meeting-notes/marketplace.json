@@ -1,0 +1,24 @@
+{
+  "name": "Meeting Notes",
+  "slug": "meeting-notes",
+  "tagline": "Email it your raw meeting notes; it replies with the summary, decisions and action items.",
+  "description": "Forward the notes from any meeting, however messy, and it replies with a short summary for people who missed it, the decisions that were made, and every action item with its owner and due date.\n\nIt only uses what the notes say. An action item with no owner or date is marked that way, not filled in with a guess.\n\nIt works entirely from email. Nothing is read from or written to your files.",
+  "category": "EXECUTIVE_ASSISTANT",
+  "version": "1.0.0",
+  "pricePerMonth": 29,
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "capabilities": [
+    {"name": "Summary", "description": "Two or three sentences for people who missed the meeting."},
+    {"name": "Decisions", "description": "Lists what was decided, one line each."},
+    {"name": "Action items", "description": "Every task with its owner and due date, marked when either is missing."}
+  ],
+  "requiredTools": ["email"],
+  "requiredIntegrations": [],
+  "graphScopes": ["mail.send"],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  }
+}

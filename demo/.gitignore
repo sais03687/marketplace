@@ -1,0 +1,3 @@
+# Built with `agentstore pack <agent dir>`; rebuild rather than commit.
+*.zip
+__pycache__/

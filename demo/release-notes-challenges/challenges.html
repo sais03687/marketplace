@@ -1,0 +1,348 @@
+<title>Release Notes Test Set</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column; each test is a section with input on the left, verdict on the right, stacking on phones */
+:root {
+  --bg: #f6f7f5;
+  --surface: #ffffff;
+  --fg: #1d2420;
+  --muted: #5d6862;
+  --line: #dde2de;
+  --accent: #1f6f5c;
+  --code-bg: #eef1ee;
+  --pass: #1f7a3d; --pass-bg: #e3f3e8;
+  --warn: #8a5a00; --warn-bg: #fbf0d9;
+  --fail: #b3261e; --fail-bg: #fbe4e2;
+  --font-body: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121614; --surface: #1a201d; --fg: #e4e9e5; --muted: #9aa69f; --line: #2d3530;
+  --accent: #5cc3a6; --code-bg: #202723;
+  --pass: #6fd38f; --pass-bg: #1d3325; --warn: #f0c36a; --warn-bg: #3a2f17; --fail: #ff8f86; --fail-bg: #3d1f1d;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121614; --surface: #1a201d; --fg: #e4e9e5; --muted: #9aa69f; --line: #2d3530;
+  --accent: #5cc3a6; --code-bg: #202723;
+  --pass: #6fd38f; --pass-bg: #1d3325; --warn: #f0c36a; --warn-bg: #3a2f17; --fail: #ff8f86; --fail-bg: #3d1f1d;
+  color-scheme: dark }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 15px/1.6 var(--font-body); padding-inline: 16px; padding-block: 40px 64px; }
+.wrap { max-width: 1040px; margin: 0 auto; display: grid; gap: 40px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.25; }
+h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 21px; font-weight: 700; }
+h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
+p { margin: 0; max-width: 68ch; }
+code { font-family: var(--font-mono); font-size: 0.88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+
+header { display: grid; gap: 12px; }
+.eyebrow { font: 600 12px/1 var(--font-mono); color: var(--accent); letter-spacing: 0.04em; }
+.lede { color: var(--muted); }
+
+.howto { display: grid; gap: 8px; border-left: 3px solid var(--accent); padding: 4px 0 4px 16px; }
+.howto ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; max-width: 72ch; }
+
+.order { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--muted); font-size: 14px; }
+.order a { color: var(--fg); text-decoration: none; border: 1px solid var(--line); background: var(--surface); padding: 4px 10px; border-radius: 999px; font-weight: 600; }
+.order a:hover, .order a:focus-visible { border-color: var(--accent); outline: none; }
+
+.test { display: grid; gap: 16px; padding-top: 28px; border-top: 1px solid var(--line); }
+.test-head { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: baseline; }
+.num { font: 600 13px var(--font-mono); color: var(--muted); }
+.pill { font: 600 12px/1 var(--font-body); padding: 5px 10px; border-radius: 999px; white-space: nowrap; }
+.pill.pass { color: var(--pass); background: var(--pass-bg); }
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
+.pill.fail { color: var(--fail); background: var(--fail-bg); }
+.meta { color: var(--muted); font-size: 14px; }
+
+.cols { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 760px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+
+.input { display: grid; gap: 8px; min-width: 0; }
+.input-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.file { font: 12px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+button.copy { font: 600 13px var(--font-body); color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+button.copy:hover { border-color: var(--accent); }
+button.copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+pre { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; font: 12.5px/1.6 var(--font-mono); overflow-x: auto; max-height: 420px; white-space: pre; }
+
+.verdict { display: grid; gap: 18px; min-width: 0; }
+.verdict ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.block { display: grid; gap: 8px; }
+.traps li strong { font-weight: 600; }
+
+.next { display: grid; gap: 10px; padding-top: 28px; border-top: 1px solid var(--line); }
+.next ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">demo/release-notes · v1.0.1 · openai/gpt-oss-120b</div>
+    <h1>Release Notes test set</h1>
+    <p class="lede">Four sandbox tests for the Release Notes agent, from easy to tricky. Each one has the exact text to paste, what a correct answer looks like, and what version 1.0.1 of the agent returned when it was run on 7 October 2026.</p>
+  </header>
+
+  <section class="howto">
+    <h3>How to run one</h3>
+    <ol>
+      <li>Copy a test's input with its <strong>Copy input</strong> button.</li>
+      <li>Paste it as the whole message body: in the admin vetting "Test the agent" box, or in an email to a hired Release Notes agent.</li>
+      <li>Compare the reply with <strong>What a correct answer does</strong>. The traps are the parts most likely to go wrong.</li>
+    </ol>
+  </section>
+
+  <nav class="order" aria-label="Suggested demo order">
+    <span>Order for the demo video:</span>
+    <a href="#t1">1 · Sprint</a>
+    <a href="#t2">2 · GitHub paste</a>
+    <a href="#t3">3 · Context lines</a>
+    <a href="#t4">4 · Nothing to announce</a>
+  </nav>
+
+  <!-- TEST 1 -->
+  <section class="test" id="t1">
+    <div class="test-head">
+      <span class="num">Test 1</span>
+      <h2>Sprint release, conventional commits</h2>
+      <span class="pill pass">Ran clean · use first</span>
+    </div>
+    <p class="meta">14 PRs from a task-management web app. Tests whether it sorts by what changed for users, not by the commit prefix.</p>
+    <div class="cols">
+      <div class="input">
+        <div class="input-bar"><span class="file">1-saas-sprint.txt</span><button class="copy" type="button" data-target="in1">Copy input</button></div>
+<pre id="in1">Merged PRs for v3.8.0 (Taskflow web app), sprint ending Sept 26:
+
+feat(boards): drag tasks between boards without opening them
+feat(reports): weekly summary email for workspace owners, sent Monday 8am local time
+feat(ci): add eslint step to PR pipeline
+fix(calendar): due dates shown one day early for users west of UTC
+fix(auth): "remember me" signed users out after 24 hours instead of 30 days
+fix: flaky test in billing.spec.ts
+perf(search): search across 10k+ tasks now returns in under a second (was ~4s)
+improve(mobile): task list no longer jumps to the top after marking something done
+refactor(api): move task serializers into their own module
+chore(deps): bump next from 15.2.1 to 15.3.0
+docs: update CONTRIBUTING.md with branch naming rules
+feat(export): export a board to CSV, including custom fields
+fix(notifications): mentions in comments sent two emails instead of one
+test: add e2e coverage for board permissions</pre>
+      </div>
+      <div class="verdict">
+        <div class="block traps">
+          <h3>What a correct answer does</h3>
+          <ul>
+            <li><strong>New (3):</strong> drag between boards, weekly summary email, CSV export.</li>
+            <li><strong>Improved (2):</strong> faster search, mobile list no longer jumps.</li>
+            <li><strong>Fixed (3):</strong> due-date timezone, "remember me", duplicate mention emails.</li>
+            <li><strong>Left out (6):</strong> <code>feat(ci)</code> despite the feat prefix, and <code>fix: flaky test</code> despite the fix prefix, plus refactor, deps, docs and test.</li>
+          </ul>
+        </div>
+        <div class="block">
+          <h3>What it returned</h3>
+          <ul>
+            <li>All 8 notes in the right sections, rewritten for users ("Due dates are no longer shown one day early…").</li>
+            <li>All 6 internal PRs flagged.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TEST 2 -->
+  <section class="test" id="t2">
+    <div class="test-head">
+      <span class="num">Test 2</span>
+      <h2>Messy GitHub "What's Changed" paste</h2>
+      <span class="pill warn">Good · 1 slip to watch</span>
+    </div>
+    <p class="meta">19 entries in GitHub's auto-generated release format. Includes a revert and re-land, a duplicate bump, a merge commit and vague titles.</p>
+    <div class="cols">
+      <div class="input">
+        <div class="input-bar"><span class="file">2-messy-github-paste.txt</span><button class="copy" type="button" data-target="in2">Copy input</button></div>
+<pre id="in2">## What's Changed
+* Add SSO login with Okta and Azure AD for Business plan by @mchen in #2041
+* Fix invoice PDF showing wrong currency symbol for CAD and AUD accounts by @priya-d in #2044
+* WIP cleanup by @tom-r in #2046
+* Bump axios from 1.6.8 to 1.7.4 by @dependabot in #2047
+* Bump axios from 1.6.8 to 1.7.4 (fixes CVE-2024-39338) by @dependabot in #2048
+* Revert "Add SSO login with Okta and Azure AD for Business plan" by @mchen in #2050
+* Re-land SSO login with Okta and Azure AD for Business plan, with the redirect loop fixed by @mchen in #2052
+* Admins can now see a log of who changed workspace settings, kept for 90 days by @aisha-k in #2053
+* address review comments by @priya-d in #2055
+* Merge branch 'main' into release/4.2 by @tom-r in #2056
+* Uploading files over 100MB no longer fails silently - users now see an error with the size limit by @lena-v in #2058
+* Rename internal FeatureFlag enum by @tom-r in #2059
+* Dark mode: charts and tables now readable (previously grey text on grey background) by @lena-v in #2061
+* Update snapshot tests by @aisha-k in #2062
+* Keyboard shortcut ? opens a list of all shortcuts by @mchen in #2064
+* fix typo by @priya-d in #2065
+* Bulk-delete up to 500 items at once (was 50) by @aisha-k in #2067
+* Remove legacy v1 API endpoints (deprecated since Jan, announced in 4.0 notes) by @tom-r in #2068
+* misc fixes by @lena-v in #2070
+
+**Full Changelog**: https://github.com/acme/ledgerly/compare/v4.1.3...v4.2.0</pre>
+      </div>
+      <div class="verdict">
+        <div class="block traps">
+          <h3>What a correct answer does</h3>
+          <ul>
+            <li><strong>SSO appears once, as New.</strong> The add, revert and re-land cancel out to one shipped feature. The redirect loop never reached users.</li>
+            <li><strong>New:</strong> SSO, settings audit log, <code>?</code> shortcut list.</li>
+            <li><strong>Improved:</strong> dark-mode charts, bulk delete up to 500.</li>
+            <li><strong>Fixed:</strong> invoice currency symbol, silent upload failure.</li>
+            <li><strong>v1 API removal</strong> is a breaking change. It should be called out, not listed as a fix.</li>
+            <li><strong>Left out:</strong> WIP cleanup, review comments, merge commit, rename, snapshot tests, typo, misc fixes. The CVE bump could go either way.</li>
+          </ul>
+        </div>
+        <div class="block">
+          <h3>What it returned</h3>
+          <ul>
+            <li>SSO shown once under New in 4 of 4 runs, with the revert and re-land folded into it.</li>
+            <li>The noise entries were flagged every time, quoted from the input. The two headings were not counted as PRs.</li>
+            <li><strong>Slip:</strong> the v1 API removal moves between runs. It went under Improved in 2 runs, in the left-out list in 1, and under Fixed in 1. It is never called out as a breaking change.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TEST 3 -->
+  <section class="test" id="t3">
+    <div class="test-head">
+      <span class="num">Test 3</span>
+      <h2>Mobile release with a context line per PR</h2>
+      <span class="pill pass">Ran clean · 8 of 8 runs</span>
+    </div>
+    <p class="meta">12 PRs from a recipe app, most with a line of explanation. Tests whether it reads the context, for example that the nutrition panel is not shipping.</p>
+    <div class="cols">
+      <div class="input">
+        <div class="input-bar"><span class="file">3-with-context-lines.txt</span><button class="copy" type="button" data-target="in3">Copy input</button></div>
+<pre id="in3">Release 2.11 - Pantry (recipe &amp; meal planning app, iOS + Android)
+
+#812 Shopping list: combine duplicate ingredients
+  "2 eggs" from one recipe and "3 eggs" from another now show as "5 eggs". Different units (cups vs grams) are still listed separately.
+
+#815 Fix crash when opening a recipe with no photo on Android 14
+  Affected roughly 3% of Android sessions last week.
+
+#817 Migrate image pipeline from Glide to Coil
+  No visible change intended.
+
+#819 Meal plan: copy last week's plan into this week
+  One button on the week view. Doesn't copy the shopping list.
+
+#820 Serving size slider now rounds to sensible amounts
+  e.g. 1/3 cup instead of 0.333 cups; teaspoons round to nearest 1/4.
+
+#821 Bump compileSdk to 35
+
+#823 Fix: timers kept running after the recipe was closed, draining battery
+  The notification now disappears when you leave the recipe.
+
+#824 Analytics: add event for recipe_saved
+
+#826 Nutrition panel
+  Behind a feature flag, off for everyone. Not shipping in this release.
+
+#828 Search understands "vegetarian", "vegan", "gluten-free" as filters
+  Typing them in the search bar applies the filter instead of searching recipe titles for the word.
+
+#830 Handle edge case in parser
+
+#831 Offline mode: saved recipes open without a connection
+  Only recipes saved after updating to 2.11; older saves need to be opened once online.</pre>
+      </div>
+      <div class="verdict">
+        <div class="block traps">
+          <h3>What a correct answer does</h3>
+          <ul>
+            <li><strong>Notes (7):</strong> combined ingredients, Android 14 crash, copy last week's plan, rounded serving sizes, timers stopping, diet filters in search, offline saved recipes.</li>
+            <li><strong>Keeps the limits</strong> the context lines give: different units stay separate, offline only covers recipes saved after updating.</li>
+            <li><strong>Left out (5):</strong> Glide to Coil, compileSdk, analytics event, nutrition panel (flagged off), parser edge case.</li>
+          </ul>
+        </div>
+        <div class="block">
+          <h3>What it returned</h3>
+          <ul>
+            <li>All 7 notes and the right 5 left-out PRs in every run, with the PR numbers quoted from the input.</li>
+            <li>Version 1.0.0 broke the left-out list in 2 of 3 runs. 1.0.1 numbers each entry, has the model answer by number, and quotes the input itself, so a garbled answer can no longer reach the reader and no entry can go unmentioned.</li>
+            <li>A garbled answer gets one automatic retry. If that fails too, the agent says so instead of guessing.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TEST 4 -->
+  <section class="test" id="t4">
+    <div class="test-head">
+      <span class="num">Test 4</span>
+      <h2>Hotfix with nothing to announce</h2>
+      <span class="pill pass">Ran clean · use as closer</span>
+    </div>
+    <p class="meta">6 internal PRs and no user-facing change. Tests whether it refuses to invent notes.</p>
+    <div class="cols">
+      <div class="input">
+        <div class="input-bar"><span class="file">4-all-internal.txt</span><button class="copy" type="button" data-target="in4">Copy input</button></div>
+<pre id="in4">Hotfix 5.0.3 merged PRs:
+
+chore: upgrade node 20 -&gt; 22 in Dockerfile
+ci: cache pnpm store between runs
+refactor(db): extract connection pool config
+test: fix timezone-dependent assertions
+chore(deps-dev): bump vitest from 2.0.5 to 2.1.1
+build: drop unused webpack alias</pre>
+      </div>
+      <div class="verdict">
+        <div class="block traps">
+          <h3>What a correct answer does</h3>
+          <ul>
+            <li>Writes no release notes.</li>
+            <li>Says plainly that nothing here changed for users, and lists what it left out.</li>
+            <li>Does not turn "fix timezone-dependent assertions" into a timezone fix for users.</li>
+          </ul>
+        </div>
+        <div class="block">
+          <h3>What it returned</h3>
+          <ul>
+            <li>No notes, and a clear reason.</li>
+            <li>The reply no longer repeats the list. The internal PRs appear once, in the check list.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="next">
+    <h3>Still open in 1.0.1</h3>
+    <ul>
+      <li>Removals and breaking changes need their own section. Today they land in whichever section the model picks.</li>
+      <li>Under load the model sometimes takes over 120 seconds and the call times out.</li>
+      <li>The onboarding answers (product name, audience) are collected but never used in the notes.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+document.querySelectorAll("button.copy").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var pre = document.getElementById(btn.dataset.target);
+    var text = pre.textContent;
+    var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy input"; }, 1600); };
+    var fallback = function () {
+      var range = document.createRange(); range.selectNodeContents(pre);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      btn.textContent = "Selected · press Ctrl+C";
+    };
+    try {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } catch (e) { fallback(); }
+  });
+});
+</script>

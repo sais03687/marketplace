@@ -1,0 +1,3 @@
+pybamm
+matplotlib
+langchain-openai

@@ -1,0 +1,41 @@
+{
+  "name": "Weather Briefing",
+  "slug": "weather-briefing",
+  "tagline": "Email it where and when you'll be; it replies with the official forecast and what to plan around.",
+  "description": "Tell it the places and days (site visits, events, deliveries) and it pulls the US National Weather Service forecast for each, flagging rain, storms, snow, fog and wind.\n\nIt connects to api.weather.gov and nowhere else. US locations only.",
+  "category": "EXECUTIVE_ASSISTANT",
+  "version": "1.0.0",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 29,
+  "maxRunMinutes": 5,
+  "capabilities": [
+    {
+      "name": "Several places at once",
+      "description": "Up to six locations in one reply."
+    },
+    {
+      "name": "Flags",
+      "description": "Calls out rain, storms, snow, ice, fog and wind."
+    },
+    {
+      "name": "Official source",
+      "description": "National Weather Service data, retrieved when you ask."
+    }
+  ],
+  "connectsTo": [
+    "api.weather.gov"
+  ]
+}

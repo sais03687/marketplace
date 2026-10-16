@@ -1,0 +1,33 @@
+{
+  "name": "Release Notes",
+  "slug": "release-notes",
+  "tagline": "Email it a list of merged PRs; it emails back release notes your users can read.",
+  "description": "Paste the merged pull requests from a release — titles, or titles with a line of context — and it replies with notes written for the people who use the product rather than the people who wrote it.\n\nIt is strict about one thing. A pull request whose title does not say what changed for a user is listed under \"needs a human\", not guessed at. A refactor is not a feature, and a version bump is not news.\n\nIt works entirely from email. Nothing is read from or written to your files.",
+  "category": "ENGINEERING_OPS",
+  "version": "1.0.1",
+  "pricePerMonth": 29,
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "capabilities": [
+    {
+      "name": "Notes from merged PRs",
+      "description": "Turns a list of pull request titles into release notes written for users."
+    },
+    {
+      "name": "Groups the changes",
+      "description": "Sorts them into new, improved and fixed, so a reader can skim."
+    },
+    {
+      "name": "Flags what it cannot tell",
+      "description": "Lists a PR whose title says nothing user-facing instead of inventing a benefit."
+    }
+  ],
+  "requiredTools": ["email"],
+  "requiredIntegrations": [],
+  "graphScopes": ["mail.send"],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  }
+}

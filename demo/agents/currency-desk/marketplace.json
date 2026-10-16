@@ -1,0 +1,41 @@
+{
+  "name": "Currency Desk",
+  "slug": "currency-desk",
+  "tagline": "Email it amounts and currencies; it replies with conversions and rate trends from central bank data.",
+  "description": "Convert an invoice into several currencies, check a past date's rate, or see how a rate moved over a period. It uses reference rates from the European Central Bank and other central banks via the Frankfurter API, and says which date each rate is from.\n\nIt connects to api.frankfurter.dev and nowhere else.",
+  "category": "FINANCE_OPS",
+  "version": "1.0.0",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 29,
+  "maxRunMinutes": 5,
+  "capabilities": [
+    {
+      "name": "Conversions",
+      "description": "Any amount into several currencies, today or on a past date."
+    },
+    {
+      "name": "Trends",
+      "description": "Change, low and high over a period."
+    },
+    {
+      "name": "Dated rates",
+      "description": "Every figure says which day's rate it used."
+    }
+  ],
+  "connectsTo": [
+    "api.frankfurter.dev"
+  ]
+}

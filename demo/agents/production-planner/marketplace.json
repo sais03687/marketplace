@@ -1,0 +1,38 @@
+{
+  "name": "Production Planner",
+  "slug": "production-planner",
+  "tagline": "Email it your products and capacities; it replies with the most profitable production plan.",
+  "description": "Describe what you make (profit per unit, minimums and maximums) and what limits you (hours, machines, materials). It solves the plan exactly with Pyomo and the HiGHS solver and replies with how much of each to make, the profit, which resources are the bottleneck and what one more unit of each is worth.",
+  "category": "FINANCE_OPS",
+  "version": "1.0.0",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 39,
+  "maxRunMinutes": 10,
+  "capabilities": [
+    {
+      "name": "Optimal mix",
+      "description": "Exact solution in whole units or fractions."
+    },
+    {
+      "name": "Bottlenecks",
+      "description": "Which resources are used up, and which have slack."
+    },
+    {
+      "name": "Value of capacity",
+      "description": "What an extra hour or unit of each resource would add."
+    }
+  ]
+}

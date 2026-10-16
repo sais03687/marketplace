@@ -1,0 +1,46 @@
+{
+  "name": "Route Planner",
+  "slug": "route-planner",
+  "tagline": "Email it your stops and vans; it replies with optimised delivery routes, a map and a CSV.",
+  "description": "Send the depot and the stops with their coordinates (and how much each needs), and how many vans you have. It plans the routes with Google's OR-tools solver, respecting van capacity, and replies with each van's order of stops, distance and time.\n\nFor a rush-hour departure, times include a slowdown measured in a SUMO traffic simulation.",
+  "category": "GENERAL",
+  "version": "1.0.0",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 39,
+  "maxRunMinutes": 15,
+  "capabilities": [
+    {
+      "name": "Vehicle routing",
+      "description": "Shortest routes across several vans with capacity limits."
+    },
+    {
+      "name": "Rush-hour times",
+      "description": "Adjusted with a SUMO traffic simulation."
+    },
+    {
+      "name": "Map and CSV",
+      "description": "Each route drawn on a map and listed stop by stop."
+    }
+  ],
+  "systemPackages": [
+    "libgl1",
+    "libx11-6",
+    "libxext6",
+    "libxrender1",
+    "libatomic1",
+    "libexpat1"
+  ]
+}

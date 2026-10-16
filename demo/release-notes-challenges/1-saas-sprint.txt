@@ -1,0 +1,16 @@
+Merged PRs for v3.8.0 (Taskflow web app), sprint ending Sept 26:
+
+feat(boards): drag tasks between boards without opening them
+feat(reports): weekly summary email for workspace owners, sent Monday 8am local time
+feat(ci): add eslint step to PR pipeline
+fix(calendar): due dates shown one day early for users west of UTC
+fix(auth): "remember me" signed users out after 24 hours instead of 30 days
+fix: flaky test in billing.spec.ts
+perf(search): search across 10k+ tasks now returns in under a second (was ~4s)
+improve(mobile): task list no longer jumps to the top after marking something done
+refactor(api): move task serializers into their own module
+chore(deps): bump next from 15.2.1 to 15.3.0
+docs: update CONTRIBUTING.md with branch naming rules
+feat(export): export a board to CSV, including custom fields
+fix(notifications): mentions in comments sent two emails instead of one
+test: add e2e coverage for board permissions

@@ -1,0 +1,9 @@
+product sync tues 10am - priya, marcus, jen, tom (dana out sick)
+
+- checkout redesign: jen showed new mockups. everyone liked the one-page version better than the 3-step. going with one-page.
+- marcus says the payments API change from stripe lands nov 15, we HAVE to migrate before then or card payments break. marcus will own the migration, wants it done by nov 8 to leave buffer
+- mobile crash on android 14 still happening, ~2% of sessions. tom thinks its the image library. tom to investigate and report back thurs
+- pricing page: long debate about showing annual price first. no decision, priya wants data from last quarter's A/B test first. someone needs to pull that data
+- launch date for redesign: tentatively dec 2, depends on payments migration finishing
+- jen to send final mockups to eng by friday
+- reminder: dana's out, so her QA tickets need covering. tom said he can take the urgent ones

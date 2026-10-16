@@ -1,0 +1,5 @@
+chemistrygym @ git+https://github.com/chemgymrl/chemgymrl.git@ab8227b6b33f13617b7e551bdf6b894df7eec68d
+gymnasium
+numpy
+matplotlib
+langchain-openai

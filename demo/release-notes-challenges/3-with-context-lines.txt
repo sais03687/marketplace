@@ -1,0 +1,34 @@
+Release 2.11 - Pantry (recipe & meal planning app, iOS + Android)
+
+#812 Shopping list: combine duplicate ingredients
+  "2 eggs" from one recipe and "3 eggs" from another now show as "5 eggs". Different units (cups vs grams) are still listed separately.
+
+#815 Fix crash when opening a recipe with no photo on Android 14
+  Affected roughly 3% of Android sessions last week.
+
+#817 Migrate image pipeline from Glide to Coil
+  No visible change intended.
+
+#819 Meal plan: copy last week's plan into this week
+  One button on the week view. Doesn't copy the shopping list.
+
+#820 Serving size slider now rounds to sensible amounts
+  e.g. 1/3 cup instead of 0.333 cups; teaspoons round to nearest 1/4.
+
+#821 Bump compileSdk to 35
+
+#823 Fix: timers kept running after the recipe was closed, draining battery
+  The notification now disappears when you leave the recipe.
+
+#824 Analytics: add event for recipe_saved
+
+#826 Nutrition panel
+  Behind a feature flag, off for everyone. Not shipping in this release.
+
+#828 Search understands "vegetarian", "vegan", "gluten-free" as filters
+  Typing them in the search bar applies the filter instead of searching recipe titles for the word.
+
+#830 Handle edge case in parser
+
+#831 Offline mode: saved recipes open without a connection
+  Only recipes saved after updating to 2.11; older saves need to be opened once online.

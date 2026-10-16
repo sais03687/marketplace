@@ -1,0 +1,2 @@
+httpx
+langchain-openai

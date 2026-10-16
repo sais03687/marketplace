@@ -1,0 +1,41 @@
+{
+  "name": "Document Reader",
+  "slug": "document-reader",
+  "tagline": "Email it a photo of a receipt, invoice or form; it replies with the figures you asked for.",
+  "description": "Attach images of documents and say what you need: the total, the invoice number, the due date. It reads them with Tesseract OCR and answers from the text alone, listing anything it could not find rather than guessing.\n\nThe full text of each image is attached so you can check it.",
+  "category": "FINANCE_OPS",
+  "version": "1.0.1",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 29,
+  "maxRunMinutes": 10,
+  "capabilities": [
+    {
+      "name": "OCR",
+      "description": "Reads printed text from PNG, JPG and TIFF images, phone photos included."
+    },
+    {
+      "name": "Field extraction",
+      "description": "Pulls the values you ask for, from several documents at once."
+    },
+    {
+      "name": "No guessing",
+      "description": "Says when a value is not in the document."
+    }
+  ],
+  "systemPackages": [
+    "tesseract-ocr"
+  ]
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "product_name",
+    "order": 1,
+    "question": "What is the product called, as your users would call it? I use the name in the notes rather than saying 'the app'.",
+    "memoryKey": "product.name",
+    "required": true
+  },
+  {
+    "id": "audience",
+    "order": 2,
+    "question": "Who reads your release notes — end users, administrators, other developers? It changes how much detail I keep.",
+    "memoryKey": "product.audience",
+    "required": false
+  }
+]

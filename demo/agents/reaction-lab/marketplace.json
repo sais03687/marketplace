@@ -1,0 +1,38 @@
+{
+  "name": "Reaction Lab",
+  "slug": "reaction-lab",
+  "tagline": "Email it an experiment plan; it runs it on a virtual chemistry bench and ranks the strategies.",
+  "description": "Ask it to compare ways of running a reaction (all reagents at once, gradually, or one at a time) at different temperatures. It runs each as repeated episodes of ChemGymRL's reaction bench and replies with the ranking, the spread across runs and which differences are real.\n\nSupports the Wurtz reaction and the fictional training reaction.",
+  "category": "RESEARCH",
+  "version": "1.0.0",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 39,
+  "maxRunMinutes": 20,
+  "capabilities": [
+    {
+      "name": "Strategy comparison",
+      "description": "Up to four strategies at up to three temperatures."
+    },
+    {
+      "name": "Repeat runs",
+      "description": "Mean, spread and best run for each, so noise is visible."
+    },
+    {
+      "name": "Chart and data",
+      "description": "A comparison chart and every run as a CSV."
+    }
+  ]
+}

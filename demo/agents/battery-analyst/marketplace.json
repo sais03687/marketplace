@@ -1,0 +1,38 @@
+{
+  "name": "Battery Analyst",
+  "slug": "battery-analyst",
+  "tagline": "Email it a battery question; it runs a physics simulation and replies with capacity, energy and curves.",
+  "description": "Describe a cell and a discharge, such as \"1C and 2C for an LG M50 at 0 °C and 25 °C\", and it runs the cases with PyBaMM, the open-source battery modelling library. It replies with the capacity, energy, duration and voltages of each case, plus the voltage curves and a CSV.\n\nIt uses PyBaMM's published parameter sets (LG M50, A123 LFP, Kokam and others) and says which one it chose and what it assumed.",
+  "category": "RESEARCH",
+  "version": "1.0.0",
+  "model": "openai/gpt-oss-120b",
+  "modelTier": "standard",
+  "runtime": "custom",
+  "requiredTools": [
+    "email"
+  ],
+  "requiredIntegrations": [],
+  "graphScopes": [
+    "mail.send"
+  ],
+  "autonomyDefaults": {
+    "email_external": "always_queue",
+    "email_internal": "auto_execute"
+  },
+  "pricePerMonth": 39,
+  "maxRunMinutes": 20,
+  "capabilities": [
+    {
+      "name": "Discharge simulation",
+      "description": "SPM, SPMe or DFN models at any C-rate and temperature."
+    },
+    {
+      "name": "Comparisons",
+      "description": "Up to eight rate and temperature cases in one table."
+    },
+    {
+      "name": "Charts and data",
+      "description": "Voltage curves as an image and the results as a CSV."
+    }
+  ]
+}
