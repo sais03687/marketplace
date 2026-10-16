@@ -182,7 +182,8 @@ console.log("\n-- the file --");
   const store = new AgentKeyStore(file, api, () => OCT);
   const r = await store.admit("old", "pro");
   check("a version-1 file is read (existing key kept)", r.status === "ok" && (r as any).key === "sk-or-v1-OLD");
-  if (process.platform !== "win32") check("file is owner-only (0600)", (fs.statSync(file).mode & 0o777) === 0o600);
+  await store.recordSpend("old", "pro", 0.01); // a write
+  if (process.platform !== "win32") check("file is owner-only (0600) once the store writes it", (fs.statSync(file).mode & 0o777) === 0o600, (fs.statSync(file).mode & 0o777).toString(8));
   fs.writeFileSync(file, "{not json");
   await new AgentKeyStore(file, api, () => OCT).admit("dep2", "standard");
   check("unreadable file is moved aside, not overwritten", fs.readdirSync(path.dirname(file)).some((f) => f.includes("unreadable")));
