@@ -23,7 +23,7 @@ Ground rules for every step:
   - [x] UptimeRobot watching `/healthz` and https://www.agentstore.it.com (it checks with HEAD — fixed in 1ca1d8c)
   - [x] Down test: stopped 14:42:29 UTC → down email; back 14:49:42 UTC → up email; mail reader restored
 - [ ] A3 Sentry on web app, provisioning service and agent adapter, with scrubbing
-- [ ] A4 Per-agent OpenRouter keys (created on hire, deleted on fire) + safety stop
+- [x] A4 Per-agent OpenRouter keys (created on hire, deleted on fire) + safety stop (done 2026-10-16)
   - [x] Keys per hire, created on first model call (dc64264); key file root-only, gitignored
   - [x] Found live: OpenRouter's per-key usage lags >10 min and a $0.01 key ran $0.02 → its limits are only a
         backstop. Broker now meters each call's reported cost and refuses before the call (c3b3c8e):
@@ -31,10 +31,17 @@ Ground rules for every step:
   - [x] Live: real broker calls (plain + streamed) metered to the cent; fired hire refused; allowance and
         safety stop tripped on real spend; key switched off and refused by OpenRouter; resume; delete
   - [x] Safety-stop email received by the operator; now carries the status and lift commands
-  - [ ] Fire path on a real hire: key deleted at OpenRouter (do with the A5 test hire)
+  - [x] Fire path on a real hire (Currency Desk A5 Test, fired in the UI): key deleted at OpenRouter, container gone
   - [x] Tier bug found live (DB stores PRO; read as standard) — fixed; live test 20/20 incl. broker uses the hire's key
   - Note: Data Analyst Two calls OpenRouter directly (predates the broker) — not capped until moved
-- [ ] A5 "Limit reached" reply + 80% warning email
+- [x] A5 "Limit reached" reply + 80% warning email (done 2026-10-16, b6b1355)
+  - Live, through the UI as a buyer: hired Currency Desk A5 Test (Stripe sandbox; owner typed the test card),
+    activated, allowance set to $0.00068, four emails from sai.suram07@gmail.com:
+    1–3 answered (cost metered ~$0.0003 each); 80% email after #2; "allowance used" email after #3;
+    #4 got the fixed limit reply, no run, $0 spent. All read in Gmail.
+  - Seen: account-holder emails land in Inbox; agent replies land in Spam (known). Platform mailbox display
+    name is "Sai Suram" — buyers see that as the sender (owner to decide on renaming to AgentStore).
+  - Not tested live: the buyer-facing safety-stop email/reply (same code path as the allowance ones)
 
 ## Part B — Buying more usage
 - [ ] B1 Usage bar on the buyer dashboard

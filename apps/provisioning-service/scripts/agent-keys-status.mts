@@ -43,7 +43,7 @@ for (const id of ids) {
   const k = remote.find((r) => r.name === `${KEY_PREFIX}${id}`);
   const ours = store.keys?.[id];
   console.log(`\n${d?.agentName ?? "(no such hire)"}  ${id}  [${d?.status ?? "missing"}, ${tier}]`);
-  console.log(`  metered this month (${l?.month ?? "-"}): ${usd(l?.spent)} of ${usd(MONTHLY_ALLOWANCE[tier] + (l?.extra ?? 0))}${l?.extra ? ` (incl. ${usd(l.extra)} bought)` : ""}`);
+  console.log(`  metered this month (${l?.month ?? "-"}): ${usd(l?.spent)} of ${usd((l?.allowanceOverride ?? MONTHLY_ALLOWANCE[tier]) + (l?.extra ?? 0))}${l?.allowanceOverride !== undefined ? " (operator-set allowance)" : ""}${l?.extra ? ` (incl. ${usd(l.extra)} bought)` : ""}`);
   console.log(`  safety stop: ${l?.stoppedAt ? `STOPPED ${l.stoppedAt} — ${l.stopReason}` : "not tripped"}`);
   console.log(`  openrouter key: ${k ? `usage ${usd(k.usage)}, limit ${usd(k.limit)}, ${k.disabled ? "SWITCHED OFF" : "on"}` : "none"}`);
   if (ours && k && ours.hash !== k.hash) console.log("  WARNING: the key file and OpenRouter disagree on which key this hire uses (the hourly sweep fixes this)");
