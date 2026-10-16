@@ -3,7 +3,7 @@ import { prisma } from "@marketplace/db";
 import { config } from "../config.js";
 import { mintTokenForTenant } from "../clients/microsoft-workspace.js";
 import { managementKeyConfigured, openRouterKeys } from "../clients/openrouter-keys.js";
-import { AgentKeyStore, type StopAlert } from "../agent-keys.js";
+import { AgentKeyStore, type BuyerNotice, type StopAlert } from "../agent-keys.js";
 
 /** The one key store for this process: the broker reads it, deprovision revokes from it. */
 export const agentKeys = new AgentKeyStore(
@@ -12,6 +12,95 @@ export const agentKeys = new AgentKeyStore(
 );
 
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
+
+const APP_URL = (process.env.APP_URL || "https://www.agentstore.it.com").replace(/\/+$/, "");
+
+async function sendFromPlatform(to: string, subject: string, lines: string[]): Promise<void> {
+  const mailbox = config.platformMailbox;
+  if (!mailbox || !config.microsoftTenantId) throw new Error("PLATFORM_MAILBOX or tenant not configured");
+  const token = await mintTokenForTenant(config.microsoftTenantId);
+  const res = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/sendMail`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token.access_token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message: {
+        subject,
+        body: { contentType: "Text", content: lines.join("\n") },
+        toRecipients: [{ emailAddress: { address: to } }],
+      },
+      saveToSentItems: false,
+    }),
+  });
+  if (!res.ok) throw new Error(`Graph sendMail ${res.status}`);
+}
+
+export type BuyerEmail = BuyerNotice | "safety_stop" | "safety_lifted";
+
+/**
+ * Tell the account holder (the hire's manager) about their agent's AI usage.
+ * Fixed text only: no model output and no buyer data beyond the agent's name.
+ */
+export async function notifyBuyer(deploymentId: string, kind: BuyerEmail): Promise<void> {
+  const dep = await prisma.deployment.findUnique({
+    where: { id: deploymentId },
+    select: { agentName: true, managerEmail: true },
+  });
+  if (!dep?.managerEmail) {
+    console.warn(`[agent-key-monitor] no manager email for ${deploymentId}; ${kind} notice not sent`);
+    return;
+  }
+  const name = dep.agentName;
+  const dashboard = `${APP_URL}/dashboard`;
+  const more =
+    "It resets on the 1st of next month. If you need more before then, reply to this email and we will add it.";
+  const texts: Record<BuyerEmail, { subject: string; lines: string[] }> = {
+    allowance_80: {
+      subject: `${name} has used 80% of this month's AI allowance`,
+      lines: [
+        "Hi,",
+        "",
+        `${name} has used 80% of the AI usage included in its plan this month.`,
+        "It keeps working normally until the allowance is used up.",
+        "",
+        more,
+        "",
+        `Your dashboard: ${dashboard}`,
+      ],
+    },
+    allowance_reached: {
+      subject: `${name} has used this month's AI allowance`,
+      lines: [
+        "Hi,",
+        "",
+        `${name} has used all the AI usage included in its plan this month, so it is not taking on new requests.`,
+        "Anyone who emails it gets a short reply saying so. Nothing was sent anywhere else.",
+        "",
+        more,
+        "",
+        `Your dashboard: ${dashboard}`,
+      ],
+    },
+    safety_stop: {
+      subject: `${name} has been paused for a check`,
+      lines: [
+        "Hi,",
+        "",
+        `${name} used AI much faster than normal, so the platform paused it as a precaution while we look into it.`,
+        "This is not anything you did, and you have not been charged anything extra.",
+        "Anyone who emails it in the meantime gets a short reply saying it is paused.",
+        "",
+        "We will email you again as soon as it is back.",
+      ],
+    },
+    safety_lifted: {
+      subject: `${name} is back`,
+      lines: ["Hi,", "", `The check is done and ${name} is working again. You can send it requests as usual.`],
+    },
+  };
+  const t = texts[kind];
+  await sendFromPlatform(dep.managerEmail, t.subject, t.lines);
+  console.log(`[agent-key-monitor] told the account holder of ${deploymentId}: ${kind}`);
+}
 
 /** Email the operator that a hire's safety stop tripped. Called by the broker. */
 export async function tellOperator(alert: StopAlert, opts: { test?: boolean } = {}): Promise<void> {

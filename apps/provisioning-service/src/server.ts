@@ -38,7 +38,7 @@ import { isVetDeploymentId, vetRunActive, vetRunModel } from "./utils/vet-broker
 import { cachedHealth, diskUsedFraction, isHealthzRequest } from "./health.js";
 import { provisioningQueue } from "./queue.js";
 import { hasPoller } from "./jobs/poller-manager.js";
-import { agentKeys, tellOperator } from "./jobs/agent-key-monitor.js";
+import { agentKeys, tellOperator, notifyBuyer } from "./jobs/agent-key-monitor.js";
 import { managementKeyConfigured } from "./clients/openrouter-keys.js";
 import { asTier, extractCost, type Tier } from "./agent-keys.js";
 
@@ -868,6 +868,28 @@ export function startProxyServer() {
     // split off the deployment id so we can verify the derived token, then swap in
     // the real key. The request/response bodies stream straight through, so both
     // streaming and non-streaming completions work unchanged.
+    // The agent asks before starting a task whether it may use the model, so it
+    // can tell the sender plainly instead of failing halfway. Same token as the
+    // broker. Answers for this hire only; says nothing about anyone else.
+    if (req.method === "GET" && req.url === "/internal/llm/admission") {
+      const presented = String(req.headers["authorization"] ?? "").replace(/^Bearer\s+/i, "");
+      const dot = presented.lastIndexOf(".");
+      const deploymentId = dot > 0 ? presented.slice(0, dot) : "";
+      if (!deploymentId || !agentTokenMatches(presented.slice(dot + 1), deploymentId, SECRET)) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      if (!managementKeyConfigured() || isVetDeploymentId(deploymentId)) return send(res, 200, { status: "ok" });
+      try {
+        const hire = await hireFor(deploymentId);
+        if (hire.fired) return send(res, 200, { status: "stopped" });
+        return send(res, 200, { status: agentKeys.peek(deploymentId, hire.tier).status });
+      } catch (err: any) {
+        // Unknown is not "no": the broker still enforces on the call itself.
+        console.warn(`[llm-broker] admission check failed for ${deploymentId}: ${err.message}`);
+        return send(res, 200, { status: "ok" });
+      }
+    }
+
     if (req.method === "POST" && req.url?.startsWith("/internal/llm/")) {
       const realKey = process.env.LLM_BROKER_KEY || process.env.OPENROUTER_API_KEY || process.env.LLM_API_KEY || "";
       const upstreamBase = (process.env.LLM_BROKER_UPSTREAM || process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
@@ -994,8 +1016,13 @@ export function startProxyServer() {
             if (cost === null) {
               console.warn(`[llm-broker] no cost reported for a call by ${deploymentId}; not metered`);
             } else {
-              const alert = await agentKeys.recordSpend(deploymentId, metered.tier, cost);
-              if (alert) tellOperator(alert).catch((e) => console.error(`[llm-broker] stop email failed: ${e.message}`));
+              const { stop, notice } = await agentKeys.recordSpend(deploymentId, metered.tier, cost);
+              const mailErr = (what: string) => (e: Error) => console.error(`[llm-broker] ${what} email failed: ${e.message}`);
+              if (stop) {
+                tellOperator(stop).catch(mailErr("stop"));
+                notifyBuyer(deploymentId, "safety_stop").catch(mailErr("buyer stop"));
+              }
+              if (notice) notifyBuyer(deploymentId, notice).catch(mailErr(`buyer ${notice}`));
             }
           }
         } catch (err: any) {
@@ -1311,6 +1338,31 @@ export function startProxyServer() {
     //
     // Runs the job inline rather than re-queueing it: re-queueing would depend on
     // the very thing that just failed.
+    // Operator only: set one hire's monthly allowance (tests, special deals);
+    // {"amount": null} clears it back to the tier's.
+    if (req.method === "POST" && req.url === "/internal/agent-key/allowance") {
+      const authHeader = req.headers["authorization"] ?? "";
+      if (!SECRET || authHeader !== `Bearer ${SECRET}`) {
+        return send(res, 401, { error: "Unauthorized" });
+      }
+      let raw = "";
+      req.on("data", (chunk: string) => { raw += chunk; });
+      req.on("end", () => {
+        try {
+          const { deploymentId, amount } = JSON.parse(raw) as { deploymentId?: string; amount?: number | null };
+          if (!deploymentId) return send(res, 400, { error: "deploymentId is required" });
+          if (amount !== null && !(typeof amount === "number" && amount >= 0)) {
+            return send(res, 400, { error: "amount must be a number >= 0, or null" });
+          }
+          agentKeys.setAllowanceOverride(deploymentId, amount ?? null);
+          send(res, 200, { deploymentId, amount: amount ?? null });
+        } catch (err: any) {
+          send(res, 400, { error: err.message });
+        }
+      });
+      return;
+    }
+
     // Operator only: lift an agent's safety stop after looking at why it tripped.
     if (req.method === "POST" && req.url === "/internal/agent-key/resume") {
       const authHeader = req.headers["authorization"] ?? "";
@@ -1324,6 +1376,7 @@ export function startProxyServer() {
           const { deploymentId } = JSON.parse(raw) as { deploymentId?: string };
           if (!deploymentId) return send(res, 400, { error: "deploymentId is required" });
           const lifted = await agentKeys.resume(deploymentId);
+          if (lifted) notifyBuyer(deploymentId, "safety_lifted").catch((e) => console.error(`[agent-keys] lifted email failed: ${e.message}`));
           send(res, lifted ? 200 : 404, { lifted });
         } catch (err: any) {
           send(res, 500, { error: err.message });

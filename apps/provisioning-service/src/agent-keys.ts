@@ -46,6 +46,11 @@ interface Ledger {
   spent: number;
   /** Usage the buyer bought on top of the allowance this month (B2). */
   extra: number;
+  /** Operator override of the tier's monthly allowance for this hire (tests, special deals). */
+  allowanceOverride?: number;
+  /** Whether the account holder has been told this month: 80% used, all used. */
+  told80?: boolean;
+  told100?: boolean;
   stoppedAt?: string;
   stopReason?: string;
 }
@@ -60,6 +65,14 @@ export type Admission =
   | { status: "ok"; key: string | null }
   | { status: "allowance_reached"; spent: number; allowance: number }
   | { status: "stopped"; reason: string };
+
+/** What the account holder should be told after a call: once per month for each. */
+export type BuyerNotice = "allowance_80" | "allowance_reached";
+
+export interface SpendResult {
+  stop: StopAlert | null;
+  notice: BuyerNotice | null;
+}
 
 export interface StopAlert {
   deploymentId: string;
@@ -168,7 +181,14 @@ export class AgentKeyStore {
     if (!cur) return (all[deploymentId] = { month, spent: 0, extra: 0 });
     if (cur.month !== month) {
       // A safety stop is not lifted by the calendar.
-      all[deploymentId] = { month, spent: 0, extra: 0, stoppedAt: cur.stoppedAt, stopReason: cur.stopReason };
+      all[deploymentId] = {
+        month,
+        spent: 0,
+        extra: 0,
+        allowanceOverride: cur.allowanceOverride,
+        stoppedAt: cur.stoppedAt,
+        stopReason: cur.stopReason,
+      };
     }
     return all[deploymentId];
   }
@@ -178,11 +198,31 @@ export class AgentKeyStore {
    * `key` is null when the hire's own key could not be made; the caller then
    * uses the shared key — the spend is still metered and capped here.
    */
+  private allowanceOf(l: Ledger, tier: Tier): number {
+    return (l.allowanceOverride ?? this.allowances[tier]) + (l.extra || 0);
+  }
+
+  /** Whether the hire may run, without creating a key. For the agent to ask before starting a task. */
+  peek(deploymentId: string, tier: Tier): { status: "ok" | "allowance_reached" | "stopped"; spent: number; allowance: number } {
+    const l = this.ledger(deploymentId);
+    const allowance = this.allowanceOf(l, tier);
+    if (this.revokedIds.has(deploymentId) || l.stoppedAt) return { status: "stopped", spent: l.spent, allowance };
+    return { status: l.spent >= allowance ? "allowance_reached" : "ok", spent: l.spent, allowance };
+  }
+
+  /** Operator: set this hire's monthly allowance, or clear the override with null. */
+  setAllowanceOverride(deploymentId: string, amount: number | null): void {
+    const l = this.ledger(deploymentId);
+    if (amount === null) delete l.allowanceOverride;
+    else l.allowanceOverride = amount;
+    this.save();
+  }
+
   async admit(deploymentId: string, tier: Tier): Promise<Admission> {
     if (this.revokedIds.has(deploymentId)) return { status: "stopped", reason: "fired" };
     const l = this.ledger(deploymentId);
     if (l.stoppedAt) return { status: "stopped", reason: l.stopReason || "safety stop" };
-    const allowance = this.allowances[tier] + (l.extra || 0);
+    const allowance = this.allowanceOf(l, tier);
     if (l.spent >= allowance) return { status: "allowance_reached", spent: l.spent, allowance };
     try {
       return { status: "ok", key: await this.keyFor(deploymentId, tier) };
@@ -237,8 +277,8 @@ export class AgentKeyStore {
    * the hire is refused from its next call, its key is switched off at
    * OpenRouter, and the alert is returned for the operator.
    */
-  async recordSpend(deploymentId: string, tier: Tier, cost: number): Promise<StopAlert | null> {
-    if (!(cost > 0)) return null;
+  async recordSpend(deploymentId: string, tier: Tier, cost: number): Promise<SpendResult> {
+    if (!(cost > 0)) return { stop: null, notice: null };
     const t = this.now();
     const l = this.ledger(deploymentId);
     l.spent += cost;
@@ -254,6 +294,18 @@ export class AgentKeyStore {
       console.warn(`[agent-keys] SAFETY STOP ${deploymentId}: ${l.stopReason}`);
       alert = { deploymentId, tier, spentLastHour, stop };
     }
+    // Tell the account holder once a month at 80% and once when it is all
+    // used. A top-up (extra) raises the allowance, so the 80% mark moves with it.
+    const allowance = this.allowanceOf(l, tier);
+    let notice: BuyerNotice | null = null;
+    if (l.spent >= allowance && !l.told100) {
+      l.told100 = true;
+      l.told80 = true;
+      notice = "allowance_reached";
+    } else if (l.spent >= 0.8 * allowance && !l.told80) {
+      l.told80 = true;
+      notice = "allowance_80";
+    }
     this.save();
     if (alert) {
       const key = this.load().keys[deploymentId];
@@ -263,7 +315,7 @@ export class AgentKeyStore {
         });
       }
     }
-    return alert;
+    return { stop: alert, notice };
   }
 
   /** Lift a safety stop. Operator action only. */
@@ -284,6 +336,9 @@ export class AgentKeyStore {
   addExtra(deploymentId: string, amount: number): void {
     const l = this.ledger(deploymentId);
     l.extra = (l.extra || 0) + amount;
+    // More to spend: the 80% and used-up notices apply afresh to the new total.
+    l.told80 = false;
+    l.told100 = false;
     this.save();
   }
 

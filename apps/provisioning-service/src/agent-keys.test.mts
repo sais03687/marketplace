@@ -123,14 +123,14 @@ console.log("\n-- hourly safety stop --");
   let now = OCT;
   const store = new AgentKeyStore(tmpFile(), api, () => now, undefined, { standard: 100, pro: 100, premium: 100 });
   await store.admit("dep1", "pro"); // stop is $5/hour
-  check("$4.90 in an hour -> no stop", (await store.recordSpend("dep1", "pro", 4.9)) === null);
+  check("$4.90 in an hour -> no stop", (await store.recordSpend("dep1", "pro", 4.9)).stop === null);
   now += 10 * 60e3;
-  const alert = await store.recordSpend("dep1", "pro", 0.2);
+  const alert = (await store.recordSpend("dep1", "pro", 0.2)).stop;
   check("$5.10 within the hour -> stopped at once", alert !== null && alert.stop === 5, JSON.stringify(alert));
   check("key switched off at OpenRouter", [...keys.values()][0].disabled === true);
   const r = await store.admit("dep1", "pro");
   check("next call refused as stopped", r.status === "stopped", JSON.stringify(r));
-  check("a second spend does not alert twice", (await store.recordSpend("dep1", "pro", 1)) === null);
+  check("a second spend does not alert twice", (await store.recordSpend("dep1", "pro", 1)).stop === null);
   store.addExtra("dep1", 100);
   check("buying more does not lift a stop", (await store.admit("dep1", "pro")).status === "stopped");
   now = Date.UTC(2026, 10, 2);
@@ -178,6 +178,49 @@ console.log("\n-- firing and the sweep --");
   const res = await creating;
   const k = [...keys.values()].find((x) => x.name === `${KEY_PREFIX}new`);
   check("sweep never deletes a key being created", Boolean(k) && (res as any).key === k!.secret);
+}
+
+console.log("\n-- telling the account holder (A5) --");
+{
+  const { api } = fakeOpenRouter();
+  let now = OCT;
+  const store = new AgentKeyStore(tmpFile(), api, () => now);
+  const notices: (string | null)[] = [];
+  for (const c of [0.1, 0.2, 0.05, 0.05, 0.05, 0.1, 0.1]) notices.push((await store.recordSpend("d", "standard", c)).notice);
+  // running total: 0.10 0.30 0.35 0.40 0.45 0.55 0.65 of $0.50
+  check("80% notice once, when $0.40 of $0.50 is reached", notices.filter((n) => n === "allowance_80").length === 1 && notices[3] === "allowance_80", notices.join());
+  check("used-up notice once, when $0.50 is passed", notices.filter((n) => n === "allowance_reached").length === 1 && notices[5] === "allowance_reached", notices.join());
+  store.addExtra("d", 1); // allowance now $1.50, spent $0.65
+  const after: (string | null)[] = [];
+  for (const c of [0.3, 0.3, 0.3]) after.push((await store.recordSpend("d", "standard", c)).notice);
+  // 0.95, 1.25 (>= 1.20 -> 80%), 1.55 (>= 1.50 -> used up)
+  check("after buying more, the notices apply afresh", after.join() === ",allowance_80,allowance_reached", after.join());
+  now = Date.UTC(2026, 10, 3);
+  const s2 = (await store.recordSpend("d", "standard", 0.45)).notice;
+  check("new month: notices re-armed", s2 === "allowance_80", String(s2));
+  const jump = new AgentKeyStore(tmpFile(), api, () => OCT);
+  check("one call straight past 100% -> only the used-up notice", (await jump.recordSpend("j", "standard", 0.9)).notice === "allowance_reached");
+}
+{
+  const { api, calls } = fakeOpenRouter();
+  const store = new AgentKeyStore(tmpFile(), api, () => OCT);
+  check("peek: a new hire may run, no key created", store.peek("p", "pro").status === "ok" && calls.create === 0);
+  store.setAllowanceOverride("p", 0.01);
+  await store.recordSpend("p", "pro", 0.011);
+  check("override: $0.01 allowance used up on a pro hire", store.peek("p", "pro").status === "allowance_reached" && (await store.admit("p", "pro")).status === "allowance_reached");
+  store.setAllowanceOverride("p", null);
+  check("clearing the override restores the tier's $7", store.peek("p", "pro").status === "ok" && store.peek("p", "pro").allowance === 7);
+  await store.revoke("p");
+  check("peek after firing -> stopped", store.peek("p", "pro").status === "stopped");
+}
+{
+  const { api } = fakeOpenRouter();
+  let now = OCT;
+  const file = tmpFile();
+  const store = new AgentKeyStore(file, api, () => now);
+  store.setAllowanceOverride("o", 0.02);
+  now = Date.UTC(2026, 10, 2);
+  check("override survives the month rollover", new AgentKeyStore(file, api, () => now).peek("o", "pro").allowance === 0.02);
 }
 
 console.log("\n-- the file --");

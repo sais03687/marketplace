@@ -7213,6 +7213,14 @@ async def _handle_message(message: str, context: dict):
             print(f"[adapter] Rate limited: LLM call budget exceeded for tier {MODEL}", flush=True)
             return
 
+        # Ask before starting rather than fail halfway: an allowance that is used
+        # up, or a safety stop, gets a plain reply and no run at all.
+        admission = await _llm_admission()
+        if admission != "ok":
+            print(f"[adapter] not starting this run: {admission}", flush=True)
+            await _reply_limited(context, admission)
+            return
+
         pre_approved = context.get("session_key", "") in PRE_APPROVED_HOOKS
 
         # Surface the SA email so the agent can tell users what to share with it
@@ -7834,7 +7842,14 @@ async def _handle_message(message: str, context: dict):
         #
         # The text is a constant: no model output, no workspace data, and it
         # goes only to whoever wrote in.
-        await _notify_send_failed(context, e)
+        #
+        # If the platform cut the agent off mid-run (allowance used up, safety
+        # stop), say that instead: "send it again" would only fail again.
+        admission = await _llm_admission()
+        if admission != "ok":
+            await _reply_limited(context, admission)
+        else:
+            await _notify_send_failed(context, e)
 
     finally:
         # Finished, failed, or paused at an approval - all three are the run
@@ -7844,6 +7859,68 @@ async def _handle_message(message: str, context: dict):
         # never reaching this line at all.
         if not interrupted:
             _clear_in_flight(context.get("session_key", ""))
+
+
+# Fixed replies for when the platform will not let this agent use the model:
+# its monthly AI allowance is used up, or a safety stop has paused it. Without
+# these the run crashes on the refused call and the sender is told "something
+# went wrong, send it again" - untrue, and sending again fails the same way.
+_LIMIT_REPLIES = {
+    "allowance_reached": (
+        "Hi,\n\nI've used this month's AI allowance, so I can't work on your "
+        "request right now. Your account admin has been told and can arrange more."
+        "\n\nNothing was sent to anyone else and no files were shared.\n\nBest,\n"
+    ),
+    "stopped": (
+        "Hi,\n\nI've been paused briefly while the platform checks my recent "
+        "activity. This is a precaution, not anything you did. Please try again later."
+        "\n\nNothing was sent to anyone else and no files were shared.\n\nBest,\n"
+    ),
+}
+
+
+async def _llm_admission() -> str:
+    """Whether the platform will let this agent use the model now.
+
+    Returns "ok", "allowance_reached" or "stopped". Anything uncertain - no
+    broker, the platform unreachable, an odd answer - is "ok": the broker still
+    refuses the call itself, so failing open here costs only the nicer message.
+    """
+    if not _llm_broker_url or not DEPLOYMENT_ID or not _secrets.get("AGENT_TOKEN"):
+        return "ok"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{_llm_broker_url.rstrip('/')}/admission",
+                headers={"Authorization": f"Bearer {DEPLOYMENT_ID}.{_secrets['AGENT_TOKEN']}"},
+            )
+        status = resp.json().get("status") if resp.status_code == 200 else "ok"
+        return status if status in _LIMIT_REPLIES else "ok"
+    except Exception as e:
+        print(f"[adapter] admission check failed, carrying on: {e}", flush=True)
+        return "ok"
+
+
+async def _reply_limited(context: dict, status: str) -> None:
+    """Tell the sender, in fixed words, that the agent cannot use AI right now."""
+    try:
+        sender = _extract_email(context.get("sender", ""))
+        if not sender:
+            print(f"[adapter] {status}: no sender to tell", flush=True)
+            return
+        if not _check_and_increment("emails"):
+            print("[adapter] limit notice suppressed by the email budget", flush=True)
+            return
+        await reply_email(
+            message_id=context.get("message_id", ""),
+            text=_LIMIT_REPLIES[status] + AGENT_NAME,
+            fallback_to=sender,
+            fallback_subject=context.get("subject", ""),
+            fallback_thread_id=context.get("thread_id"),
+        )
+        print(f"[adapter] told {sender} the agent cannot run: {status}", flush=True)
+    except Exception as e:
+        print(f"[adapter] could not send the {status} notice: {e}", flush=True)
 
 
 async def _notify_send_failed(context: dict, exc: Exception) -> None:

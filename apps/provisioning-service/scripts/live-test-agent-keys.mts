@@ -126,7 +126,7 @@ try {
   let alert = null;
   for (let i = 0; i < 10 && !alert; i++) {
     const r = await chat(key);
-    if (r.status === 200 && r.cost) alert = await stopStore.recordSpend(id2, "standard", r.cost);
+    if (r.status === 200 && r.cost) alert = (await stopStore.recordSpend(id2, "standard", r.cost)).stop;
   }
   check("safety stop trips on real spend, at once", alert !== null);
   const hash = stopStore.describe().find((d) => d.deploymentId === id2)?.hash!;
