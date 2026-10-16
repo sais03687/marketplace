@@ -24,6 +24,15 @@ Ground rules for every step:
   - [x] Down test: stopped 14:42:29 UTC → down email; back 14:49:42 UTC → up email; mail reader restored
 - [ ] A3 Sentry on web app, provisioning service and agent adapter, with scrubbing
 - [ ] A4 Per-agent OpenRouter keys (created on hire, deleted on fire) + safety stop
+  - [x] Keys per hire, created on first model call (dc64264); key file root-only, gitignored
+  - [x] Found live: OpenRouter's per-key usage lags >10 min and a $0.01 key ran $0.02 → its limits are only a
+        backstop. Broker now meters each call's reported cost and refuses before the call (c3b3c8e):
+        402 agent_allowance_reached / 403 agent_safety_stop / 403 agent_fired
+  - [x] Live: real broker calls (plain + streamed) metered to the cent; fired hire refused; allowance and
+        safety stop tripped on real spend; key switched off and refused by OpenRouter; resume; delete
+  - [ ] Safety-stop email seen by the operator (test sent 2026-10-16)
+  - [ ] Fire path on a real hire: key deleted at OpenRouter (do with the A5 test hire)
+  - Note: Data Analyst Two calls OpenRouter directly (predates the broker) — not capped until moved
 - [ ] A5 "Limit reached" reply + 80% warning email
 
 ## Part B — Buying more usage
