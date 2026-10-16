@@ -181,6 +181,55 @@ AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "")
 AGENT_NAME = os.environ.get("AGENT_NAME", "Agent")
 COMPANY_NAME = os.environ.get("COMPANY_NAME", "")
 COMPANY_DOMAIN = os.environ.get("COMPANY_DOMAIN", "")
+COMPANY_TIMEZONE = os.environ.get("COMPANY_TIMEZONE", "") or "UTC"
+
+
+def _current_time() -> dict:
+    """Today's date and the time now, in the buyer's timezone.
+
+    A model has no clock: asked about "tomorrow", it guesses a date from its
+    training data. Weather Briefing did exactly that in live testing — the
+    forecast was right and the day it was labelled with was not. Every run is
+    told the date by the platform so no creator has to remember to do it.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(COMPANY_TIMEZONE)
+        tz_name = COMPANY_TIMEZONE
+    except Exception:
+        # No tz database in the image, or a name it does not know. UTC, said
+        # plainly, beats a wrong local time.
+        tz, tz_name = timezone.utc, "UTC"
+    now = datetime.now(tz)
+    hour = now.strftime("%I").lstrip("0")
+    text = f"{now.strftime('%A')}, {now.day} {now.strftime('%B %Y')}, {hour}:{now.strftime('%M %p')} {now.strftime('%Z')} ({tz_name})"
+    return {
+        "now": now.isoformat(timespec="seconds"),
+        "today": now.date().isoformat(),
+        "weekday": now.strftime("%A"),
+        "timezone": tz_name,
+        "now_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "now_text": text,
+    }
+
+
+def _run_input(content: str, context: dict) -> dict:
+    """run_agent's content and context, both carrying the date.
+
+    In the text because that is the one thing every agent reads — many never
+    look at context. In context as fields for code that wants to compute with
+    it rather than read it. Added here, at the call, and not to the inbound
+    message: the reply checks compare answers against the buyer's own words,
+    and the date is not something the buyer said.
+    """
+    now = _current_time()
+    return {
+        "content": f"Current date and time: {now['now_text']}\n\n{content}",
+        "context": {**context, **now},
+    }
+
+
 # Boot-time value only. The buyer can change the manager address in Settings at
 # any point, and this container's environment is fixed at creation — so treat this
 # as a starting guess and prefer _manager_email(), which tracks the platform.
@@ -5688,8 +5737,7 @@ async def run_sync(body: RunSyncPayload, request: Request):
     begin_run(thread_id, body.message)
     try:
         result = await run_agent(
-            content=body.message,
-            context=context,
+            **_run_input(body.message, context),
             **_creator_tool_kwargs(
                 run_agent,
                 mcp_fn=_resume_capturing_mcp_fn,
@@ -6924,8 +6972,7 @@ async def receive_teams_message(request: Request):
         begin_run(thread_id)
 
         result = await run_agent(
-            content=teams_content,
-            context=context,
+            **_run_input(teams_content, context),
             **_creator_tool_kwargs(
                 run_agent,
                 mcp_fn=_capturing_mcp_fn,
@@ -6977,8 +7024,7 @@ async def receive_teams_message(request: Request):
             )
             retry_thread_id = f"teams:{conversation_id}:retry"
             retry_result = await run_agent(
-                content=retry_content,
-                context=context,
+                **_run_input(retry_content, context),
                 **_creator_tool_kwargs(
                     run_agent,
                     mcp_fn=_capturing_mcp_fn,
@@ -7216,8 +7262,7 @@ async def _handle_message(message: str, context: dict):
             try:
                 return await asyncio.wait_for(
                     run_agent(
-                        content=message,
-                        context=ctx,
+                        **_run_input(message, ctx),
                         **_creator_tool_kwargs(
                             run_agent,
                             mcp_fn=_email_capturing_mcp_fn,
@@ -7643,8 +7688,7 @@ async def _handle_message(message: str, context: dict):
                 )
                 retry_thread_id = f"email:{session_key}:retry"
                 retry_result = await run_agent(
-                    content=retry_content,
-                    context=context,
+                    **_run_input(retry_content, context),
                     # The same instrumentation the first attempt had. This used
                     # to hand over the raw call_mcp_tool with no resolver and no
                     # verifier, so a retry silently lost all three:
