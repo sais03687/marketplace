@@ -14,7 +14,7 @@ export const agentKeys = new AgentKeyStore(
 const SWEEP_EVERY_MS = 60 * 60 * 1000;
 
 /** Email the operator that a hire's safety stop tripped. Called by the broker. */
-export async function tellOperator(alert: StopAlert): Promise<void> {
+export async function tellOperator(alert: StopAlert, opts: { test?: boolean } = {}): Promise<void> {
   const mailbox = config.platformMailbox;
   if (!mailbox || !config.microsoftTenantId) {
     console.error("[agent-key-monitor] cannot email the safety stop — PLATFORM_MAILBOX or tenant not configured");
@@ -30,10 +30,15 @@ export async function tellOperator(alert: StopAlert): Promise<void> {
     headers: { Authorization: `Bearer ${token.access_token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       message: {
-        subject: `Safety stop: ${dep?.agentName ?? "an agent"} spent $${alert.spentLastHour.toFixed(2)} in under an hour`,
+        subject: opts.test
+          ? `[TEST — nothing was stopped] Safety-stop email check for ${dep?.agentName ?? "an agent"}`
+          : `Safety stop: ${dep?.agentName ?? "an agent"} spent $${alert.spentLastHour.toFixed(2)} in under an hour`,
         body: {
           contentType: "Text",
           content: [
+            ...(opts.test
+              ? ["THIS IS A TEST of the safety-stop email. Nothing was stopped and no key was switched off.", "The figures below are placeholders.", ""]
+              : []),
             `${who} spent $${alert.spentLastHour.toFixed(2)} on AI model calls in under an hour.`,
             `The ${alert.tier} tier's hourly safety stop is $${alert.stop}, so its OpenRouter key has been switched off.`,
             "",
