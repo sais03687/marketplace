@@ -13,11 +13,11 @@ Ground rules for every step:
 
 ## Part A — Protection and alerts
 - [ ] A1 Cost check: real cost per task per agent from OpenRouter; agree allowance and safety stop
-- [ ] A2 Public `/healthz` + outside uptime monitor
+- [x] A2 Public `/healthz` + outside uptime monitor (done 2026-10-16)
   - [x] `/healthz` live at https://api.agentstore.it.com/healthz (f435369): database, queue, disk < 85%,
         agents checking in, mail readers running; answers ok/down + check names only; cached 15 s
-  - [ ] Uptime monitor watching `/healthz` and https://www.agentstore.it.com
-  - [ ] Down test: stop the service → alert arrives → start it → alert clears
+  - [x] UptimeRobot watching `/healthz` and https://www.agentstore.it.com (it checks with HEAD — fixed in 1ca1d8c)
+  - [x] Down test: stopped 14:42:29 UTC → down email; back 14:49:42 UTC → up email; mail reader restored
 - [ ] A3 Sentry on web app, provisioning service and agent adapter, with scrubbing
 - [ ] A4 Per-agent OpenRouter keys (created on hire, deleted on fire) + safety stop
 - [ ] A5 "Limit reached" reply + 80% warning email
