@@ -542,6 +542,8 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                      f"driving runs well below the limits, and this matches typical drive times in the area.")
     lines.append("Times are estimates, not live traffic — road closures and incidents on the day aren't known — "
                  "so the comparison between plans is more reliable than any single arrival time.")
+    if on_roads:
+        lines.append("Map data © OpenStreetMap contributors (ODbL).")
     if req.get("unclear"):
         lines += ["", f"Note: {req['unclear']}"]
 

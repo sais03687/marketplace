@@ -26,16 +26,26 @@ way["highway"~"^(${ROADS})\$"](${SOUTH},${WEST},${NORTH},${EAST});
 out body;
 EOF
 
-ok=""
-for wait in 0 20 60; do
-  sleep "$wait"
-  code=$(curl -s -A "AgentStore-RoutePlanner-build/1.1" --max-time 400 \
-    --data-urlencode data@query.txt https://overpass-api.de/api/interpreter \
-    -o roads.osm.xml -w "%{http_code}") || code="000"
-  if [ "$code" = "200" ] && [ "$(wc -c < roads.osm.xml)" -gt 100000 ]; then ok=1; break; fi
-  echo "map download attempt answered $code; retrying"
-done
-[ -n "$ok" ] || { echo "could not download the road map"; exit 1; }
+# The map extract ships with the agent (roads.osm.xml.gz: OpenStreetMap data taken
+# 2026-10-17, a little larger than the box above, trimmed to it below), so a build
+# does not depend on the public map service: it answered 502 three times during a
+# vetting build on 2026-10-16 and failed it. Without the extract, download one.
+if [ -f roads.osm.xml.gz ]; then
+  echo "using the map extract shipped with the agent"
+  gunzip -c roads.osm.xml.gz > roads.osm.xml
+  rm -f roads.osm.xml.gz
+else
+  ok=""
+  for wait in 0 20 60; do
+    sleep "$wait"
+    code=$(curl -s -A "AgentStore-RoutePlanner-build/1.1" --max-time 400 \
+      --data-urlencode data@query.txt https://overpass-api.de/api/interpreter \
+      -o roads.osm.xml -w "%{http_code}") || code="000"
+    if [ "$code" = "200" ] && [ "$(wc -c < roads.osm.xml)" -gt 100000 ]; then ok=1; break; fi
+    echo "map download attempt answered $code; retrying"
+  done
+  [ -n "$ok" ] || { echo "could not download the road map"; exit 1; }
+fi
 
 NETCONVERT=$(python -c "import sumo, os; print(os.path.join(sumo.SUMO_HOME, 'bin', 'netconvert'))")
 # Lean on purpose: no junction-internal lanes, turnarounds or corner detail.
@@ -46,6 +56,7 @@ NETCONVERT=$(python -c "import sumo, os; print(os.path.join(sumo.SUMO_HOME, 'bin
   --tls.guess-signals --tls.discard-simple --tls.join \
   --keep-edges.by-vclass passenger --remove-edges.isolated \
   --keep-edges.components 1 \
+  --keep-edges.in-geo-boundary "$WEST,$SOUTH,$EAST,$NORTH" \
   --no-internal-links --no-turnarounds --junctions.corner-detail 0 \
   --no-warnings --output.street-names true
 rm -f roads.osm.xml query.txt

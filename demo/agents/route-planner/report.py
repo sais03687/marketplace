@@ -88,6 +88,11 @@ def _draw_panel(panel, xs, ys, faint=False):
     x0, y0 = 16, SIZE - 22
     d.line([(x0, y0), (x0 + 1000 * scale, y0)], fill="black", width=3)
     d.text((x0, y0 - 16), "1 km", fill="black", font=small)
+    # Required by the OpenStreetMap licence (ODbL) on maps made from its data.
+    credit = "© OpenStreetMap contributors"
+    cw = d.textlength(credit, font=small)
+    d.rectangle([SIZE - cw - 12, SIZE - 20, SIZE - 2, SIZE - 2], fill=(255, 255, 255))
+    d.text((SIZE - cw - 7, SIZE - 18), credit, fill=(60, 60, 60), font=small)
     # Legend, top right.
     lines = [(COLOURS[k % len(COLOURS)], v["label"]) for k, v in enumerate(panel["vans"])] + [((0, 0, 0), "Depot")]
     widest = max(d.textlength(t, font=small) for _, t in lines)
