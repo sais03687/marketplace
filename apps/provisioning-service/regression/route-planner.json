@@ -1,0 +1,31 @@
+[
+ {
+  "name": "depot written in a sentence",
+  "expect": [
+   "6 stops"
+  ],
+  "input": "Plan tomorrow's deliveries. Depot 39.7486, -86.1386. Two vans, 30 crates each, leave 9:00.\n- Fountain Square: 39.7517, -86.1301 - 10 crates\n- Near Eastside: 39.7790, -86.1180 - 12 crates\n- Haughville: 39.7720, -86.2010 - 8 crates\n- West Indy: 39.7550, -86.1900 - 9 crates\n- Garfield Park: 39.7322, -86.1395 - 7 crates\n- Butler-Tarkington: 39.8240, -86.1700 - 11 crates"
+ },
+ {
+  "name": "too many crates counts every stop",
+  "expect": [
+   "37"
+  ],
+  "input": "One van with room for 20 crates, leaving 8:00 from 39.7486, -86.1386.\n- Near Eastside: 39.7790, -86.1180 - 15 crates\n- Martindale: 39.8000, -86.1260 - 10 crates\n- Fountain Square: 39.7517, -86.1301 - 12 crates"
+ },
+ {
+  "name": "impossible opening hours",
+  "expect": [
+   "No plan"
+  ],
+  "input": "Two vans, 40 crates each, leave 8:00. Depot 39.7486, -86.1386.\n- Haughville: 39.7720, -86.2010 - 9 crates - open 8:00-8:03\n- Butler-Tarkington: 39.8240, -86.1700 - 11 crates - open 8:00-8:04\n- Near Eastside: 39.7790, -86.1180 - 15 crates"
+ },
+ {
+  "name": "missing van count is stated",
+  "expect": [
+   "3 stops",
+   "Assumed"
+  ],
+  "input": "Plan deliveries from 39.7486, -86.1386 leaving 9:00 to:\n- Fountain Square: 39.7517, -86.1301 - 10 crates\n- Near Eastside: 39.7790, -86.1180 - 12 crates\n- Haughville: 39.7720, -86.2010 - 8 crates"
+ }
+]

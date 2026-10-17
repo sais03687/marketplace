@@ -29,6 +29,8 @@ import { config } from "../config.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CustomTest } from "../queue.js";
+import { regressionTasksFor, missingFrom } from "./regression.js";
+
 
 /**
  * Hooks credential for the throwaway vetting container.
@@ -790,6 +792,48 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
             logLines: testLogs,
           });
           if (!allPassed) report.overallStatus = "fail";
+        }
+
+        // Platform regression tasks (regression.ts): ours, not the creator's, so
+        // they cannot be cherry-picked. A version that gets one wrong fails.
+        const regression = regressionTasksFor(slug);
+        if (regression.length) {
+          if (!process.env.VET_LLM_API_KEY) {
+            report.steps.push({
+              name: "Regression tasks",
+              status: "skip",
+              detail: "no vetting model configured — set VET_LLM_API_KEY to run them",
+            });
+          } else {
+            const lines: string[] = [];
+            const failed: string[] = [];
+            for (const task of regression) {
+              try {
+                const res = await runFetch(`${base}/internal/run-sync`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "x-deployment-token": VET_HOOKS_TOKEN },
+                  body: JSON.stringify({ message: task.input }),
+                  signal: AbortSignal.timeout(vetRunTimeoutMs(manifest)),
+                }, 200);
+                let reply = "";
+                try { reply = (JSON.parse(res.fullBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
+                const missing = missingFrom(reply, task.expect);
+                if (missing.length) failed.push(`${task.name}: missing ${missing.map((m) => `"${m}"`).join(", ")}`);
+                lines.push(`${missing.length ? "FAIL" : "pass"}  ${task.name}`, `  ${reply.slice(0, 300).replace(/\s+/g, " ")}`);
+              } catch (e: any) {
+                failed.push(`${task.name}: run failed (${e.message})`);
+                lines.push(`FAIL  ${task.name}  run failed: ${e.message}`);
+              }
+            }
+            report.steps.push({
+              name: "Regression tasks",
+              status: failed.length ? "fail" : "pass",
+              detail: `${regression.length - failed.length}/${regression.length} answered correctly`,
+              findings: failed,
+              logLines: lines,
+            });
+            if (failed.length) report.overallStatus = "fail";
+          }
         }
 
         // Manual review: a reviewer sends the agent a task and reads its real
