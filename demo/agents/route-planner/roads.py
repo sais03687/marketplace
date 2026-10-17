@@ -153,6 +153,13 @@ class Roads:
         d, e, pos = best
         return e, min(pos, ts.lane.getLength(f"{e}_0")), d
 
+    def street(self, edge: str) -> str:
+        """The street name of an edge, or "" when the map has none."""
+        try:
+            return self.ts.edge.getStreetName(edge) or ""
+        except Exception:
+            return ""
+
     def _gap(self, x, y, edge, pos, lane):
         lx, ly = self.ts.simulation.convert2D(edge, pos, lane, False)
         return math.hypot(x - lx, y - ly)
@@ -212,7 +219,7 @@ class Roads:
             ts.edge.setMaxSpeed(e, max(1.0, limit * share / 100.0))
 
     # ── the simulation ──────────────────────────────────────────────────────────
-    def simulate(self, vans, stop_seconds: float, horizon_s: float = 8 * 3600.0):
+    def simulate(self, vans, stop_seconds: float, horizon_s: float = 8 * 3600.0, log=print):
         """Drive each van's planned route through SUMO and record when it reaches each stop.
 
         `vans` is a list of {"van": n, "stops": [(edge, pos), ...]} with the depot first
@@ -220,7 +227,9 @@ class Roads:
         by apply_peak), turns, junctions and traffic lights, but no other traffic.
 
         Returns {van: {"arrivals": [seconds after departure per stop], "back": seconds
-        or None, "teleported": bool, "expected": stops}}.
+        or None, "teleported": bool, "expected": stops, "waited_s": seconds stood
+        still on the road (red lights, junctions; not stops), "km": distance driven}}.
+        `log` receives one line per event, for the container log.
         """
         ts = self.ts
         plan = {}
@@ -241,20 +250,35 @@ class Roads:
                 ts.vehicle.setStop(vid, edge, pos=min(max(pos, 1.0), length - 0.1), laneIndex=0,
                                    duration=stop_seconds)
             plan[vid] = {"van": v["van"], "arrivals": [], "back": None, "teleported": False,
-                         "expected": len(stops) - 2, "edges": edges}
+                         "expected": len(stops) - 2, "edges": edges, "waited_s": 0.0, "km": 0.0}
+            log(f"sim: van {v['van']} loaded with a {len(edges)}-road route and {len(stops) - 2} stops "
+                f"of {stop_seconds / 60:g} min")
 
         while ts.simulation.getTime() < horizon_s:
             ts.simulationStep()
             now = ts.simulation.getTime()
+            on_road = set(ts.vehicle.getIDList())
+            for vid, p in plan.items():
+                if vid in on_road:
+                    p["km"] = ts.vehicle.getDistance(vid) / 1000
+                    if ts.vehicle.getSpeed(vid) < 0.1 and not ts.vehicle.isStopped(vid):
+                        p["waited_s"] += ts.simulation.getDeltaT()
             for vid in ts.simulation.getStopStartingVehiclesIDList():
                 if vid in plan:
                     plan[vid]["arrivals"].append(now)
+                    p = plan[vid]
+                    log(f"sim t={now / 60:6.1f} min: van {p['van']} reached stop {len(p['arrivals'])}/"
+                        f"{p['expected']} after {p['km']:.1f} km, {p['waited_s'] / 60:.1f} min waiting so far")
             for vid in ts.simulation.getStartingTeleportIDList():
                 if vid in plan:
                     plan[vid]["teleported"] = True
+                    log(f"sim t={now / 60:6.1f} min: van {plan[vid]['van']} stuck and teleported by SUMO")
             for vid in ts.simulation.getArrivedIDList():
                 if vid in plan:
-                    plan[vid]["back"] = now
+                    p = plan[vid]
+                    p["back"] = now
+                    log(f"sim t={now / 60:6.1f} min: van {p['van']} back at the depot, {p['km']:.1f} km, "
+                        f"{p['waited_s'] / 60:.1f} min stood at lights and junctions")
             if all(p["back"] is not None for p in plan.values()):
                 break
         return {p["van"]: p for p in plan.values()}

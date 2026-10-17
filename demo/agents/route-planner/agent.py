@@ -15,6 +15,7 @@ import io
 import math
 import re
 import threading
+import time
 
 from llm_extract import extract
 import roads
@@ -112,25 +113,49 @@ def _solve(cost, demands, vans, capacity):
     return routes
 
 
+def _log(line: str) -> None:
+    """One step of the work, for the container log (not the reply)."""
+    print(f"[route-planner] {line}", flush=True)
+
+
 def _plan_on_roads(points, demands, vans, capacity, peak):
     """Plan on the real road network and drive the plan in SUMO. Raises RoadsUnavailable."""
     net = roads.build_network(points)
     with _SUMO:
+        t0 = time.monotonic()
         R = roads.Roads(net)
         try:
+            _log(f"road network loaded: {len(R._core):,} roads, {time.monotonic() - t0:.1f}s")
             snaps = [R.snap(p["lat"], p["lon"]) for p in points]
+            for p, (edge, _, gap) in zip(points, snaps):
+                _log(f"snapped {p['name']!r} to {R.street(edge) or 'an unnamed road'} ({gap:.0f} m away)")
             if peak:
                 R.apply_peak(*peak)
+                _log(f"rush hour: main roads set to {peak[0]:g}% of their limits, side streets {peak[1]:g}%")
+            t1 = time.monotonic()
             secs, metres, missing = R.matrices([s[0] for s in snaps])
+            legs = [secs[i][j] for i in range(len(points)) for j in range(len(points))
+                    if i != j and secs[i][j] < 1e6] or [0.0]
+            _log(f"driving times: {len(points)}x{len(points)} matrix of road routes in {time.monotonic() - t1:.1f}s, "
+                 f"legs {min(legs) / 60:.1f}-{max(legs) / 60:.1f} min")
             if missing:
                 cut = sorted({points[j]["name"] for _, j in missing} | {points[i]["name"] for i, _ in missing})
                 raise roads.RoadsUnavailable("some stops cannot be reached by road from the others "
                                              f"({', '.join(cut[:5])})")
+            t2 = time.monotonic()
             routes = _solve([[int(round(t)) for t in row] for row in secs], demands, vans, capacity)
             if not routes:
+                _log("solver: no plan fits the capacity")
                 return None
+            planned = sum(secs[a][b] for r in routes for a, b in zip(r["seq"], r["seq"][1:])) / 60
+            _log(f"solver (OR-tools, guided local search): {len(routes)} route(s), {planned:.1f} min of driving "
+                 f"in total, {time.monotonic() - t2:.1f}s")
+            for r in routes:
+                _log(f"  van {r['van']}: " + " -> ".join(points[i]["name"] for i in r["seq"]))
+            t3 = time.monotonic()
             sim = R.simulate([{"van": r["van"], "stops": [snaps[i][:2] for i in r["seq"]]} for r in routes],
-                             STOP_MINUTES * 60)
+                             STOP_MINUTES * 60, log=_log)
+            _log(f"simulation finished in {time.monotonic() - t3:.1f}s of computing")
             for r in routes:
                 legs = list(zip(r["seq"], r["seq"][1:]))
                 r["km"] = sum(metres[a][b] for a, b in legs) / 1000
@@ -140,6 +165,7 @@ def _plan_on_roads(points, demands, vans, capacity, peak):
                                  and not s["teleported"])
                 r["arrive_s"] = s["arrivals"]
                 r["back_s"] = s["back"]
+                r["waited_min"] = s["waited_s"] / 60
                 r["geo"] = R.geo(s["edges"])
             far = [(points[i]["name"], d) for i, (_, _, d) in enumerate(snaps) if d > roads.SNAP_WARN_M]
             return {"routes": routes, "far": far}
@@ -238,6 +264,9 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     main_pct = main_pct if 5 <= main_pct <= 100 else PEAK_MAIN_PCT
     peak = (main_pct, max(main_pct, PEAK_MINOR_PCT)) if rush else None
 
+    _log(f"request: {len(stops)} stops, {vans} van(s), capacity {capacity:g}, "
+         f"departure {_clock(start_min, 0) if start_min is not None else 'not given'}, "
+         f"rush hour {'yes, main roads ' + format(main_pct, 'g') + '%' if rush else 'no'}")
     on_roads, why_not = None, ""
     try:
         on_roads = await asyncio.to_thread(_plan_on_roads, points, demands, vans, capacity, peak)
@@ -246,6 +275,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                     "than a single van carries. Check the amounts and capacity."}
     except roads.RoadsUnavailable as exc:
         why_not = str(exc)
+        _log(f"real roads not used: {why_not}; falling back to straight-line estimates")
     except Exception as exc:   # anything unexpected in the road path: still answer, on the estimate
         print(f"[route-planner] road planning failed: {type(exc).__name__}: {exc}", flush=True)
         why_not = "the road simulation failed"
@@ -278,8 +308,9 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
             when = [""] * len(r["seq"])
         back = f"{points[0]['name']} (back {_clock(start_min, r['back_s'])})" if r["complete"] else points[0]["name"]
         names = " → ".join([points[0]["name"]] + stops_txt + [back])
+        waits = f" and {r['waited_min']:.0f} min at traffic lights and junctions" if r["complete"] else ""
         lines.append(f"Van {r['van']}: {r['km']:.1f} km, about {minutes:.0f} min including {STOP_MINUTES:g} min "
-                     f"per stop" + (f", load {load:g}" if capacity else "") + f"\n  {names}")
+                     f"per stop{waits}" + (f", load {load:g}" if capacity else "") + f"\n  {names}")
         rows += [f"{r['van']},{k},{points[i]['name']},{points[i]['lat']},{points[i]['lon']},{demands[i]:g},{w}"
                  for k, (i, w) in enumerate(zip(r["seq"], when))]
     lines += ["", f"Total: {total_km:.1f} km."]
