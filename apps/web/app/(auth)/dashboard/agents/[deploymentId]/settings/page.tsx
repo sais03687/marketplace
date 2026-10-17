@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Check, Loader2, X } from "lucide-react";
+import { WorksWithCard } from "@/components/dashboard/works-with-card";
 
 interface Question {
   id: string;
@@ -458,6 +459,8 @@ export default function SettingsPage() {
           </Button>
         </CardContent>
       </Card>
+
+      <WorksWithCard deploymentId={deploymentId} />
 
       <Card>
         <CardHeader>

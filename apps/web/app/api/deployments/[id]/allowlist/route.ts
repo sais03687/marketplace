@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { jsonError, jsonSuccess, parseBody, requireOrg, requireDeploymentAccess } from "@/lib/api-utils";
 import { agentTokenMatches } from "@/lib/agent-token";
+import { teammatesFor } from "@/lib/teammates";
 
 const allowlistSchema = z.object({
   allowedEmails: z.array(z.string()).max(200),
@@ -57,6 +58,11 @@ export async function GET(
 
   if (!deployment) return jsonError("Not found", 404);
 
+  // Kept out of allowedEmails on purpose: the Settings page reads and writes that
+  // list, and folding these in would save them there permanently - still
+  // admitted after the toggle went off or the agent was fired.
+  const teammates = isPlatformCaller ? await teammatesFor(prisma, id) : [];
+
   return jsonSuccess({
     allowedEmails: (deployment.allowedEmails as string[]) ?? [],
     // The domains Microsoft says the buyer's tenant owns — not Company.domain,
@@ -79,6 +85,10 @@ export async function GET(
     // has told us about. So this tier has no wildcard at all: the manager, plus
     // whoever the buyer lists explicitly.
     trustAgentOwnDomain: deployment.mailboxLocation !== "platform",
+    // The buyer's other running agents, when the buyer has let their agents
+    // email each other; empty otherwise. Readers admit these as senders and
+    // recipients, and the poller tells the agent who they are.
+    teammates,
   });
 }
 

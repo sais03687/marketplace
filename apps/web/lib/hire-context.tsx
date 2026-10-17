@@ -22,6 +22,8 @@ export interface HireState {
   mailboxLocation: "platform" | "buyer_org";
   // Step 4
   managerEmail: string;
+  // Ids of the buyer's other hires this agent will work with (email each other).
+  worksWith: string[];
   // Step 5 — interview answers collected during hire
   onboardingAnswers: Record<string, string>;
   // Step 6
@@ -76,6 +78,7 @@ export function HireProvider({
       // Continue button with no way forward. They can still choose it on step 3.
       mailboxLocation: "platform",
       managerEmail: "",
+      worksWith: [],
       onboardingAnswers: {},
       deploymentId: null,
       deploymentStatus: null,

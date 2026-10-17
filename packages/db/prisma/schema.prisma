@@ -173,6 +173,9 @@ model Deployment {
   approvalWebhookToken          String                  @default(cuid())
   managerEmail                  String?                         @map("weeklyDigestEmail")
   allowedEmails                 Json                    @default("[]")
+  // Ids of this buyer's other hires this agent works with, chosen at hire time
+  // or in Settings. Kept symmetric: each side lists the other. See lib/teammates.ts.
+  worksWith                     Json                    @default("[]")
   autoUpdate                    Boolean                 @default(true)
   createdAt                     DateTime                @default(now())
   updatedAt                     DateTime                @updatedAt

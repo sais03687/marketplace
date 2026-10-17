@@ -20,7 +20,7 @@ const STEPS = [
   { label: "Account", component: StepAccount },
   { label: "Name", component: StepName },
   { label: "Connect", component: StepConnect },
-  { label: "Notifications", component: StepNotifications },
+  { label: "Team", component: StepNotifications },
   { label: "Setup", component: StepInterview },
   { label: "Confirm", component: StepConfirmation },
 ];

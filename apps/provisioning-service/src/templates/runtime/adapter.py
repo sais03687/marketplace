@@ -4166,6 +4166,13 @@ def _should_require_approval(
     # and everyone else requires approval.
     if COMPANY_DOMAIN and email.endswith("@" + COMPANY_DOMAIN.strip().lower()):
         return False, f"policy=external-only, recipient on company domain ({email})"
+    # One of the buyer's own agents that the buyer chose for this one to work
+    # with is inside the company, like a colleague. On the email tier its address
+    # is on our domain, not theirs, so without this every handoff waited for an
+    # approval. Read from the cached allowlist: this check is synchronous, and
+    # the list was fetched when the mail that started this run was admitted.
+    if email in _teammate_emails(_allowlist_cache.get("data") or {}):
+        return False, f"policy=external-only, recipient is a teammate agent ({email})"
     return True, f"policy=external-only, recipient is external ({email})"
 
 
@@ -4600,6 +4607,16 @@ async def _load_allowlist() -> dict | None:
         return None
 
 
+async def _teammates() -> list[dict]:
+    """The buyer's other running agents, or [] (setting off, or list unavailable)."""
+    allow = await _load_allowlist()
+    mates = (allow or {}).get("teammates") or []
+    return [
+        {k: str(t.get(k) or "") for k in ("name", "agent", "email", "does")}
+        for t in mates if isinstance(t, dict) and t.get("email")
+    ]
+
+
 def _share_recipient_allowed(address: str, allow: dict) -> bool:
     """May a file be shared with this address?
 
@@ -4636,7 +4653,7 @@ def _share_recipient_allowed(address: str, allow: dict) -> bool:
     #
     # COMPANY_DOMAIN (the container env) is deliberately not consulted: it is
     # injected from that same unverified record.
-    domains = {_agent_own_domain()}
+    domains = {_agent_own_domain()} if _trusts_own_domain(allow) else set()
     for d in allow.get("companyDomains") or []:
         d = str(d).strip().lower()
         if d:
@@ -4649,6 +4666,8 @@ def _share_recipient_allowed(address: str, allow: dict) -> bool:
 
     if manager and addr == manager:
         return True
+    if addr in _teammate_emails(allow):
+        return True
     for domain in domains:
         if domain and addr.endswith("@" + domain):
             return True
@@ -4658,6 +4677,28 @@ def _share_recipient_allowed(address: str, allow: dict) -> bool:
         if addr == e:
             return True
     return False
+
+
+def _trusts_own_domain(allow: dict) -> bool:
+    """Does the agent's own mail domain count as inside the organisation?
+
+    On the org tier yes: the mailbox lives in the buyer's tenant. On the email
+    tier no: it lives in ours, shared with every other buyer's agents, so trusting
+    it let one buyer's agent start a conversation with another's. The poller has
+    read this flag since 2026-09-17; the adapter applied the domain
+    unconditionally until 2026-10-17. Absent means an older platform, and the
+    narrow reading of silence is the safe one, as in the poller.
+    """
+    return bool((allow or {}).get("trustAgentOwnDomain", False))
+
+
+def _teammate_emails(allow: dict) -> set[str]:
+    """Addresses of the buyer's other agents, when the buyer lets them talk."""
+    return {
+        str(t.get("email") or "").strip().lower()
+        for t in (allow or {}).get("teammates") or []
+        if isinstance(t, dict) and t.get("email")
+    }
 
 
 def _agent_own_domain() -> str:
@@ -4696,7 +4737,10 @@ def _sender_allowed(address: str, allow: dict) -> bool:
 
     if manager and addr == manager:
         return True
-    for domain in (_agent_own_domain(), str(allow.get("companyDomain") or "").strip().lower()):
+    if addr in _teammate_emails(allow):
+        return True
+    own = _agent_own_domain() if _trusts_own_domain(allow) else ""
+    for domain in (own, str(allow.get("companyDomain") or "").strip().lower()):
         if domain and addr.endswith("@" + domain):
             return True
     for e in entries:
@@ -6601,6 +6645,11 @@ async def receive_agentmail_webhook(request: Request):
         # handle to file_resolver_fn for the bytes. Text files are also inlined
         # in the message text, as before.
         "attachments": attachment_list,
+        # The buyer's other agents, when the buyer lets their agents email each
+        # other: [{name, agent, email, does}]. The message text carries the same
+        # list as a "## Your teammates" section; this is for code that would
+        # rather not parse it. Empty when the setting is off.
+        "teammates": await _teammates(),
     }
 
     asyncio.create_task(_handle_message(formatted, context))

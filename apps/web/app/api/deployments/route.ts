@@ -11,6 +11,7 @@ import {
 import { redactSecrets } from "@/lib/redact";
 import { getStripe } from "@/lib/stripe";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
+import { setWorksWith } from "@/lib/teammates";
 
 const createDeploymentSchema = z.object({
   agentId: z.string().min(1),
@@ -28,6 +29,9 @@ const createDeploymentSchema = z.object({
   buyerMicrosoftTenantId: z.string().optional(),
   // Where the agent's mailbox lives: platform (default) or buyer's org
   mailboxLocation: z.enum(["platform", "buyer_org"]).optional().default("platform"),
+  // Which of the buyer's other hires this agent works with (they may email each
+  // other). Ids are checked against the buyer's own hires in setWorksWith.
+  worksWith: z.array(z.string()).max(50).optional(),
 });
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3002";
@@ -159,6 +163,12 @@ export async function POST(request: Request) {
       status: getStripe() && agent.pricePerMonth > 0 ? "PENDING_PAYMENT" : "PROVISIONING",
     },
   });
+
+  // Both sides of each link at once. The new hire is not ACTIVE yet, so the
+  // chosen agents only see it in their teammates once it is running.
+  if (data.worksWith?.length) {
+    await setWorksWith(prisma, company.id, deployment.id, data.worksWith);
+  }
 
   const stripe = getStripe();
 

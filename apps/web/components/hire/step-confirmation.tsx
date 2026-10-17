@@ -59,6 +59,7 @@ export function StepConfirmation() {
             ? state.onboardingAnswers
             : undefined,
           acceptedHosts: acceptedHosts && connectsTo?.length ? connectsTo : undefined,
+          worksWith: state.worksWith?.length ? state.worksWith : undefined,
         }),
       });
 
