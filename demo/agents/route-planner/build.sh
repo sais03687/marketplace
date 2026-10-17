@@ -61,3 +61,7 @@ rm -f core.txt
 printf '{"name": "%s", "south": %s, "west": %s, "north": %s, "east": %s}\n' \
   "$NAME" "$SOUTH" "$WEST" "$NORTH" "$EAST" > map_area.json
 echo "built roads.net.xml for $NAME"
+
+# The grey street background every map and the replay are drawn on, drawn once
+# here so the running agent never redraws 26,000 streets per email.
+python roads.py background roads.net.xml background.png map_area.json
