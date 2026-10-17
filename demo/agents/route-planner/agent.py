@@ -23,6 +23,7 @@ import threading
 import time
 
 from llm_extract import extract
+import geocode
 import report
 import roads
 
@@ -54,10 +55,11 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "depot": {"type": "object", "properties": {
-            "name": {"type": "string"}, "lat": {"type": "number"}, "lon": {"type": "number"}}},
+            "name": {"type": "string"}, "lat": {"type": "number"}, "lon": {"type": "number"},
+            "address": {"type": "string"}}},
         "stops": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"}, "lat": {"type": "number"}, "lon": {"type": "number"},
-            "demand": {"type": "number"}, "opens": {"type": "string"}, "closes": {"type": "string"}}}},
+            "address": {"type": "string"}, "demand": {"type": "number"}, "opens": {"type": "string"}, "closes": {"type": "string"}}}},
         "vans": {"type": "integer"},
         "van_capacity": {"type": "number"},
         "rush_hour": {"type": "boolean"},
@@ -89,7 +91,9 @@ INSTRUCTIONS = (
     "'current_routes' is how the vans run TODAY if the sender describes it: one entry per van with the stop "
     "names in the order visited, using the stop names exactly as listed, not including the depot; [] if not "
     "given. 'fuel_price_per_gallon', 'driver_cost_per_hour' and 'deliveries_per_week' are numbers the sender "
-    "gives, or 0. Do not invent coordinates: a stop without them goes in 'unclear'."
+    "gives, or 0. A stop (or the depot) may be given as a street address instead of coordinates: copy it "
+    "exactly into 'address' and set lat and lon to 0. Never invent coordinates or addresses: a stop with "
+    "neither goes in 'unclear'."
 )
 
 
@@ -127,17 +131,46 @@ def _window(text: str):
     return None
 
 
+# "- Fountain Square Pantry: 1119 S State Ave, Indianapolis, IN 46203 - 12 crates - 9:00-10:30"
+# A bullet is required, so a sentence with a colon in it is never taken for a stop.
+ADDRESS_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(?P<name>[^\n:]{2,80}?)\s*:\s*(?P<rest>[^\n]+)$", re.M)
+SEGMENT_SPLIT = re.compile(r"\s+[-–—]\s+|;")
+COORDS_FIRST = re.compile(r"\s*-?\d{1,2}\.\d+\s*,\s*-?\d{1,3}\.\d+")
+
+
+def _extras(rest: str):
+    """(demand, window) from what follows a stop's location."""
+    win = _window(rest)
+    if win:
+        rest = rest[:win[2][0]] + rest[win[2][1]:]
+    amount = re.search(r"(\d+(?:\.\d+)?)", rest)
+    return (float(amount.group(1)) if amount else 0.0), (win[:2] if win else None)
+
+
 def _listed_points(text: str) -> list[dict]:
+    """Stops written one per line, each with coordinates or a street address.
+
+    Read from the email directly rather than by the model: a model asked to copy
+    dozens of numbers drops or mangles some, and one wrong digit moves a stop miles.
+    """
     points = []
     for m in POINT_LINE.finditer(text or ""):
-        rest = m.group("rest")
-        win = _window(rest)
-        if win:
-            rest = rest[:win[2][0]] + rest[win[2][1]:]
-        amount = re.search(r"(\d+(?:\.\d+)?)", rest)
+        demand, window = _extras(m.group("rest"))
         points.append({"name": m.group("name").strip(), "lat": float(m.group("lat")), "lon": float(m.group("lon")),
-                       "demand": float(amount.group(1)) if amount else 0.0,
-                       "window": win[:2] if win else None})
+                       "demand": demand, "window": window, "_at": m.start()})
+    for m in ADDRESS_LINE.finditer(text or ""):
+        if COORDS_FIRST.match(m.group("rest")):
+            continue   # a coordinates line, already read above
+        segments = [s.strip() for s in SEGMENT_SPLIT.split(m.group("rest")) if s.strip()]
+        address = segments[0] if segments else ""
+        # An address has a house number and a street name; anything else on the
+        # line ("12 crates", "9:00-10:30") is not one.
+        if not (re.search(r"\d", address) and re.search(r"[A-Za-z]{3,}", address)) or _window(address):
+            continue
+        demand, window = _extras(" - ".join(segments[1:]))
+        points.append({"name": m.group("name").strip(), "address": address, "demand": demand, "window": window,
+                       "_at": m.start()})
+    points.sort(key=lambda p: p.pop("_at"))
     return points
 
 
@@ -194,6 +227,10 @@ def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=Non
         td = routing.GetDimensionOrDie("time")
         for v in range(vans):
             td.CumulVar(routing.Start(v)).SetRange(0, 0)
+        # Count each van's whole time out, waiting included, not only its driving.
+        # Without this a van could be sent across town to sit outside a stop until
+        # it opens - free to the solver, a paid driver doing nothing in reality.
+        td.SetSpanCostCoefficientForAllVehicles(1)
         for node, (o, c) in (windows or {}).items():
             td.CumulVar(mgr.NodeToIndex(node)).SetRange(max(0, int(o)), max(0, int(c)))
     params = pywrapcp.DefaultRoutingSearchParameters()
@@ -389,15 +426,50 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
         depot = listed.pop(depot_i)
         stops = listed
     else:
-        depot = req.get("depot") or {}
+        def usable(s):
+            has_xy = isinstance(s.get("lat"), (int, float)) and isinstance(s.get("lon"), (int, float)) \
+                and (s["lat"], s["lon"]) != (0, 0)
+            if has_xy:
+                return {**s, "address": ""}
+            if str(s.get("address") or "").strip():
+                return {**s, "lat": None, "lon": None}
+            return None
+
+        depot = usable(req.get("depot") or {}) or {}
         stops = []
         for s in req.get("stops") or []:
-            if isinstance(s.get("lat"), (int, float)) and isinstance(s.get("lon"), (int, float)):
+            s = usable(s)
+            if s:
                 o, c = _clock_text(s.get("opens")), _clock_text(s.get("closes"))
                 stops.append({**s, "window": (o, c) if o is not None and c is not None and c > o else None})
-    if not isinstance(depot.get("lat"), (int, float)) or len(stops) < 2:
-        return {"action": "reply_email", "text": "I need the depot and at least two stops, each with a latitude "
-                "and longitude, to plan routes. Paste them as a list (name, lat, lon, and optionally the amount)."}
+    if not depot or len(stops) < 2:
+        return {"action": "reply_email", "text": "I need the depot and at least two stops to plan routes. List them "
+                "one per line as name: street address (or latitude, longitude), and optionally the amount and "
+                "opening hours — for example \"- Fountain Square Pantry: 1119 S State Ave, Indianapolis, IN 46203 "
+                "- 12 crates - 9:00-10:30\"."}
+
+    # Street addresses become coordinates before anything else runs.
+    to_find = [p for p in [depot] + stops if p.get("address") and not isinstance(p.get("lat"), (int, float))]
+    if to_find:
+        try:
+            found = await geocode.locate_all([p["address"] for p in to_find])
+        except geocode.GeocoderUnavailable as exc:
+            return {"action": "reply_email", "text": f"Sorry — {exc} just now, so I couldn't look up the addresses. "
+                    "Please send it again in a few minutes, or give latitude and longitude instead."}
+        missing = []
+        for p, f in zip(to_find, found):
+            if f is None:
+                missing.append(f"{p['name']} ({p['address']})")
+            else:
+                p["lat"], p["lon"], p["matched"] = f
+        _log(f"addresses: {len(to_find) - len(missing)} of {len(to_find)} located with the Census geocoder")
+        for p in to_find:
+            if p.get("matched"):
+                _log(f"  {p['name']!r}: {p['address']!r} -> {p['matched']} ({p['lat']:.5f}, {p['lon']:.5f})")
+        if missing:
+            return {"action": "reply_email", "text": "I couldn't find these addresses: " + "; ".join(missing) +
+                    ". Check the street, number and ZIP code (US addresses only), or give latitude and longitude "
+                    "for them, and send the list again."}
     stops = stops[:60]
     far = [s["name"] for s in stops if _km(depot, s) / 1.3 > MAX_KM_FROM_DEPOT]
     if far:
@@ -405,7 +477,8 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                 f"which usually means a typo in a coordinate: {', '.join(far)}. Check them and send again."}
     vans = max(1, min(int(req.get("vans") or 1), 10))
     capacity = float(req.get("van_capacity") or 0)
-    points = [{"name": depot.get("name") or "Depot", "lat": depot["lat"], "lon": depot["lon"]}] + stops
+    points = [{"name": depot.get("name") or "Depot", "lat": depot["lat"], "lon": depot["lon"],
+               "address": depot.get("address", ""), "matched": depot.get("matched", "")}] + stops
     demands = [0.0] + [float(s.get("demand") or 0) for s in stops]
 
     if capacity > 0 and sum(demands) > capacity * vans:
@@ -502,7 +575,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     elif current_note:
         lines += [f"Note: {current_note}, so I haven't compared with today's routes.", ""]
 
-    rows = ["van,order,stop,lat,lon,demand,opens,closes,arrives,street"]
+    rows = ["van,order,stop,address,matched_address,lat,lon,demand,opens,closes,arrives,street"]
     for r in routes:
         load = sum(demands[i] for i in r["seq"])
         if r["complete"]:
@@ -523,7 +596,8 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
         for k, (i, w) in enumerate(zip(r["seq"], when)):
             win = points[i].get("window")
             street = on_roads["streets"][i] if on_roads else ""
-            rows.append(f"{r['van']},{k},{points[i]['name']},{points[i]['lat']},{points[i]['lon']},{demands[i]:g},"
+            rows.append(f"{r['van']},{k},{points[i]['name']},\"{points[i].get('address', '')}\","
+                        f"\"{points[i].get('matched', '')}\",{points[i]['lat']},{points[i]['lon']},{demands[i]:g},"
                         f"{_clock(0, win[0] * 60) if win else ''},{_clock(0, win[1] * 60) if win else ''},{w},"
                         f"\"{street}\"")
     lines += ["", f"Total: {sum(r['km'] for r in routes):.1f} km."]
@@ -559,7 +633,9 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     lines.append("Times are estimates, not live traffic — road closures and incidents on the day aren't known — "
                  "so the comparison between plans is more reliable than any single arrival time.")
     if on_roads:
-        lines.append("Map data © OpenStreetMap contributors (ODbL).")
+        lines.append("Map data © OpenStreetMap contributors (ODbL)."
+                     + (" Addresses located with the U.S. Census Bureau Geocoder; the matched addresses are in "
+                        "routes.csv." if any(p.get("matched") for p in points) else ""))
     if req.get("unclear"):
         lines += ["", f"Note: {req['unclear']}"]
 
@@ -653,7 +729,9 @@ def _attach_pictures(attach_fn, points, on_roads, start_min, lines, req, fuel_pr
                                                 "main_road_speed_pct", "shift_hours", "current_routes")},
             "assumptions": {"stop_minutes": STOP_MINUTES, "fuel_price_per_gallon": fuel_price,
                             "driver_cost_per_hour": driver_rate, "emission_model": roads.VAN_EMISSION_CLASS},
-            "stops": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"], "matched_street": on_roads["streets"][i],
+            "stops": [{"name": p["name"], "address_given": p.get("address", ""),
+                       "address_matched": p.get("matched", ""), "lat": p["lat"], "lon": p["lon"],
+                       "matched_street": on_roads["streets"][i],
                        "opens_closes": p.get("window")} for i, p in enumerate(points)],
             "driving_minutes": {"order": names,
                                 "matrix": [[round(s / 60, 1) for s in row] for row in on_roads["secs"]]},

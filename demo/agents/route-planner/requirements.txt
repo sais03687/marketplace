@@ -3,3 +3,4 @@ libsumo
 ortools
 matplotlib
 langchain-openai
+httpx
