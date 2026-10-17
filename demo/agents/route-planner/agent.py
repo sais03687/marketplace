@@ -27,8 +27,15 @@ import report
 import roads
 
 STOP_MINUTES = 5.0
-PEAK_MAIN_PCT = 70.0        # rush hour default: main roads at this share of their limit
-PEAK_MINOR_PCT = 90.0       # ... and side streets at this share
+# Real city driving runs well below the speed limit (turns, lights, parking,
+# stopping and starting). On 2026-10-16 eight legs of the demo plan were looked up by
+# hand in a mainstream map service for an off-peak evening: road distances agreed
+# within ~10%, but drive times were ~1.5x what SUMO simulated at full limits. Roads
+# are therefore taken at 65% of their limits by default. Only this one factor came
+# from the check; no outside routing data is used by the agent.
+BASE_SPEED_PCT = 65.0
+PEAK_MAIN_PCT = 45.0        # rush hour default: main roads at this share of their limit
+PEAK_MINOR_PCT = 58.0       # ... and side streets at least this share
 # Stated assumptions; the sender can give their own and the reply says which were used.
 FUEL_PRICE_PER_GALLON = 3.60
 DRIVER_COST_PER_HOUR = 25.0
@@ -209,7 +216,7 @@ def _attach_sim(r, s):
     r["edges"] = s["edges"]
 
 
-def _plan_on_roads(points, demands, vans, capacity, peak, windows, shift_s, current):
+def _plan_on_roads(points, demands, vans, capacity, speeds, windows, shift_s, current):
     """Plan on the real road network and drive the plan (and today's routes) in SUMO.
 
     Raises RoadsUnavailable. Everything the pictures need is copied out before the
@@ -226,9 +233,8 @@ def _plan_on_roads(points, demands, vans, capacity, peak, windows, shift_s, curr
             for p, street, (_, _, gap) in zip(points, streets, snaps):
                 _log(f"snapped {p['name']!r} to {street or 'an unnamed road'} ({gap:.0f} m away)")
             xy = [R.xy(p["lat"], p["lon"]) for p in points]
-            if peak:
-                R.apply_peak(*peak)
-                _log(f"rush hour: main roads set to {peak[0]:g}% of their limits, side streets {peak[1]:g}%")
+            R.apply_peak(*speeds)
+            _log(f"road speeds: main roads at {speeds[0]:g}% of their limits, side streets {speeds[1]:g}%")
             t1 = time.monotonic()
             secs, metres, missing = R.matrices([s[0] for s in snaps])
             legs = [secs[i][j] for i in range(len(points)) for j in range(len(points))
@@ -304,7 +310,7 @@ def _clock(start_min, offset_s):
 
 def _totals(plan, fuel_price, driver_rate):
     """Distance, van hours, fuel, money and CO2 for a simulated plan."""
-    km = sum(r.get("sim_km") or r["km"] for r in plan)
+    km = sum(r["km"] for r in plan)
     hours = sum((r["back_s"] if r.get("complete") else r["planned_min"] * 60) for r in plan) / 3600
     fuel = sum(r.get("fuel_l", 0.0) for r in plan)
     co2 = sum(r.get("co2_kg", 0.0) for r in plan)
@@ -408,7 +414,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                                           (7 * 60 <= start_min < 9 * 60 + 30 or 16 * 60 <= start_min < 18 * 60 + 30))
     main_pct = float(req.get("main_road_speed_pct") or 0)
     main_pct = main_pct if 5 <= main_pct <= 100 else PEAK_MAIN_PCT
-    peak = (main_pct, max(main_pct, PEAK_MINOR_PCT)) if rush else None
+    speeds = (main_pct, max(main_pct, PEAK_MINOR_PCT)) if rush else (BASE_SPEED_PCT, BASE_SPEED_PCT)
     fuel_price = float(req.get("fuel_price_per_gallon") or 0) or FUEL_PRICE_PER_GALLON
     driver_rate = float(req.get("driver_cost_per_hour") or 0) or DRIVER_COST_PER_HOUR
     per_week = float(req.get("deliveries_per_week") or 0)
@@ -427,7 +433,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
          f"today's routes {'given' if current else 'not given' + (' (' + current_note + ')' if current_note else '')}")
     on_roads, why_not = None, ""
     try:
-        on_roads = await asyncio.to_thread(_plan_on_roads, points, demands, vans, capacity, peak, windows,
+        on_roads = await asyncio.to_thread(_plan_on_roads, points, demands, vans, capacity, speeds, windows,
                                            shift_s, current)
         if on_roads is None:
             return {"action": "reply_email", "text": _no_plan_text(vans, windows, shift_h)}
@@ -485,7 +491,8 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
         load = sum(demands[i] for i in r["seq"])
         if r["complete"]:
             minutes = r["back_s"] / 60
-            stops_txt = [f"{points[i]['name']} ({_clock(start_min, t)})" for i, t in zip(r["seq"][1:-1], r["arrive_s"])]
+            stops_txt = [f"{points[i]['name']} ({_arrival_text(start_min, t, windows.get(i))})"
+                         for i, t in zip(r["seq"][1:-1], r["arrive_s"])]
             when = [_clock(start_min, 0)] + [_clock(start_min, t) for t in r["arrive_s"]] + [_clock(start_min, r["back_s"])]
         else:
             minutes = r["planned_min"]
@@ -530,8 +537,11 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
         lines.append(f"Rush hour: main roads at {main_pct:g}% of their speed limits and side streets at "
                      f"{max(main_pct, PEAK_MINOR_PCT):g}%. That is an assumption, not measured traffic — tell me "
                      f"your own figure (for example \"main roads at 50%\") to see how it changes the plan.")
-    lines.append("Times are estimates from speed limits and simulated junctions, not live traffic; the comparison "
-                 "between plans is more reliable than any single arrival time.")
+    elif on_roads:
+        lines.append(f"Outside rush hour, roads are taken at {BASE_SPEED_PCT:g}% of their speed limits: real city "
+                     f"driving runs well below the limits, and this matches typical drive times in the area.")
+    lines.append("Times are estimates, not live traffic — road closures and incidents on the day aren't known — "
+                 "so the comparison between plans is more reliable than any single arrival time.")
     if req.get("unclear"):
         lines += ["", f"Note: {req['unclear']}"]
 
@@ -543,6 +553,13 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
             deliverables += _attach_pictures(attach_fn, points, on_roads, start_min, lines, req, fuel_price,
                                              driver_rate, plan_t)
     return {"action": "reply_email", "text": "\n".join(lines), "deliverables": deliverables}
+
+
+def _arrival_text(start_min, t, window):
+    """'08:58, waits for 09:00 opening' when the van is early; otherwise just the time."""
+    if window and t < window[0] - 30:
+        return f"{_clock(start_min, t)}, waits for {_clock(start_min, window[0])} opening"
+    return _clock(start_min, t)
 
 
 def _late(plan, points, windows):
