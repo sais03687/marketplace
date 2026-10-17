@@ -108,3 +108,39 @@ def test_finalize_still_packages_the_midrun_email():
         'if action.get("type") in ("send_email", "reply_email") and not analysis.get("completed"):'
         in AGENT_SRC
     ), "finalize's mid-run email branch is what routing to finalize relies on"
+
+
+# ── A complete run whose last step was an email ─────────────────────────────
+
+_SUMMARY = "Hi Sai,\n\nThe Route Planner has finished the Saturday run: 2 vans, 151 van-minutes."
+
+
+def _finalize(analysis):
+    import asyncio
+    return asyncio.run(agent.finalize(_state(analysis))).result
+
+
+def test_the_email_written_is_sent_not_the_note_about_it():
+    """2026-10-17: the buyer got 'Summary email sent ... see action for full text'."""
+    result = _finalize({
+        "completed": True,
+        "action": {"type": "send_email", "params": {
+            "to": "sai.suram07@gmail.com", "subject": "Plan ready", "text": _SUMMARY}},
+        "final_response": {"action": "send_email", "to": "sai.suram07@gmail.com",
+                           "text": "Summary email sent to Sai — see action for full text."},
+    })
+    assert result["action"] == "send_email"
+    assert result["text"] == _SUMMARY.strip()
+    assert result["subject"] == "Plan ready"
+
+
+def test_a_teammate_email_does_not_replace_the_reply_to_the_requester():
+    result = _finalize({
+        "completed": True,
+        "action": {"type": "send_email", "params": {
+            "to": "route-planner@agents.agentstore.it.com", "text": "Please plan these stops"}},
+        "final_response": {"action": "reply_email", "to": "sai.suram07@gmail.com",
+                           "text": "I've asked the Route Planner; the plan will follow."},
+    })
+    assert result["action"] == "reply_email"
+    assert result["text"].startswith("I've asked the Route Planner")

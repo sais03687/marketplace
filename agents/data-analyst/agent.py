@@ -3096,6 +3096,31 @@ async def finalize(state: AgentState) -> AgentState:
     result_action = final.get("action", "none")
     result_text = final.get("text", "")
 
+    # The email the model wrote as its last step, when it also marked the run
+    # complete. Above, only an *incomplete* run's email is sent; a complete one
+    # fell through to final_response, which the model fills with narration about
+    # the email rather than the email. On 2026-10-17 the buyer received "Summary
+    # email sent to Sai with the key route numbers — see action for full text"
+    # in place of the summary, which existed in full in the action's params.
+    #
+    # Only when both name the same recipient (or one names none): if the action
+    # mails a teammate and final_response answers the requester, those are two
+    # different messages and the reply stays as it was.
+    if action.get("type") in ("send_email", "reply_email"):
+        params = action.get("params") or {}
+        action_text = str(params.get("text") or "").strip()
+        action_to = str(params.get("to") or "").strip().lower()
+        final_to = str(final.get("to") or "").strip().lower()
+        if action_text and (not final_to or not action_to or final_to == action_to):
+            result_action = action["type"]
+            result_text = action_text
+            final = {
+                **final,
+                "to": params.get("to") or final.get("to"),
+                "subject": params.get("subject") or final.get("subject"),
+                "thread_id": params.get("thread_id") or final.get("thread_id"),
+            }
+
     # Text with nowhere to go. _set_reply is the usual way this happens and is
     # fixed at the source, but a model can put {"action": "none", "text": "…"}
     # in final_response without wrap_up ever running, and the platform sends on
