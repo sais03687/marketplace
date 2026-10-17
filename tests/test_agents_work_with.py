@@ -210,3 +210,35 @@ def test_always_ask_still_asks_for_teammates(monkeypatch):
     monkeypatch.setitem(adapter._allowlist_cache, "data", _allow(teammates=[MATE]))
     needs, _ = adapter._should_require_approval(MATE["email"])
     assert needs
+
+
+# ── The person who asked is copied on handoffs ──────────────────────────────
+
+def _run_with(monkeypatch, sender, cc=()):
+    monkeypatch.setitem(adapter._allowlist_cache, "data", _allow(teammates=[MATE]))
+    monkeypatch.setattr(adapter, "AGENT_EMAIL", "route-planner-x@agents.agentstore.it.com")
+    monkeypatch.setattr(adapter, "WORKSPACE_EMAIL", "")
+    adapter.begin_run("email:cc-test")
+    adapter._RUN_META["email:cc-test"]["inbound_sender"] = sender
+    adapter._RUN_META["email:cc-test"]["inbound_cc"] = list(cc)
+
+
+def test_a_handoff_copies_the_person_who_asked(monkeypatch):
+    _run_with(monkeypatch, "boss@gmail.com")
+    assert adapter._handoff_cc(MATE["email"]) == ["boss@gmail.com"]
+
+
+def test_the_teammates_reply_copies_whoever_it_copied(monkeypatch):
+    _run_with(monkeypatch, MATE["email"], cc=["boss@gmail.com", "route-planner-x@agents.agentstore.it.com"])
+    assert adapter._handoff_cc(MATE["email"]) == ["boss@gmail.com"], "never this agent itself"
+
+
+def test_mail_to_a_person_copies_nobody(monkeypatch):
+    _run_with(monkeypatch, "boss@gmail.com")
+    assert adapter._handoff_cc("boss@gmail.com") == []
+    assert adapter._handoff_cc("stranger@example.com") == []
+
+
+def test_a_teammate_is_never_copied(monkeypatch):
+    _run_with(monkeypatch, MATE["email"], cc=[MATE["email"]])
+    assert adapter._handoff_cc(MATE["email"]) == []

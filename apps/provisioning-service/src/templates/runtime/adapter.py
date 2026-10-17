@@ -3801,9 +3801,45 @@ async def send_email(to: str, subject: str, text: str, thread_id: str | None = N
         }
         if attachments:
             payload["attachments"] = attachments
+        cc = _handoff_cc(to)
+        if cc:
+            payload["cc"] = cc
+            print(f"[adapter] Handoff to a teammate: copying {', '.join(cc)}", flush=True)
         resp = await c.post(OUTLOOK_SEND_URL, json=payload)
         resp.raise_for_status()
         return resp.json()
+
+
+def _handoff_cc(recipient: str) -> list[str]:
+    """Who to copy when this mail goes to a teammate: the person who asked.
+
+    An agent that hands work to a teammate used to relay only its own summary of
+    the answer. On 2026-10-17 the Route Planner sent a map, a replay, a CSV, a
+    notebook and a SUMO scenario to the Data Analyst, and the buyer who had asked
+    received three paragraphs: the files never left the analyst's mailbox. Copying
+    the requester on the handoff, and on the teammate's reply, puts the
+    specialist's own work in front of the person who wanted it.
+
+    - Run started by a person: that person is copied on mail to a teammate.
+    - Run started by a teammate: whoever it copied (the original requester) is
+      copied on the reply, so the answer and its files reach them too.
+    Never a teammate, never this agent, never the recipient themselves.
+    """
+    to = _extract_email(recipient or "")
+    allow = _allowlist_cache.get("data") or {}
+    mates = _teammate_emails(allow)
+    if not to or to not in mates:
+        return []
+    meta = _RUN_META.get(_current_run.get(), {}) or {}
+    sender = str(meta.get("inbound_sender") or "").lower()
+    own = {(_extract_email(WORKSPACE_EMAIL or "") or ""), (_extract_email(AGENT_EMAIL or "") or "")}
+    if sender and sender not in mates:
+        people = [sender]
+    elif sender in mates:
+        people = [str(a).lower() for a in meta.get("inbound_cc") or []]
+    else:
+        people = []
+    return [a for a in dict.fromkeys(people) if a and a not in mates and a not in own and a != to]
 
 
 async def reply_email(
@@ -3837,6 +3873,11 @@ async def reply_email(
                 }
                 if attachments:
                     payload["attachments"] = attachments
+                replying_to = fallback_to or (_RUN_META.get(_current_run.get(), {}) or {}).get("inbound_sender", "")
+                cc = _handoff_cc(replying_to)
+                if cc:
+                    payload["cc"] = cc
+                    print(f"[adapter] Reply to a teammate: copying {', '.join(cc)}", flush=True)
                 resp = await c.post(OUTLOOK_SEND_URL, json=payload)
                 resp.raise_for_status()
                 return resp.json()
@@ -6640,6 +6681,9 @@ async def receive_agentmail_webhook(request: Request):
         "thread_id": thread_id,
         "message_id": message_id,
         "sender": sender,
+        # Who else the message was addressed to, comma-separated. Used to keep
+        # the person who asked on a handoff between teammates (_handoff_cc).
+        "cc": msg.get("cc", ""),
         "subject": subject,
         # Each attachment as {name, content_type, size, handle, inlined}. Pass a
         # handle to file_resolver_fn for the bytes. Text files are also inlined
@@ -7098,6 +7142,10 @@ async def _handle_message(message: str, context: dict):
         # shared list meant the newest arrival wiped everyone else's. Resumes
         # attach instead of beginning, and keep what they have built up.
         begin_run(thread_id, message)
+        _RUN_META[thread_id]["inbound_sender"] = _extract_email(context.get("sender", "") or "")
+        _RUN_META[thread_id]["inbound_cc"] = [
+            _extract_email(a) for a in str(context.get("cc") or "").split(",") if _extract_email(a)
+        ]
 
         async def _email_capturing_mcp_fn(server: str, tool: str, arguments: dict):
             # Handles the agent was given for this message's attachments become
