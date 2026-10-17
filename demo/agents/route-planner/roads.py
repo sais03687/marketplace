@@ -279,6 +279,50 @@ class Roads:
                     secs[i][j], metres[i][j] = r[0], r[1]
         return secs, metres, missing
 
+    def simulated_matrix(self, edges, positions, fallback_secs, log=print):
+        """Driving seconds between every pair of stops, each leg driven in SUMO.
+
+        The route finder's times leave out traffic lights and junctions, which the
+        final simulation then adds - so a plan proven best on those times could be
+        beaten once the lights were counted (on the demo, 2 h 39 min against
+        2 h 36 min for another plan). Driving each leg in the simulation itself puts
+        the planner and the simulation on the same footing. One van at a time, so
+        legs do not queue behind each other; a leg that does not finish keeps the
+        route finder's time.
+        """
+        ts = self.ts
+        n = len(edges)
+        secs = [row[:] for row in fallback_secs]
+        legs = [(i, j) for i in range(n) for j in range(n) if i != j and edges[i] != edges[j]]
+        done = 0
+        for i, j in legs:
+            r = self.route(edges[i], edges[j])
+            if r is None:
+                continue
+            self._made += 1
+            vid = f"leg_{self._made}"
+            try:
+                ts.route.add(f"r_{vid}", r[2])
+                ts.vehicle.add(vid, f"r_{vid}", typeID="van", depart="now",
+                               departPos=str(max(0.0, positions[i])), arrivalPos=str(max(0.0, positions[j])))
+            except Exception:
+                continue
+            start = ts.simulation.getTime()
+            limit = start + 3 * 3600
+            while ts.simulation.getTime() < limit:
+                ts.simulationStep()
+                if vid in ts.simulation.getArrivedIDList():
+                    secs[i][j] = ts.simulation.getTime() - start
+                    done += 1
+                    break
+            else:
+                try:
+                    ts.vehicle.remove(vid)
+                except Exception:
+                    pass
+        log(f"driving times: {done} of {len(legs)} legs driven in SUMO (traffic lights included)")
+        return secs
+
     def shape_xy(self, edges):
         """The road geometry of a list of edges, in network x/y metres."""
         pts = []

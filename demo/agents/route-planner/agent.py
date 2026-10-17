@@ -296,7 +296,7 @@ def _km(a, b) -> float:
     return 2 * 6371.0 * math.asin(math.sqrt(h)) * 1.3   # x1.3: roads are not straight lines
 
 
-def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=None):
+def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=None, exact=True):
     """The best of two searches: least driving, and least total van time.
 
     With opening hours, counting waiting time is what stops a van being sent to
@@ -306,7 +306,15 @@ def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=Non
     least total van time, waiting included, is kept. Without opening hours or a
     shift there is no waiting, and one search is enough.
     """
-    if not (windows or shift_s):
+    proven = False
+    if exact and len(cost) - 1 <= EXACT_MAX_STOPS:
+        t = time.monotonic()
+        routes = _solve_exact(cost, demands, vans, capacity, service_s, windows, shift_s)
+        proven = True   # an exact search that finds nothing has proven nothing fits
+        _log(f"exact search over every plan for {len(cost) - 1} stops in {time.monotonic() - t:.1f}s"
+             + (f": {_van_time(routes, cost, service_s, windows) / 60:.1f} van-minutes, proven best" if routes
+                else ": no plan fits"))
+    elif not (windows or shift_s):
         routes = _solve_once(cost, demands, vans, capacity, service_s, None, None, False, 10)
     else:
         options = [r for r in (_solve_once(cost, demands, vans, capacity, service_s, windows, shift_s, span, 6)
@@ -315,6 +323,114 @@ def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=Non
     # Number the vans in use 1, 2, 3 — the solver's own numbering skips any it left idle.
     for k, r in enumerate(routes or [], 1):
         r["van"] = k
+        r["proven"] = proven
+    return routes
+
+
+# Up to this many stops every plan is checked and the best one proven. On the demo
+# (8 stops) OR-tools' 6-second search came within 1.6% of the best but not to it
+# (142.6 against 140.4 van-minutes, 2026-10-17), so "best" was not an honest word.
+EXACT_MAX_STOPS = 11
+
+
+def _solve_exact(cost, demands, vans, capacity, service_s, windows, shift_s):
+    """The plan with the least total van time, waiting included, by checking every plan.
+
+    For each set of stops one van could take, the best order is found with the
+    Held-Karp method (best way to reach each stop having visited a given set),
+    keeping the earliest time a van can start serving each stop: arriving earlier
+    never hurts, since a van can always wait. Then every way of splitting all the
+    stops between the vans is compared. Opening hours, van capacity and the shift
+    limit are rules a plan must keep, exactly as in the search.
+    """
+    n = len(cost) - 1
+    full = (1 << n) - 1
+    INF = float("inf")
+
+    def svc(i):
+        return service_s if i != 0 else 0
+
+    def arrive(t, j):
+        """Service start at stop j for a van reaching it at t, or None if it has closed."""
+        if windows and j in windows:
+            o, c = windows[j]
+            if t > c:
+                return None
+            return max(t, o)
+        return t
+
+    demand = [0.0] * (1 << n)
+    for mask in range(1, 1 << n):
+        low = (mask & -mask).bit_length() - 1
+        demand[mask] = demand[mask & (mask - 1)] + demands[low + 1]
+
+    # label[mask][j]: earliest service start at stop j+1 after visiting exactly `mask`.
+    label = [[INF] * n for _ in range(1 << n)]
+    back = [[-1] * n for _ in range(1 << n)]
+    for j in range(n):
+        t = arrive(cost[0][j + 1], j + 1)
+        if t is not None:
+            label[1 << j][j] = t
+    for mask in range(1, 1 << n):
+        if capacity > 0 and demand[mask] > capacity:
+            continue
+        row = label[mask]
+        for j in range(n):
+            t = row[j]
+            if t == INF:
+                continue
+            for k in range(n):
+                if mask >> k & 1:
+                    continue
+                nm = mask | (1 << k)
+                if capacity > 0 and demand[nm] > capacity:
+                    continue
+                t2 = arrive(t + svc(j + 1) + cost[j + 1][k + 1], k + 1)
+                if t2 is not None and t2 < label[nm][k]:
+                    label[nm][k] = t2
+                    back[nm][k] = j
+
+    # One van's best time and last stop for each set of stops it could take.
+    route = [INF] * (1 << n)
+    last = [-1] * (1 << n)
+    route[0] = 0.0
+    for mask in range(1, 1 << n):
+        for j in range(n):
+            if label[mask][j] < INF:
+                t = label[mask][j] + svc(j + 1) + cost[j + 1][0]
+                if (not shift_s or t <= shift_s) and t < route[mask]:
+                    route[mask], last[mask] = t, j
+
+    # Split all stops between at most `vans` vans; each van's set holds its lowest stop.
+    best = {0: (0.0, [])}
+    for _ in range(min(vans, n)):
+        nxt = dict(best)
+        for covered, (total, sets) in best.items():
+            rest = full & ~covered
+            if not rest:
+                continue
+            low = rest & -rest
+            sub = rest
+            while sub:
+                if sub & low and route[sub] < INF:
+                    m2 = covered | sub
+                    cand = total + route[sub]
+                    if m2 not in nxt or cand < nxt[m2][0]:
+                        nxt[m2] = (cand, sets + [sub])
+                sub = (sub - 1) & rest
+        best = nxt
+    if full not in best:
+        return None
+
+    routes = []
+    for mask in best[full][1]:
+        order, m, j = [], mask, last[mask]
+        while j >= 0:
+            order.append(j + 1)
+            pj = back[m][j]
+            m &= ~(1 << j)
+            j = pj
+        routes.append({"seq": [0] + order[::-1] + [0]})
     return routes
 
 
@@ -434,6 +550,9 @@ def _plan_on_roads(points, demands, vans, capacity, speeds, windows, shift_s, cu
                 cut = sorted({points[j]["name"] for _, j in missing} | {points[i]["name"] for i, _ in missing})
                 raise roads.RoadsUnavailable("some stops cannot be reached by road from the others "
                                              f"({', '.join(cut[:5])})")
+            t1 = time.monotonic()
+            secs = R.simulated_matrix([s[0] for s in snaps], [s[1] for s in snaps], secs, log=_log)
+            _log(f"  ({time.monotonic() - t1:.1f}s)")
             t2 = time.monotonic()
             routes = _solve(secs, demands, vans, capacity, STOP_MINUTES * 60, windows, shift_s)
             if not routes:
@@ -511,8 +630,10 @@ def _plan_straight(points, demands, vans, capacity, slow, windows, shift_s):
     """The fallback: straight-line distances x1.3 at assumed speeds."""
     dist = [[_km(a, b) * 1000 for b in points] for a in points]
     secs = [[d / 1000 / _fallback_kmh(d / 1000) * 3600 * slow for d in row] for row in dist]
+    # No exact search on straight-line guesses: proving the best plan for distances
+    # that are themselves estimates would claim more than it shows.
     routes = _solve(secs if windows or shift_s else dist, demands, vans, capacity, STOP_MINUTES * 60,
-                    windows, shift_s)
+                    windows, shift_s, exact=False)
     for r in routes or []:
         legs = list(zip(r["seq"], r["seq"][1:]))
         r["km"] = sum(dist[a][b] for a, b in legs) / 1000
@@ -825,10 +946,17 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                      f"longer than the plan expected. Starting earlier or adding a van would fix it.")
 
     if on_roads:
-        lines.append("Planned on the real road network (OpenStreetMap) for the least driving time"
+        lines.append("Planned on the real road network (OpenStreetMap) for the least total van time"
                      + (", within opening hours" if windows else "") + (f" and a {shift_h:g}-hour shift" if shift_s else "")
                      + ", then checked by driving each van through a SUMO simulation of those roads: speed limits, "
                        "one-way streets, turns and traffic lights, with no other traffic.")
+        if routes and routes[0].get("proven"):
+            lines.append("This is the best possible plan for these driving times: every way of splitting the stops "
+                         "between the vans, and every order, was checked (measured by total van time, waiting "
+                         "included).")
+        else:
+            lines.append(f"With more than {EXACT_MAX_STOPS} stops this is the best plan found in a short search — "
+                         "very good, but not proven to be the very best.")
         lines.append(f"Fuel and CO2 are from SUMO's emission model for a diesel delivery van. Costs assume diesel at "
                      f"${fuel_price:.2f}/gallon and driver time at ${driver_rate:.0f}/hour — tell me your own figures.")
         if any(not r["complete"] for r in routes):
