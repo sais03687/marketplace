@@ -65,10 +65,11 @@ def test_auto_update_covers_every_state_it_claims_to():
     assert 'status: { in: ["ACTIVE", "ONBOARDING"] }' in src
 
 
-def test_the_poller_does_not_claim_agentmind_is_enabled():
+def test_the_poller_no_longer_mentions_agentmind_at_runtime():
+    # Retired 2026-10-16: nothing should query it or log about it.
     src = POLLER.read_text(encoding="utf-8")
-    assert "[agentmind] Enabled" not in src
-    assert "Will query" in src
+    assert "/api/agentmind" not in src
+    assert "[agentmind]" not in src
 
 
 def test_the_listing_does_not_promise_sharepoint_to_every_buyer():

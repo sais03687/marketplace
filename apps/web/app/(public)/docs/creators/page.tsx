@@ -459,11 +459,6 @@ async def run_agent(
                 credential, refuses any call your manifest did not declare, and
                 applies the buyer's approval policy before anything is sent.
 
-    Shared learning (AgentMind):
-      contribute_fn: file something you learned
-      search_fn: look up past lessons
-      use_fn: report which lessons you actually used
-
     Files — passed as handles, never raw bytes:
       file_registrar_fn: register an inbound attachment, returns a handle
       file_resolver_fn: turn a handle back into bytes

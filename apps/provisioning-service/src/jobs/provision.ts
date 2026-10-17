@@ -791,9 +791,8 @@ export async function provisionJob(
   await prisma.deployment.update({
     where: { id: deploymentId },
     data: {
-      // Re-provisioning a live agent must not send it back through onboarding.
-      // AgentMind contributions are gated on ACTIVE, so demoting an
-      // already-onboarded deployment silently disables them.
+      // Re-provisioning a live agent must not send it back through onboarding:
+      // an already-onboarded deployment would be demoted for no reason.
       status: wasActive ? "ACTIVE" : "ONBOARDING",
       onboardingState: wasActive
         ? undefined

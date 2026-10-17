@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/db";
-import { generateReflection } from "@/lib/agentmind/reflect";
 import { autonomyFor } from "@/lib/autonomy";
 
 interface ResolveParams {
@@ -9,6 +8,7 @@ interface ResolveParams {
   resolvedBy: string;
   editedText?: string;
   rejectionReason?: string;
+  /** Unused since AgentMind's reflection call was removed; kept so callers compile. */
   baseUrl?: string;
 }
 
@@ -33,7 +33,6 @@ export async function resolveApprovalAndUpdateTrust(
     resolvedBy,
     editedText,
     rejectionReason,
-    baseUrl,
   } = params;
 
   // Compute edit diff if edited
@@ -126,35 +125,6 @@ export async function resolveApprovalAndUpdateTrust(
     } catch {
       // Provisioning service may be unreachable
     }
-  }
-
-  // AgentMind reflection (fire-and-forget)
-  if (action === "EDITED" || action === "REJECTED") {
-    const reflectBaseUrl =
-      baseUrl || `http://localhost:${process.env.PORT || 3002}`;
-    generateReflection({
-      originalDraft: approval.draft || "",
-      editedText: action === "EDITED" ? editedText : undefined,
-      rejectionReason: action === "REJECTED" ? rejectionReason : undefined,
-      taskType: approval.taskType,
-      originalRequest: (approval as any).originalRequest || "",
-    })
-      .then((reflection) =>
-        fetch(`${reflectBaseUrl}/api/agentmind/contribute`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            deploymentId,
-            type: "CORRECTION",
-            title: reflection.title,
-            content: reflection.content,
-            tags: reflection.tags,
-          }),
-        }),
-      )
-      .catch(() => {
-        // Non-fatal
-      });
   }
 
   return {

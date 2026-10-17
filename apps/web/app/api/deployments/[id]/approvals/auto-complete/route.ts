@@ -11,9 +11,8 @@ import { z } from "zod";
  *
  * Creates an Approval record already in APPROVED status so that:
  *   1. There is a proper audit trail for every email the agent sends.
- *   2. The AgentMind "must have at least one resolved approval" gate is satisfied
- *      after the very first successful task — even if the user never went through
- *      the manual approval UI.
+ *   2. The dashboard's history and approval counts include it, even if the user
+ *      never went through the manual approval UI.
  *
  * Auth: Bearer <deployment.approvalWebhookToken>  (same token used by adapter)
  * No Clerk auth required — this is an internal adapter → marketplace call.
@@ -40,8 +39,8 @@ export async function POST(
   //
   // This did the same check with `!==`, which leaks a secret's prefix through
   // timing one byte at a time — while approval-link.ts next door has always
-  // used timingSafeEqual for exactly that reason. Shared with the AgentMind
-  // routes now, so there is one comparison to get right.
+  // used timingSafeEqual for exactly that reason. Shared with the other
+  // agent-called routes, so there is one comparison to get right.
   const authed = await requireDeploymentToken(request, deploymentId);
   if ("error" in authed) return authed.error;
   const { deployment } = authed;

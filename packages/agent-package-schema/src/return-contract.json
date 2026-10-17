@@ -111,11 +111,11 @@
 
     "insight_worthy": {
       "type": "boolean",
-      "description": "Set to true to signal the adapter to forward 'insight' to AgentMind. Only set when you have learned something genuinely reusable."
+      "description": "Ignored. It fed AgentMind, which was retired on 2026-10-16; accepted so older agents stay valid."
     },
     "insight": {
       "type": ["object", "null"],
-      "description": "Knowledge to contribute to AgentMind. Only used when insight_worthy is true.",
+      "description": "Ignored, like insight_worthy; accepted so older agents stay valid.",
       "properties": {
         "type": {
           "type": "string",

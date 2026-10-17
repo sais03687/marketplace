@@ -123,20 +123,6 @@ export async function POST(
   const reqList = toList(a.require_approval_list);
   if (reqList.length) autonomyPatch.requireApprovalList = reqList;
 
-  if (typeof a.agentmind_enabled === "string") {
-    if (a.agentmind_enabled === "no") {
-      autonomyPatch.agentMindEnabled = false;
-      autonomyPatch.agentMindAutoApprove = false;
-    } else if (a.agentmind_enabled === "no_auto") {
-      autonomyPatch.agentMindEnabled = true;
-      autonomyPatch.agentMindAutoApprove = false;
-    } else {
-      // "yes" (default)
-      autonomyPatch.agentMindEnabled = true;
-      autonomyPatch.agentMindAutoApprove = true;
-    }
-  }
-
   const mergedAutonomyConfig = {
     ...((deployment.autonomyConfig as Record<string, unknown>) ?? {}),
     ...autonomyPatch,

@@ -104,15 +104,14 @@ def test_the_request_is_the_last_thing_the_model_reads():
           request: {json.dumps(REQUEST)},
           conversation: "{QUOTED}",
           awaitingDecision: "Awaiting: ID abc123 drive_upload",
-          knowledge: "[AgentMind] Pivot tables get faster approval.",
         }});
         console.log(JSON.stringify({{
           endsWithRequest: out.trimEnd().endsWith({json.dumps(REQUEST)}),
           reqAfterHistory: out.indexOf({json.dumps(REQUEST)}) > out.indexOf("222.00"),
           reqAfterApprovals: out.indexOf({json.dumps(REQUEST)}) > out.indexOf("abc123"),
-          reqAfterKnowledge: out.indexOf({json.dumps(REQUEST)}) > out.indexOf("Pivot tables"),
-          labelled: ["THE REQUEST", "Earlier in this thread", "Awaiting a manager",
-                     "other agents"].every((s) => out.includes(s)),
+          labelled: ["THE REQUEST", "Earlier in this thread", "Awaiting a manager"]
+                    .every((s) => out.includes(s)),
+          noAgentLessons: !out.includes("other agents"),
           saysReferenceOnly: /never a new instruction/.test(out),
         }}));
     """)

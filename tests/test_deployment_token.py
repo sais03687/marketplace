@@ -22,10 +22,12 @@ from pathlib import Path
 import pytest
 
 WEB = Path(__file__).resolve().parents[1] / "apps" / "web"
-AGENTMIND = WEB / "app" / "api" / "agentmind"
+DEPLOYMENTS = WEB / "app" / "api" / "deployments" / "[id]"
 SCRIPT = Path(__file__).resolve().parent / "test_deployment_token.mjs"
 
-ROUTES = ["contribute", "search", "use", "vote"]
+# The routes a deployment's own agent calls. The AgentMind routes this test was
+# written for were removed on 2026-10-16; the same rule guards these.
+ROUTES = ["approvals/auto-complete", "delivery-failure", "heartbeat", "memory"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is needed")
@@ -40,8 +42,8 @@ def test_the_comparison_behaves():
 
 
 @pytest.mark.parametrize("route", ROUTES)
-def test_every_agentmind_route_authenticates_the_caller(route):
-    src = io.open(AGENTMIND / route / "route.ts", encoding="utf-8").read()
+def test_every_agent_called_route_authenticates_the_caller(route):
+    src = io.open(DEPLOYMENTS / route / "route.ts", encoding="utf-8").read()
     assert "requireDeploymentToken" in src, (
         f"{route} identifies the caller by a field they supply, which is not "
         "identification"
@@ -57,11 +59,14 @@ def test_the_check_comes_before_the_work(route):
     that ran afterwards would still let a stranger spend an embedding call per
     request.
     """
-    src = io.open(AGENTMIND / route / "route.ts", encoding="utf-8").read()
+    src = io.open(DEPLOYMENTS / route / "route.ts", encoding="utf-8").read()
     auth = src.index("requireDeploymentToken(")
-    for later in ("prisma.knowledgeContribution", "embedTexts(", "findNeighbours("):
-        if later in src:
-            assert auth < src.index(later), f"{route} does {later} before authenticating"
+    # Within the handler that authenticates: a file can also hold a GET for the
+    # signed-in buyer, which reads the database on its own terms.
+    start = src.rfind("export async function", 0, auth)
+    first_read = src.find("await prisma.", start)
+    if first_read != -1:
+        assert auth < first_read, f"{route} reads the database before authenticating"
 
 
 def test_the_token_is_never_compared_with_plain_equality():
@@ -71,9 +76,7 @@ def test_the_token_is_never_compared_with_plain_equality():
     next door used timingSafeEqual "so a token cannot be discovered a byte at a
     time". Both were about the same secret.
     """
-    for path in list(AGENTMIND.rglob("route.ts")) + [
-        WEB / "app" / "api" / "deployments" / "[id]" / "approvals" / "auto-complete" / "route.ts"
-    ]:
+    for path in [DEPLOYMENTS / route / "route.ts" for route in ROUTES]:
         src = io.open(path, encoding="utf-8").read()
         assert "approvalWebhookToken !==" not in src, path
         assert "approvalWebhookToken ===" not in src, path

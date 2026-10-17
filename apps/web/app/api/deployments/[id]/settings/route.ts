@@ -9,8 +9,6 @@ const autonomyConfigSchema = z
     approvalRiskThreshold: z.number().min(1).max(10).optional(),
     autoApproveList: z.array(z.string()).optional(),
     requireApprovalList: z.array(z.string()).optional(),
-    agentMindEnabled: z.boolean().optional(),
-    agentMindAutoApprove: z.boolean().optional(),
   })
   .passthrough();
 

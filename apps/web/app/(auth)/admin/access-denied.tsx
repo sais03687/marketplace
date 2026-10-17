@@ -4,7 +4,7 @@ import { ShieldAlert } from "lucide-react";
 /**
  * Shown when a logged-in user who is not an admin lands on any /admin page.
  * The admin surface is gated in the layout, so this covers every admin page at
- * once — vetting, creator requests, AgentMind.
+ * once — vetting and creator requests.
  */
 export function AdminAccessDenied() {
   return (

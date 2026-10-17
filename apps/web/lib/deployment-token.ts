@@ -6,12 +6,10 @@ import { tokensMatch } from "@/lib/constant-time";
 /**
  * Authenticate a call made *by* a deployment, rather than by a person.
  *
- * The AgentMind endpoints took a deploymentId in the request and checked only
- * that it existed and was ACTIVE. Nothing proved the caller was that deployment,
- * and an unauthenticated POST from outside the network reached the handler on
- * 2026-08-18. Contributions auto-approve by default and search serves them to
- * every deployment of an agent across every company, so that was a way to put
- * chosen text into other companies' agents.
+ * Agent-called endpoints once took a deploymentId in the request and checked
+ * only that it existed and was ACTIVE. Nothing proved the caller was that
+ * deployment, and an unauthenticated POST from outside the network reached such
+ * a handler on 2026-08-18.
  *
  * The token is the deployment's own `approvalWebhookToken`, which the adapter
  * and the poller already hold and which /approvals/auto-complete already used.

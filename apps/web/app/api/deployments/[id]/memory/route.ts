@@ -54,8 +54,7 @@ export async function POST(
 ) {
   const { id } = await params;
 
-  // The deployment's own token — the same credential approvals and AgentMind
-  // already use. A person's session is not accepted here; only the agent writes.
+  // The deployment's own token — the same credential approvals already use. A person's session is not accepted here; only the agent writes.
   const authed = await requireDeploymentToken(request, id);
   if ("error" in authed) return authed.error;
 
