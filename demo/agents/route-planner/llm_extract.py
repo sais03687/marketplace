@@ -70,3 +70,30 @@ def _garbled(value) -> bool:
 
 ALLOWED_WHITESPACE = chr(9) + chr(10) + chr(13)
 REPLACEMENT = chr(0xFFFD)
+
+
+async def answer(question: str, facts: str) -> str | None:
+    """A short answer to a follow-up question, written only from `facts`; None if unusable.
+
+    The wording is the model's; the numbers are not its to invent. The caller
+    checks every figure in the answer against `facts` and discards the answer if
+    one does not appear there.
+    """
+    prompt = (
+        "You answer a follow-up question about a delivery route plan that has already been sent. "
+        "Use ONLY the facts below. Quote numbers, times and names exactly as they appear in the facts; "
+        "do not calculate new figures. If the facts do not contain the answer, say what you can tell and that "
+        "the sender can reply with a change (for example 'add a van' or 'leave at 7:30') to get a new plan. "
+        "Two to five sentences, plain text, no greeting or sign-off.\n\n"
+        f"FACTS:\n{facts[:8000]}\n\nQUESTION:\n{question[:2000]}"
+    )
+    for attempt in range(2):
+        try:
+            raw = await _llm.ainvoke(prompt, timeout=60)
+        except Exception as exc:
+            print(f"[answer] attempt {attempt + 1}: {type(exc).__name__}: {exc}", flush=True)
+            continue
+        text = str(getattr(raw, "content", "") or "").strip()
+        if text:
+            return text
+    return None

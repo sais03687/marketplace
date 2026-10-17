@@ -6,7 +6,10 @@
    "42.5",
    "1984000"
   ],
-  "input": "Which region grew fastest from Q1 to Q4, and what was total annual revenue?\n\nregion, q1, q2, q3, q4\nNorth, 120000, 131000, 128000, 150000\nSouth, 98000, 97000, 105000, 101000\nEast, 143000, 150000, 162000, 171000\nWest, 87000, 99000, 118000, 124000"
+  "input": "Which region grew fastest from Q1 to Q4, and what was total annual revenue?\n\nregion, q1, q2, q3, q4\nNorth, 120000, 131000, 128000, 150000\nSouth, 98000, 97000, 105000, 101000\nEast, 143000, 150000, 162000, 171000\nWest, 87000, 99000, 118000, 124000",
+  "reject": [
+   "North leads"
+  ]
  },
  {
   "name": "biggest rise in a delivery log",
@@ -14,5 +17,13 @@
    "Fountain Square"
   ],
   "input": "From this log, which pantry's demand rose the most from the first Saturday to the last, by percentage?\n\npantry, lat, lon, sat1, sat2, sat3, sat4\nFountain Square Pantry, 39.7517, -86.1301, 11, 13, 12, 12\nGarfield Park Food Shelf, 39.7322, -86.1395, 8, 7, 9, 8\nNear Eastside Market, 39.7790, -86.1180, 14, 16, 15, 15\nMartindale Brightwood Hub, 39.8000, -86.1260, 10, 9, 11, 10\nHaughville Pantry, 39.7720, -86.2010, 9, 10, 8, 9\nWest Indy Shelf, 39.7550, -86.1900, 7, 6, 8, 7\nButler-Tarkington Pantry, 39.8240, -86.1700, 11, 12, 10, 11\nBates-Hendricks Shelf, 39.7440, -86.1500, 6, 5, 7, 6"
+ },
+ {
+  "name": "a stated limit is answered",
+  "expect": [
+   "60"
+  ],
+  "reject": [],
+  "input": "Here are two van routes from our planner: Van 1 takes 82 minutes, Van 2 takes 75 minutes. Do both vans finish in under 60 minutes? Answer yes or no and give the times."
  }
 ]

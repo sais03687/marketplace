@@ -7714,6 +7714,15 @@ async def _handle_message(message: str, context: dict):
                     attachments=_att,
                 )
 
+        elif result.get("no_reply"):
+            # The agent read the mail and decided it needs no answer ("Thanks!"),
+            # and said why. Forcing a reply here is how two polite agents, or an
+            # agent and a person, end up thanking each other indefinitely.
+            print(f"[adapter] No reply, by the agent's decision: {str(result['no_reply'])[:160]}", flush=True)
+        elif context.get("hook_name") == "AgentMail" and \
+                _extract_email(context.get("sender", "") or "") in _teammate_emails(_allowlist_cache.get("data") or {}):
+            # A teammate is not "a human who is waiting"; the retry below would say so.
+            print("[adapter] Agent returned action=none to a teammate's mail — leaving it unanswered", flush=True)
         elif context.get("hook_name") == "AgentMail":
             print(f"[adapter] Agent returned action=none on AgentMail hook — retrying with explicit reminder", flush=True)
             try:

@@ -832,7 +832,12 @@ async function markAsRead(token, messageId) {
 // no match means the whole message is the request, which is the safe reading.
 const QUOTE_MARKERS = [
   /^\s*From:\s.+$/m, // Outlook
-  /^\s*On .+ wrote:\s*$/m, // Gmail, Apple Mail
+  // Gmail, Apple Mail. Gmail wraps a long sender onto a second line
+  // ("On Sat, Oct 17, 2026 at 4:00 PM Route Planner Demo <route-planner-...\n
+  // ...@agents.agentstore.it.com> wrote:"), which a one-line pattern missed.
+  /^\s*On [^\n]{4,200}(?:\n[^\n]{1,200})? wrote:\s*$/m,
+  // A run of ">"-quoted lines, whatever introduced it.
+  /^\s*>[^\n]*\n\s*>/m,
   /^\s*-{2,}\s*Original Message\s*-{2,}/im, // older clients
   /^\s*_{5,}\s*$/m, // Outlook's divider rule
 ];
@@ -985,9 +990,14 @@ async function forwardToGateway(message, attachments) {
   // back to splitting on quote markers covers the case where it does not, and
   // both leave the quoted remainder addressable rather than merged into the
   // request.
+  //
+  // uniqueBody is split again rather than trusted: for a reply written in Gmail,
+  // Exchange often counts the whole quoted thread as new. On 2026-10-17 a buyer's
+  // one-line question ("Do you have the routes and sumo animations?") reached the
+  // Route Planner with the quoted stop list attached, and it re-planned from it.
   const uniquePlain = htmlToPlainText(message.uniqueBody?.content || "").trim();
   const split = splitQuotedHistory(plainText);
-  const request = uniquePlain || split.head.trim();
+  const request = (uniquePlain ? splitQuotedHistory(uniquePlain).head : split.head).trim();
   const conversation = trimHistory(split.quoted, HISTORY_CHAR_LIMIT);
 
   // Pending approval context for this thread (non-fatal).

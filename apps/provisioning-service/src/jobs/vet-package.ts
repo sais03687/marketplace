@@ -29,7 +29,7 @@ import { config } from "../config.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CustomTest } from "../queue.js";
-import { regressionTasksFor, missingFrom } from "./regression.js";
+import { regressionTasksFor, missingFrom, rejectedIn } from "./regression.js";
 
 
 /**
@@ -818,8 +818,11 @@ export async function vetPackageJob(versionId: string, opts: VetJobOptions = {})
                 let reply = "";
                 try { reply = (JSON.parse(res.fullBody)?.text || "").toString(); } catch { reply = res.responseBody || ""; }
                 const missing = missingFrom(reply, task.expect);
+                const wrong = rejectedIn(reply, task.reject);
                 if (missing.length) failed.push(`${task.name}: missing ${missing.map((m) => `"${m}"`).join(", ")}`);
-                lines.push(`${missing.length ? "FAIL" : "pass"}  ${task.name}`, `  ${reply.slice(0, 300).replace(/\s+/g, " ")}`);
+                if (wrong.length) failed.push(`${task.name}: says ${wrong.map((m) => `"${m}"`).join(", ")}`);
+                const bad = missing.length || wrong.length;
+                lines.push(`${bad ? "FAIL" : "pass"}  ${task.name}`, `  ${reply.slice(0, 300).replace(/\s+/g, " ")}`);
               } catch (e: any) {
                 failed.push(`${task.name}: run failed (${e.message})`);
                 lines.push(`FAIL  ${task.name}  run failed: ${e.message}`);

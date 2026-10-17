@@ -20,6 +20,8 @@ export interface RegressionTask {
   name: string;
   input: string;
   expect: string[];
+  /** Strings the reply must NOT contain - a known wrong answer. */
+  reject?: string[];
 }
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "regression");
@@ -34,6 +36,12 @@ export function regressionTasksFor(slug: string): RegressionTask[] {
 /** Lower-cased, with digit-group separators removed ("1,984,000" -> "1984000"). */
 export function normaliseAnswer(text: string): string {
   return String(text || "").toLowerCase().replace(/(\d)[,\s](?=\d{3}\b)/g, "$1");
+}
+
+/** Known-wrong strings present in a reply. */
+export function rejectedIn(reply: string, reject: string[] = []): string[] {
+  const have = normaliseAnswer(reply);
+  return reject.filter((r) => have.includes(normaliseAnswer(r)));
 }
 
 /** The expected strings missing from a reply. */

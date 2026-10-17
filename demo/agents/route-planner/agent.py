@@ -25,7 +25,7 @@ import re
 import threading
 import time
 
-from llm_extract import extract
+from llm_extract import extract, answer as answer_question
 import geocode
 import report
 import roads
@@ -255,15 +255,117 @@ def _load_thread(thread: str) -> dict | None:
         return None
 
 
-def _save_thread(thread: str, points: list, settings: dict) -> None:
+def _save_thread(thread: str, points: list, settings: dict, facts: str = "") -> None:
     if not thread:
         return
     keep = ("name", "lat", "lon", "address", "matched", "demand", "window")
     try:
         with open(_thread_file(thread), "w", encoding="utf-8") as fh:
-            json.dump({"points": [{k: p.get(k) for k in keep} for p in points], "settings": settings}, fh)
+            # `facts` is the plan as sent (vans, stops in order, times, totals,
+            # files): what a follow-up question is answered from, and the only
+            # source its numbers may come from.
+            json.dump({"points": [{k: p.get(k) for k in keep} for p in points], "settings": settings,
+                       "facts": facts}, fh)
     except OSError as exc:
         _log(f"could not remember this thread's plan: {exc}")
+
+
+ACK_ONLY = re.compile(r"^\W*(thanks?( you)?|thank u|thx|ty|ok(ay)?|great|perfect|got it|cool|awesome|sounds good|"
+                      r"looks good|will do|noted|cheers)\b[\W\w]{0,40}$", re.I)
+QUESTION_START = re.compile(r"^\W*(what|where|when|why|how|who|which|do|does|did|can|could|would|will|is|are|was|"
+                            r"were|have|has|should|any|send|resend|attach|share|show)\b", re.I)
+
+
+def _followup_kind(text: str, changed: bool) -> str:
+    """'change', 'question' or 'ack' for a reply in a thread that already has a plan.
+
+    Decided in code from what the sender just wrote, never from quoted history.
+    On 2026-10-17 "Do you have the routes and sumo animations?" was taken as a
+    change: the quoted stop list was read as new stops and the plan redone, worse.
+    """
+    if changed:
+        return "change"
+    t = " ".join((text or "").split())
+    if not t:
+        return "ack"
+    if "?" in t or QUESTION_START.match(t):
+        return "question"
+    if ACK_ONLY.match(t):
+        return "ack"
+    return "question"   # unclear: answer with the current plan rather than re-plan or stay silent
+
+
+NUMBER = re.compile(r"\d+(?:[.:]\d+)?")
+FILE_WORDS = re.compile(r"\b(files?|attach\w*|csv|map|replay|animat\w*|gif|sumo|scenario|notebook|resend|send)\b", re.I)
+
+
+def _untraced_numbers(answer: str, facts: str, question: str) -> list[str]:
+    """Figures in a model's answer that appear in neither the plan's facts nor the question.
+
+    Single digits are let through ("2 vans", "van 1"); anything else has to be
+    copied, not worked out, because a reply that quotes a figure the plan never
+    produced is the failure this agent exists to avoid.
+    """
+    known = set(NUMBER.findall((facts or "") + " " + (question or "")))
+    known |= {k.lstrip("0") or "0" for k in known}
+    return [n for n in NUMBER.findall(answer or "")
+            if len(n) > 1 and n not in known and (n.lstrip("0") or "0") not in known]
+
+
+async def _answer_from_plan(question: str, facts: str) -> str | None:
+    """The model's answer to a question about the saved plan, or None if it quotes an untraced figure."""
+    if not facts:
+        return None
+    text = await answer_question(question, facts)
+    if not text:
+        return None
+    bad = _untraced_numbers(text, facts, question)
+    if bad:
+        _log(f"answer discarded: figures not in the plan: {', '.join(bad[:5])}")
+        return None
+    return text
+
+
+def _differs(new, old) -> bool:
+    """A setting the new email actually changes: given (not 0/''/[]) and different from the saved one."""
+    if new in (None, 0, 0.0, "", [], False):
+        return False
+    return new != old
+
+
+MAPS_STOPS_PER_LINK = 10   # origin + up to 8 waypoints + destination, inside Google's 9-waypoint limit
+
+
+def _maps_links(routes: list, points: list) -> list[str]:
+    """One Google Maps directions link per van (split into parts on long routes).
+
+    A Maps URL, not the Maps API: no key, no charge, and nothing of Google's is
+    shown on our map. The stop order is ours; Google draws the driving route
+    between stops and gives the driver turn-by-turn directions with live traffic.
+    """
+    def ll(i):
+        p = points[i]
+        return f"{p['lat']:.6f},{p['lon']:.6f}" if isinstance(p.get("lat"), (int, float)) else None
+
+    out = []
+    for r in routes:
+        seq = [i for i in r["seq"] if ll(i)]
+        if len(seq) < 2:
+            continue
+        parts = []
+        k = 0
+        while k < len(seq) - 1:
+            chunk = seq[k:k + MAPS_STOPS_PER_LINK]
+            url = ("https://www.google.com/maps/dir/?api=1&travelmode=driving"
+                   f"&origin={ll(chunk[0])}&destination={ll(chunk[-1])}")
+            if len(chunk) > 2:
+                url += "&waypoints=" + "%7C".join(ll(i) for i in chunk[1:-1])
+            parts.append(url)
+            k += MAPS_STOPS_PER_LINK - 1
+        for n, url in enumerate(parts, 1):
+            label = f"Van {r['van']}" + (f", part {n} of {len(parts)}" if len(parts) > 1 else "")
+            out.append(f"{label}: {url}")
+    return out
 
 
 def _same_name(a: str, b: str) -> bool:
@@ -768,6 +870,29 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     listed = _listed_points(request_text if saved else content)
     changes = []
     depot_assumed = None
+    reply_lead = None
+    if saved:
+        changed = bool(listed) or bool(req.get("remove_stops")) or bool(from_model(req.get("stops"))) \
+            or bool(req.get("rush_hour_off")) \
+            or any(_differs(req.get(k), saved["settings"].get(k)) for k in SETTING_KEYS)
+        kind = _followup_kind(request_text, changed)
+        _log(f"reply in a planned thread: {kind}")
+        if kind == "ack":
+            return {"action": "none", "no_reply": "an acknowledgement, with no change or question in it"}
+        if kind == "question":
+            # Nothing to change. Answer from the plan as sent, never by re-planning
+            # from anything quoted below; re-send the plan and its files only when
+            # the question is about them.
+            answered = await _answer_from_plan(request_text, saved.get("facts") or "")
+            if answered and not FILE_WORDS.search(request_text):
+                return {"action": "reply_email", "text": answered + "\n\nNothing in the plan has changed. To change "
+                        "it, reply with the change - for example \"add a van\" or \"drop Haughville Pantry\"."}
+            req = {**{k: v for k, v in req.items() if k not in SETTING_KEYS}, "stops": [], "remove_stops": []}
+            listed = []
+            reply_lead = (answered + "\n\n" if answered else "") + (
+                "No changes made — here is the current plan again, with its files and a Google Maps link "
+                "for each van. To change it, reply with the change (for example \"add a van\" or "
+                "\"drop Haughville Pantry\").")
     if saved and not (len(listed) >= 3 and any("depot" in p["name"].lower() for p in listed)):
         # A follow-up: start from the thread's plan, then apply what this email adds,
         # replaces or removes.
@@ -925,7 +1050,8 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     head = f"{len(stops)} stops, {vans} van(s)" + (f", capacity {capacity:g} each" if capacity else "")
     if start_min is not None:
         head += f", leaving at {_clock(start_min, 0)}" + (" (my assumption — tell me if not)" if assumed_departure else "")
-    lines = ([f"Re-planned with your changes: {'; '.join(changes)}.", ""] if changes else []) + [head + ".", ""]
+    lines = ([reply_lead, ""] if reply_lead else []) \
+        + ([f"Re-planned with your changes: {'; '.join(changes)}.", ""] if changes else []) + [head + ".", ""]
     # Say what was assumed rather than plan on it silently.
     assumed = []
     if depot_assumed:
@@ -1022,6 +1148,9 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     else:
         lines.append(f"I couldn't use real roads this time ({why_not}), so distances are straight-line x1.3 "
                      f"estimates, and times assume 35 km/h for short legs, 60 km/h up to 40 km and 85 km/h beyond.")
+        lines.append("The route map, the replay and the SUMO scenario all need every stop inside the area I have "
+                     "road maps for, so this reply has routes.csv and the Google Maps links below instead. Plan the "
+                     "stops outside it separately and you'll get all of them.")
     if rush:
         lines.append(f"Rush hour: main roads at {main_pct:g}% of their speed limits and side streets at "
                      f"{max(main_pct, PEAK_MINOR_PCT):g}%. That is an assumption, not measured traffic — tell me "
@@ -1029,6 +1158,10 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     elif on_roads:
         lines.append(f"Outside rush hour, roads are taken at {BASE_SPEED_PCT:g}% of their speed limits: real city "
                      f"driving runs well below the limits, and this matches typical drive times in the area.")
+    links = _maps_links(routes, points)
+    if links:
+        lines += ["", "Open each van's route in Google Maps (stops in this order; Google gives the driver turn-by-turn "
+                  "directions with live traffic):"] + links + [""]
     lines.append("Times are estimates, not live traffic — road closures and incidents on the day aren't known — "
                  "so the comparison between plans is more reliable than any single arrival time.")
     if on_roads:
@@ -1060,7 +1193,10 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                     _log(f"SUMO scenario packed ({len(packed) // 1024} KB)")
             except Exception as exc:
                 _log(f"scenario failed: {type(exc).__name__}: {exc}")
-    _save_thread(thread, points, {k: req.get(k) for k in SETTING_KEYS})
+    facts = "\n".join(l for l in lines if l and not l.startswith(("Check it or change it", "Or just reply"))) \
+        + "\nFiles sent with this plan: " + (", ".join(deliverables) or "none") \
+        + ("\nReal roads were used." if on_roads else f"\nReal roads were not used: {why_not}.")
+    _save_thread(thread, points, {k: req.get(k) for k in SETTING_KEYS}, facts)
     return {"action": "reply_email", "text": "\n".join(lines), "deliverables": deliverables}
 
 

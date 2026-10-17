@@ -3281,6 +3281,39 @@ async def finalize(state: AgentState) -> AgentState:
     # cannot: the choices it made. See review_reply in the adapter.
     checks = _check_items(final.get("check")) or list(state.context.get("_reply_checks") or [])
 
+    # Every figure has to come from somewhere: the request, a file it carried, or
+    # a step this run took. The model's caveats are where unsourced arithmetic
+    # turns up - on 2026-10-17 "if you rank by dollar growth, North leads with
+    # +$30,000" when West's +$37,000 was larger - so a caveat quoting a figure
+    # with no source is dropped (caveats are optional; a wrong one is worse than
+    # none). A figure in the answer itself is not deleted, which could garble it;
+    # it is named as unverified instead.
+    sources = _figure_sources(state)
+    kept = []
+    for item in checks:
+        loose = _untraced_figures(item, sources)
+        if loose:
+            print(f"[agent] Dropped a caveat quoting untraced figures {loose[:4]}: {item[:100]!r}", flush=True)
+        else:
+            kept.append(item)
+    checks = kept
+    if result_text.strip():
+        loose = _untraced_figures(result_text, sources)
+        if loose:
+            print(f"[agent] Reply quotes figures with no source in this run: {loose[:6]}", flush=True)
+            checks = [f"I couldn't trace {', '.join(loose[:4])} to a calculation in this run, so treat "
+                      f"{'it' if len(loose) == 1 else 'them'} as unverified. Ask me to compute "
+                      f"{'it' if len(loose) == 1 else 'them'} properly."] + checks
+
+    # A limit the request set ("under 60 minutes", "at most 3 vans") must be
+    # answered, met or not. On 2026-10-17 the analyst passed on a plan whose vans
+    # took 82 and 75 minutes without saying the 60-minute ask was not met.
+    if result_text.strip():
+        for cond in _unanswered_conditions(_request_text_of(state.content or ""), result_text):
+            checks.append(f"You asked for {cond}; this reply doesn't confirm whether that's met. "
+                          f"Ask me and I'll check it against the figures.")
+    checks = checks[:_MAX_CHECKS + 2]
+
     # A run that produced nothing, reported by the model in its own words. Those
     # words are reliably vaguer than the evidence: on 2026-08-13 benchmark task
     # T03 wrote "the data processing script failed to execute correctly,
@@ -3974,6 +4007,74 @@ def _rebuilt_figures(produced: str, given: str) -> list[tuple[str, str]]:
 
 
 _MAX_CHECKS = 3
+
+
+_FIGURE = re.compile(r"(?<![\w.])[-+]?\$?\d[\d,]*(?:\.\d+)?%?")
+
+
+def _norm_figure(tok: str) -> str:
+    t = tok.replace("$", "").replace(",", "").replace("+", "").replace("%", "").lstrip("-")
+    if "." in t:
+        t = t.rstrip("0").rstrip(".")
+    return t.lstrip("0") or "0"
+
+
+def _figure_sources(state: "AgentState") -> set[str]:
+    """Every figure the request, its files, or this run's steps contain, normalised."""
+    blob = " ".join([
+        state.content or "",
+        getattr(state, "enriched_content", "") or "",
+        json.dumps(state.action_results, default=str),
+    ])
+    found = {_norm_figure(t) for t in _FIGURE.findall(blob)}
+    # Rounded forms of what was computed count too: 42.4675 may be quoted as 42.5.
+    for f in list(found):
+        if "." in f:
+            try:
+                v = float(f)
+            except ValueError:
+                continue
+            for nd in (0, 1, 2):
+                found.add(_norm_figure(f"{round(v, nd):.{nd}f}"))
+    return found
+
+
+def _untraced_figures(text: str, sources: set[str]) -> list[str]:
+    """Figures in `text` found in no source. Single digits, years and dates are exempt."""
+    out = []
+    for tok in _FIGURE.findall(text or ""):
+        n = _norm_figure(tok)
+        bare = n.replace(".", "")
+        if len(bare) <= 1 or (len(n) == 4 and n.isdigit() and 1900 <= int(n) <= 2100):
+            continue
+        if n not in sources and tok not in out:
+            out.append(tok)
+    return out
+
+
+_CONDITION = re.compile(
+    r"\b(under|below|less than|fewer than|no more than|at most|within|over|above|more than|at least)\s+"
+    r"(\$\d[\d,]*(?:\.\d+)?|\d[\d,]*(?:\.\d+)?\s*(?:%|percent|minutes?|mins?|hours?|hrs?|km|kilomet\w+|miles?|"
+    r"vans?|trucks?|vehicles?|crates?|stops?|dollars?)\b)", re.I)
+
+
+def _request_text_of(content: str) -> str:
+    i = content.find("## THE REQUEST")
+    return content[i:] if i >= 0 else content
+
+
+def _unanswered_conditions(request: str, reply: str) -> list[str]:
+    """Explicit limits in the request whose figure the reply never mentions."""
+    asked, have = [], {_norm_figure(t) for t in _FIGURE.findall(reply or "")}
+    for m in _CONDITION.finditer(request or ""):
+        figure = _FIGURE.search(m.group(2))
+        if not figure:
+            continue
+        phrase = " ".join(m.group(0).split())
+        if _norm_figure(figure.group(0)) not in have and phrase.lower() not in (reply or "").lower() \
+                and phrase not in asked:
+            asked.append(phrase)
+    return asked[:3]
 
 
 def _check_items(value) -> list[str]:
