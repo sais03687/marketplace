@@ -76,3 +76,7 @@ echo "built roads.net.xml for $NAME"
 # The grey street background every map and the replay are drawn on, drawn once
 # here so the running agent never redraws 26,000 streets per email.
 python roads.py background roads.net.xml background.png map_area.json
+
+# The same network, compressed, for the SUMO scenario each reply attaches
+# (SUMO reads .gz directly; about 4.4 MB instead of 29 MB).
+gzip -9 -k -f roads.net.xml

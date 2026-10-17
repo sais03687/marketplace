@@ -17,7 +17,10 @@ simulation, and a working notebook of everything that was computed. For stops ou
 the mapped area it plans on straight-line distances instead and says so.
 """
 import asyncio
+import hashlib
+import json
 import math
+import os
 import re
 import threading
 import time
@@ -26,6 +29,7 @@ from llm_extract import extract
 import geocode
 import report
 import roads
+import scenario
 
 STOP_MINUTES = 5.0
 # Real city driving runs well below the speed limit (turns, lights, parking,
@@ -44,6 +48,8 @@ LITRES_PER_GALLON = 3.785
 DEFAULT_DEPARTURE = 8 * 60  # when opening hours are given but no departure time
 # libsumo runs one simulation per process; two emails at once must take turns.
 _SUMO = threading.Lock()
+# One SUMO session for the whole process, reused by every email (see Roads.prepare).
+_SESSION = None
 
 
 # Only for the straight-line fallback: city speed for short legs, road speeds for long ones.
@@ -71,11 +77,13 @@ SCHEMA = {
         "fuel_price_per_gallon": {"type": "number"},
         "driver_cost_per_hour": {"type": "number"},
         "deliveries_per_week": {"type": "number"},
+        "remove_stops": {"type": "array", "items": {"type": "string"}},
+        "rush_hour_off": {"type": "boolean"},
         "unclear": {"type": "string"},
     },
     "required": ["depot", "stops", "vans", "van_capacity", "rush_hour", "departure_time",
                  "main_road_speed_pct", "shift_hours", "current_routes", "fuel_price_per_gallon",
-                 "driver_cost_per_hour", "deliveries_per_week", "unclear"],
+                 "driver_cost_per_hour", "deliveries_per_week", "remove_stops", "rush_hour_off", "unclear"],
 }
 
 INSTRUCTIONS = (
@@ -93,7 +101,8 @@ INSTRUCTIONS = (
     "given. 'fuel_price_per_gallon', 'driver_cost_per_hour' and 'deliveries_per_week' are numbers the sender "
     "gives, or 0. A stop (or the depot) may be given as a street address instead of coordinates: copy it "
     "exactly into 'address' and set lat and lon to 0. Never invent coordinates or addresses: a stop with "
-    "neither goes in 'unclear'."
+    "neither goes in 'unclear'. 'remove_stops' lists stop names the sender wants dropped, [] if none. "
+    "'rush_hour_off' is true only if the sender says the run is not at rush hour or is off-peak."
 )
 
 
@@ -190,6 +199,92 @@ def _runs_per_week(text: str) -> float:
     return float(n) if 1 <= n <= 14 else 0.0
 
 
+REQUEST_MARKER = "## THE REQUEST"
+
+
+def _request_part(content: str) -> str:
+    """The new email itself, without the quoted thread the platform puts above it."""
+    i = (content or "").find(REQUEST_MARKER)
+    if i < 0:
+        return content or ""
+    rest = content[i:]
+    return rest.split("\n", 1)[1].strip() if "\n" in rest else ""
+
+
+def _thread_file(thread: str) -> str:
+    """Where a thread's plan is kept: the hire's own data folder, which survives restarts."""
+    root = os.path.join(os.environ.get("AGENT_DATA_ROOT") or "/data", os.environ.get("DEPLOYMENT_ID") or "local",
+                        "route_planner_threads")
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError:
+        root = os.path.join("/tmp", "route_planner_threads")
+        os.makedirs(root, exist_ok=True)
+    return os.path.join(root, hashlib.sha256(thread.encode("utf-8")).hexdigest()[:32] + ".json")
+
+
+def _load_thread(thread: str) -> dict | None:
+    if not thread:
+        return None
+    try:
+        with open(_thread_file(thread), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _save_thread(thread: str, points: list, settings: dict) -> None:
+    if not thread:
+        return
+    keep = ("name", "lat", "lon", "address", "matched", "demand", "window")
+    try:
+        with open(_thread_file(thread), "w", encoding="utf-8") as fh:
+            json.dump({"points": [{k: p.get(k) for k in keep} for p in points], "settings": settings}, fh)
+    except OSError as exc:
+        _log(f"could not remember this thread's plan: {exc}")
+
+
+def _same_name(a: str, b: str) -> bool:
+    a, b = " ".join(str(a).lower().split()), " ".join(str(b).lower().split())
+    return bool(a and b) and (a == b or a in b or b in a)
+
+
+SETTING_KEYS = ("vans", "van_capacity", "departure_time", "main_road_speed_pct", "rush_hour", "shift_hours",
+                "fuel_price_per_gallon", "driver_cost_per_hour", "deliveries_per_week", "current_routes")
+
+
+def _merge_settings(saved: dict, req: dict, text: str, changes: list) -> dict:
+    """This email's settings on top of the thread's earlier ones; notes each change in `changes`."""
+    out = {k: saved.get(k) for k in SETTING_KEYS}
+    labels = {"vans": "vans", "van_capacity": "van capacity", "departure_time": "departure",
+              "main_road_speed_pct": "main roads at rush hour (% of limit)", "shift_hours": "shift hours",
+              "fuel_price_per_gallon": "diesel $/gallon", "driver_cost_per_hour": "driver $/hour",
+              "deliveries_per_week": "runs a week"}
+    new = dict(req)
+    if not new.get("deliveries_per_week"):
+        new["deliveries_per_week"] = _runs_per_week(text)
+    for k, label in labels.items():
+        v = new.get(k)
+        if v not in (None, "", 0, 0.0) and v != out.get(k):
+            if saved and out.get(k) not in (None, "", 0, 0.0):
+                changes.append(f"{label} {out[k]} → {v}")
+            elif saved:
+                changes.append(f"{label} {v}")
+            out[k] = v
+    if new.get("rush_hour_off"):
+        if saved and out.get("rush_hour"):
+            changes.append("not rush hour")
+        out["rush_hour"], out["main_road_speed_pct"] = False, 0
+    elif new.get("rush_hour"):
+        if saved and not out.get("rush_hour"):
+            changes.append("rush hour")
+        out["rush_hour"] = True
+    if new.get("current_routes"):
+        out["current_routes"] = new["current_routes"]
+    out["unclear"] = new.get("unclear") or ""
+    return out
+
+
 def _clock_text(value) -> int | None:
     m = CLOCK.match(str(value or ""))
     return _minutes(m.group(1), m.group(2), None) if m else None
@@ -202,6 +297,41 @@ def _km(a, b) -> float:
 
 
 def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=None):
+    """The best of two searches: least driving, and least total van time.
+
+    With opening hours, counting waiting time is what stops a van being sent to
+    sit outside a stop until it opens; but over a 6-second search that version
+    sometimes settles on a plan with more van time overall than plain least-driving
+    (2 h 47 min against 2 h 36 min on the demo). So both run, and the plan with the
+    least total van time, waiting included, is kept. Without opening hours or a
+    shift there is no waiting, and one search is enough.
+    """
+    if not (windows or shift_s):
+        routes = _solve_once(cost, demands, vans, capacity, service_s, None, None, False, 10)
+    else:
+        options = [r for r in (_solve_once(cost, demands, vans, capacity, service_s, windows, shift_s, span, 6)
+                               for span in (False, True)) if r]
+        routes = min(options, key=lambda rs: _van_time(rs, cost, service_s, windows)) if options else None
+    # Number the vans in use 1, 2, 3 — the solver's own numbering skips any it left idle.
+    for k, r in enumerate(routes or [], 1):
+        r["van"] = k
+    return routes
+
+
+def _van_time(routes, cost, service_s, windows):
+    """Total seconds out across vans: driving, unloading, and waiting for stops to open."""
+    total = 0.0
+    for r in routes:
+        t = 0.0
+        for a, b in zip(r["seq"], r["seq"][1:]):
+            t += cost[a][b] + (service_s if a != 0 else 0)
+            if windows and b in windows:
+                t = max(t, windows[b][0])
+        total += t
+    return total
+
+
+def _solve_once(cost, demands, vans, capacity, service_s, windows, shift_s, count_waiting, seconds):
     """Routes minimising total `cost` (a square matrix of seconds or metres).
 
     With opening hours or a shift limit, a time dimension is added: the time at a
@@ -230,13 +360,14 @@ def _solve(cost, demands, vans, capacity, service_s=0, windows=None, shift_s=Non
         # Count each van's whole time out, waiting included, not only its driving.
         # Without this a van could be sent across town to sit outside a stop until
         # it opens - free to the solver, a paid driver doing nothing in reality.
-        td.SetSpanCostCoefficientForAllVehicles(1)
+        if count_waiting:
+            td.SetSpanCostCoefficientForAllVehicles(1)
         for node, (o, c) in (windows or {}).items():
             td.CumulVar(mgr.NodeToIndex(node)).SetRange(max(0, int(o)), max(0, int(c)))
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.FromSeconds(10)
+    params.time_limit.FromSeconds(seconds)
     sol = routing.SolveWithParameters(params)
     if not sol:
         return None
@@ -267,6 +398,7 @@ def _attach_sim(r, s):
     r["sim_km"] = s["km"]
     r["trace"] = s["trace"]
     r["edges"] = s["edges"]
+    r["t0"] = s["t0"]
 
 
 def _plan_on_roads(points, demands, vans, capacity, speeds, windows, shift_s, current):
@@ -276,11 +408,15 @@ def _plan_on_roads(points, demands, vans, capacity, speeds, windows, shift_s, cu
     SUMO session closes, so drawing happens with its memory already freed.
     """
     net = roads.build_network(points)
+    global _SESSION
     with _SUMO:
         t0 = time.monotonic()
-        R = roads.Roads(net)
+        if _SESSION is None:
+            _SESSION = roads.Roads(net)
+            _log(f"road network loaded: {len(_SESSION._core):,} roads, {time.monotonic() - t0:.1f}s")
+        R = _SESSION
+        R.prepare()
         try:
-            _log(f"road network loaded: {len(R._core):,} roads, {time.monotonic() - t0:.1f}s")
             snaps = [R.snap(p["lat"], p["lon"]) for p in points]
             streets = [R.street(s[0]) for s in snaps]
             for p, street, (_, _, gap) in zip(points, streets, snaps):
@@ -333,11 +469,42 @@ def _plan_on_roads(points, demands, vans, capacity, speeds, windows, shift_s, cu
                     r["km"] = sum(metres[a][b] for a, b in pairs) / 1000
                     r["planned_min"] = sum(secs[a][b] for a, b in pairs) / 60 + STOP_MINUTES * (len(r["seq"]) - 2)
                     r["line"] = R.shape_xy(r["edges"])
+            def scenario_vans(plan):
+                # Exactly what was simulated, stop positions clamped as simulate()
+                # clamps them, so re-running the zip gives the same numbers.
+                vans_out = []
+                for r in plan:
+                    stops_out = []
+                    for k, i in enumerate(r["seq"]):
+                        edge, pos = snaps[i][0], snaps[i][1]
+                        if 0 < k < len(r["seq"]) - 1:
+                            pos = min(max(pos, 1.0), R.ts.lane.getLength(f"{edge}_0") - 0.1)
+                        else:
+                            pos = max(0.0, pos)
+                        opens = (windows or {}).get(i, (None, None))[0]
+                        stops_out.append({"name": points[i]["name"], "edge": edge, "pos": pos,
+                                          "opens_s": opens if opens and opens > 0 else None,
+                                          "duration": STOP_MINUTES * 60})
+                    # The simulation clock it left at: traffic lights cycle on that clock,
+                    # so the re-run must leave at the same moment to meet the same lights.
+                    vans_out.append({"van": r["van"], "edges": r["edges"], "stops": stops_out,
+                                     "depart_s": r["t0"]})
+                return vans_out
+
+            scen = {"plan": scenario_vans(routes)}
+            if today:
+                scen["today"] = scenario_vans(today)
             far = [(points[i]["name"], d) for i, (_, _, d) in enumerate(snaps) if d > roads.SNAP_WARN_M]
             return {"routes": routes, "today": today, "far": far, "xy": xy, "streets": streets,
-                    "secs": secs, "metres": metres}
-        finally:
+                    "secs": secs, "metres": metres, "scenario": scen}
+        except roads.RoadsUnavailable:
+            raise   # a problem with the request, not with the session
+        except Exception:
+            # A session that failed mid-run may hold half a simulation; start the
+            # next email from a fresh one rather than trust it.
             R.close()
+            _SESSION = None
+            raise
 
 
 def _plan_straight(points, demands, vans, capacity, slow, windows, shift_s):
@@ -413,35 +580,86 @@ def _match_current(current_raw, points):
 
 
 async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
-    req = await extract(INSTRUCTIONS, content, SCHEMA, SCHEMA["required"])
+    # A reply in the same thread adjusts the plan already made there ("main roads
+    # at 40%", "add a van", "drop Haughville") instead of starting from nothing:
+    # the stops and settings are remembered per thread, because the platform only
+    # passes back the last 4,000 characters of quoted history.
+    request_text = _request_part(content)
+    thread = str(context.get("thread_id") or "")
+    saved = _load_thread(thread)
+    if saved:
+        prompt = (
+            "This email replies to a plan already made in this thread. Settings of that plan: "
+            + json.dumps(saved["settings"]) + ". Stops already planned: "
+            + ", ".join(p["name"] for p in saved["points"])
+            + ". Fill a field only if THIS email changes it, giving the full new value (for example 'add a van' to "
+              "2 vans means vans 3); leave every other field 0, '' or [].\n\nTHE NEW EMAIL:\n" + request_text)
+        req = await extract(INSTRUCTIONS, prompt, SCHEMA, SCHEMA["required"])
+    else:
+        req = await extract(INSTRUCTIONS, content, SCHEMA, SCHEMA["required"])
     if req is None:
         return {"action": "reply_email", "text": "Sorry — I couldn't read that request just now. Please send it "
                 "again; if it keeps happening, list the depot and stops one per line as name, latitude, longitude."}
-    # Coordinates are read from the email directly when they are written one place
-    # per line: a model asked to copy dozens of numbers drops or mangles some, and a
-    # route built on one wrong digit is thousands of km long.
-    listed = _listed_points(content)
-    if len(listed) >= 3:
-        depot_i = next((i for i, p in enumerate(listed) if "depot" in p["name"].lower()), 0)
-        depot = listed.pop(depot_i)
-        stops = listed
-    else:
-        def usable(s):
-            has_xy = isinstance(s.get("lat"), (int, float)) and isinstance(s.get("lon"), (int, float)) \
-                and (s["lat"], s["lon"]) != (0, 0)
-            if has_xy:
-                return {**s, "address": ""}
-            if str(s.get("address") or "").strip():
-                return {**s, "lat": None, "lon": None}
-            return None
 
-        depot = usable(req.get("depot") or {}) or {}
-        stops = []
-        for s in req.get("stops") or []:
+    def usable(s):
+        has_xy = isinstance(s.get("lat"), (int, float)) and isinstance(s.get("lon"), (int, float)) \
+            and (s["lat"], s["lon"]) != (0, 0)
+        if has_xy:
+            return {**s, "address": ""}
+        if str(s.get("address") or "").strip():
+            return {**s, "lat": None, "lon": None}
+        return None
+
+    def from_model(items):
+        out = []
+        for s in items or []:
             s = usable(s)
             if s:
                 o, c = _clock_text(s.get("opens")), _clock_text(s.get("closes"))
-                stops.append({**s, "window": (o, c) if o is not None and c is not None and c > o else None})
+                out.append({**s, "window": (o, c) if o is not None and c is not None and c > o else None})
+        return out
+
+    # Coordinates and addresses are read from the email directly when they are
+    # written one place per line: a model asked to copy dozens of numbers drops or
+    # mangles some, and a route built on one wrong digit is thousands of km long.
+    listed = _listed_points(request_text if saved else content)
+    changes = []
+    if saved and not (len(listed) >= 3 and any("depot" in p["name"].lower() for p in listed)):
+        # A follow-up: start from the thread's plan, then apply what this email adds,
+        # replaces or removes.
+        depot = dict(saved["points"][0])
+        stops = [dict(p) for p in saved["points"][1:]]
+        for p in listed or from_model(req.get("stops")):
+            same = next((k for k, s in enumerate(stops) if _same_name(s["name"], p["name"])), None)
+            if same is None:
+                stops.append(p)
+                changes.append(f"added {p['name']}")
+            else:
+                stops[same] = {**stops[same], **{k: v for k, v in p.items() if v not in (None, "", 0.0)}}
+                changes.append(f"updated {p['name']}")
+        dropped = []
+        for name in req.get("remove_stops") or []:
+            keep = [s for s in stops if not _same_name(s["name"], name)]
+            if len(keep) < len(stops):
+                dropped += [s["name"] for s in stops if s not in keep]
+                stops = keep
+        if dropped:
+            changes.append(f"dropped {', '.join(dropped)}")
+        req = _merge_settings(saved["settings"], req, request_text, changes)
+        # A dropped stop leaves today's routes too, so the comparison still works.
+        if dropped and req.get("current_routes"):
+            req["current_routes"] = [{**v, "stops": [n for n in v.get("stops") or []
+                                                      if not any(_same_name(n, d) for d in dropped)]}
+                                     for v in req["current_routes"]]
+    else:
+        if len(listed) >= 3:
+            depot_i = next((i for i, p in enumerate(listed) if "depot" in p["name"].lower()), 0)
+            depot = listed.pop(depot_i)
+            stops = listed
+        else:
+            depot = usable(req.get("depot") or {}) or {}
+            stops = from_model(req.get("stops"))
+        req = _merge_settings({}, req, content, [])
     if not depot or len(stops) < 2:
         return {"action": "reply_email", "text": "I need the depot and at least two stops to plan routes. List them "
                 "one per line as name: street address (or latitude, longitude), and optionally the amount and "
@@ -506,7 +724,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     speeds = (main_pct, max(main_pct, PEAK_MINOR_PCT)) if rush else (BASE_SPEED_PCT, BASE_SPEED_PCT)
     fuel_price = float(req.get("fuel_price_per_gallon") or 0) or FUEL_PRICE_PER_GALLON
     driver_rate = float(req.get("driver_cost_per_hour") or 0) or DRIVER_COST_PER_HOUR
-    per_week = float(req.get("deliveries_per_week") or 0) or _runs_per_week(content)
+    per_week = float(req.get("deliveries_per_week") or 0)
     current, current_note = _match_current(req.get("current_routes"), points)
 
     closed_before = [points[i]["name"] for i, (o, c) in windows.items() if c < 0]
@@ -545,7 +763,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     head = f"{len(stops)} stops, {vans} van(s)" + (f", capacity {capacity:g} each" if capacity else "")
     if start_min is not None:
         head += f", leaving at {_clock(start_min, 0)}" + (" (my assumption — tell me if not)" if assumed_departure else "")
-    lines = [head + ".", ""]
+    lines = ([f"Re-planned with your changes: {'; '.join(changes)}.", ""] if changes else []) + [head + ".", ""]
 
     plan_t = _totals(routes, fuel_price, driver_rate) if on_roads else None
     if on_roads and today:
@@ -636,6 +854,12 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
         lines.append("Map data © OpenStreetMap contributors (ODbL)."
                      + (" Addresses located with the U.S. Census Bureau Geocoder; the matched addresses are in "
                         "routes.csv." if any(p.get("matched") for p in points) else ""))
+        lines += ["",
+                  "Check it or change it yourself: sumo-scenario.zip is the SUMO simulation behind these numbers. "
+                  "Open plan.sumocfg in SUMO's viewer to watch it, or edit the settings in run_scenario.py "
+                  "(road speeds, minutes per stop) and run it to see the times, fuel and CO2 move.",
+                  "Or just reply with a change — \"main roads at 40%\", \"add a van\", \"leave at 7:30\", "
+                  "\"drop Haughville Pantry\" — and I'll re-plan and re-simulate."]
     if req.get("unclear"):
         lines += ["", f"Note: {req['unclear']}"]
 
@@ -646,6 +870,16 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
         if on_roads:
             deliverables += _attach_pictures(attach_fn, points, on_roads, start_min, lines, req, fuel_price,
                                              driver_rate, plan_t)
+            try:
+                packed = scenario.scenario_zip(on_roads["scenario"], {
+                    "main_roads_pct": speeds[0], "side_streets_pct": speeds[1], "stop_minutes": STOP_MINUTES,
+                    "emission_class": roads.VAN_EMISSION_CLASS, "departure_minutes": start_min})
+                if packed and attach_fn("sumo-scenario.zip", packed):
+                    deliverables.append("sumo-scenario.zip")
+                    _log(f"SUMO scenario packed ({len(packed) // 1024} KB)")
+            except Exception as exc:
+                _log(f"scenario failed: {type(exc).__name__}: {exc}")
+    _save_thread(thread, points, {k: req.get(k) for k in SETTING_KEYS})
     return {"action": "reply_email", "text": "\n".join(lines), "deliverables": deliverables}
 
 

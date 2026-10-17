@@ -167,9 +167,42 @@ class Roads:
         # build.sh already cut the network down to its strongly connected core
         # (see strong_core above), so every road left can be reached and left.
         self._core = {e for e in libsumo.edge.getIDList() if not e.startswith(":")}
+        # Each road's own speed limit, kept so every email starts from the real
+        # limits: apply_peak changes speeds in place, and this session is reused.
+        self._limit = {e: libsumo.lane.getMaxSpeed(f"{e}_0") for e in self._core}
         libsumo.vehicletype.copy("DEFAULT_VEHTYPE", "van")
         libsumo.vehicletype.setEmissionClass("van", VAN_EMISSION_CLASS)
+        # No randomness: SUMO's default gives each vehicle a random speed factor
+        # (about +/-10%) and random driver imperfection, drawn as it enters. In a
+        # reused session the draws depend on every vehicle before it, so the same
+        # plan gave different times, and the attached scenario could not reproduce
+        # the email (one van 15 minutes apart, 2026-10-17). Same email, same answer.
+        libsumo.vehicletype.setSpeedDeviation("van", 0.0)
+        libsumo.vehicletype.setImperfection("van", 0.0)
         self._made = 0
+
+    def prepare(self) -> None:
+        """Make a reused session clean for the next email: no vans left, real speed limits.
+
+        One session serves every email in the process. Loading the network again for
+        each one does not work on the standard tier: SUMO keeps the memory of a closed
+        session, so a second load went past 512 MB and the process was killed
+        (measured 2026-10-17: 437 MB held after one email, then exit 137).
+        """
+        ts = self.ts
+        for vid in list(ts.vehicle.getIDList()):
+            try:
+                ts.vehicle.remove(vid)
+            except Exception:
+                pass
+        for vid in list(ts.simulation.getPendingVehicles()):
+            try:
+                ts.vehicle.remove(vid)
+            except Exception:
+                pass
+        ts.simulationStep()
+        for e, limit in self._limit.items():
+            ts.edge.setMaxSpeed(e, limit)
 
     def close(self):
         try:
@@ -266,8 +299,7 @@ class Roads:
         figure in. Main roads are told apart by their limit (50 km/h and up).
         """
         ts = self.ts
-        for e in self._core:
-            limit = ts.lane.getMaxSpeed(f"{e}_0")
+        for e, limit in self._limit.items():
             share = main_pct if limit >= 13.8 else minor_pct
             ts.edge.setMaxSpeed(e, max(1.0, limit * share / 100.0))
 
@@ -313,7 +345,7 @@ class Roads:
                                    duration=stop_seconds, until=until)
             plan[vid] = {"van": v["van"], "arrivals": [], "back": None, "teleported": False,
                          "expected": len(stops) - 2, "edges": edges, "waited_s": 0.0, "km": 0.0,
-                         "fuel_l": 0.0, "co2_kg": 0.0, "trace": [], "_next_trace": 0.0}
+                         "fuel_l": 0.0, "co2_kg": 0.0, "trace": [], "_next_trace": 0.0, "t0": t0}
             log(f"sim [{label}]: van {v['van']} loaded with a {len(edges)}-road route and {len(stops) - 2} stops")
 
         dt = ts.simulation.getDeltaT()
