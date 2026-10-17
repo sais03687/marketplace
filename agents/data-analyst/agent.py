@@ -1720,6 +1720,27 @@ def _produced_nothing_note(actions_taken: list) -> str:
     )
 
 
+def _fit_request(content: str, limit: int = 16000) -> str:
+    """The request as the closing step sees it, shortened from the right end.
+
+    This was content[:4000]. A teammate's reply puts the quoted thread and the
+    reply text first and its attached files last, so the cut fell inside the
+    file: on 2026-10-17 the analyst told the buyer the Route Planner's routes.csv
+    was "truncated after the Depot row" when all eight stops had arrived. When
+    something has to give it is now the earlier thread, never the request or the
+    files attached to it.
+    """
+    if len(content) <= limit:
+        return content
+    i = content.find("## THE REQUEST")
+    if i <= 0:
+        return content[:limit]
+    head, tail = content[:i], content[i:]
+    if len(tail) >= limit:
+        return tail[:limit]
+    return head[: limit - len(tail) - 40] + "\n[... earlier thread shortened ...]\n\n" + tail
+
+
 def _feedback_block(feedback: dict) -> str:
     """The platform's review of the previous reply, as the closing prompt reads it."""
     problems = "\n".join(f"- {p}" for p in (feedback.get("problems") or [])) or "- (none listed)"
@@ -1795,7 +1816,7 @@ async def _write_reply(state: AgentState, feedback: dict | None = None) -> str:
         agent_name=state.context.get("agent_name", "Data Analyst"),
         company_name=state.context.get("company_name", ""),
         soul_instructions=_soul_md,
-        request=(state.content or "(no request text available)")[:4000],
+        request=_fit_request(state.content or "(no request text available)"),
         actions_taken=actions_str,
         action_results=results_str,
         produced_nothing=_produced_nothing_note(state.actions_taken),

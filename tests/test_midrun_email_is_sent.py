@@ -144,3 +144,20 @@ def test_a_teammate_email_does_not_replace_the_reply_to_the_requester():
     })
     assert result["action"] == "reply_email"
     assert result["text"].startswith("I've asked the Route Planner")
+
+
+# ── The closing step sees the whole request and its files ───────────────────
+
+def test_attached_files_survive_a_long_thread():
+    """2026-10-17: a 4,000-character cut fell inside routes.csv."""
+    history = "## Earlier in this thread\n\n" + ("quoted line\n" * 900)
+    csv = "--- BEGIN routes.csv ---\n" + "\n".join(f"1,{i},Stop {i}" for i in range(9)) + "\n--- END routes.csv ---"
+    content = history + "## THE REQUEST — this is the only thing to act on\n\nHere is the plan.\n" + csv
+    fitted = agent._fit_request(content, limit=4000)
+    assert len(fitted) <= 4000
+    assert "Stop 8" in fitted and "--- END routes.csv ---" in fitted
+    assert "earlier thread shortened" in fitted
+
+
+def test_a_short_request_is_untouched():
+    assert agent._fit_request("hello", limit=4000) == "hello"

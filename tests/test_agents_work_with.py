@@ -328,3 +328,32 @@ def test_a_task_question_still_goes_to_the_manager():
     q2 = _q("Should I send colleague@buyer.com the revenue view or the margin view?")
     assert adapter._permission_question_answer(q2, "colleague@buyer.com", allow) is None, \
         "naming a person is not a permission question"
+
+
+# ── Replies quote what they answer ──────────────────────────────────────────
+
+SERVER = io.open(ROOT / "apps" / "provisioning-service" / "src" / "server.ts", encoding="utf-8").read()
+
+
+def test_a_reply_carries_the_message_it_answers():
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    start = SERVER.index("const QUOTE_LIMIT")
+    end = SERVER.index("/**\n * \"Re: <subject>\"")
+    body = (SERVER[start:end].replace("export function", "function")
+            .replace("(text: string): string", "(text)")
+            .replace("(body: string, bodyType: string, quote?: QuotedOriginal): string", "(body, bodyType, quote)"))
+    code = body + """;
+      const q = { from: "Data Analyst <da@x.com>", sent: "2026-10-17T17:04:00Z", html: false, content: "Depot: 39.74, -86.13\\n1. Fountain Square, 39.75, -86.13, 12" };
+      console.log(JSON.stringify([withQuotedOriginal("Here is the plan", "text", q), withQuotedOriginal("<p>Plan</p>", "html", q), withQuotedOriginal("x", "text", undefined)]));"""
+    out = subprocess.run(["node", "-e", code], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    text, html, none = json.loads(out.stdout)
+    assert "wrote:\n> Depot: 39.74, -86.13\n> 1. Fountain Square" in text
+    assert text.splitlines()[2].startswith("On ") and text.splitlines()[2].endswith("wrote:"), "the marker the poller splits on"
+    assert "<blockquote" in html and "Fountain Square" in html
+    assert none == "x"
+
+
+def test_resend_replies_use_it():
+    assert "body: withQuotedOriginal(emailBody, bodyType, thread.quote)," in SERVER

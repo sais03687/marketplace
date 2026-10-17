@@ -177,13 +177,21 @@ def _listed_points(text: str) -> list[dict]:
     dozens of numbers drops or mangles some, and one wrong digit moves a stop miles.
     """
     points = []
+    coord_lines = set()
     for m in POINT_LINE.finditer(text or ""):
+        coord_lines.add(m.start())
         demand, window = _extras(m.group("rest"))
         points.append({"name": m.group("name").strip(), "lat": float(m.group("lat")), "lon": float(m.group("lon")),
                        "demand": demand, "window": window, "_at": m.start()})
     for m in ADDRESS_LINE.finditer(text or ""):
         if COORDS_FIRST.match(m.group("rest")):
             continue   # a coordinates line, already read above
+        # A line already read as coordinates is not a second, address stop, even
+        # when a note on it holds a colon: "8. Bates-Hendricks, 41.87, -87.62,
+        # 6 crates - NOTE: this pantry has moved to Chicago, ~280 km" sent the note
+        # to the geocoder as a street address on 2026-10-17.
+        if m.start() in coord_lines:
+            continue
         segments = [s.strip() for s in SEGMENT_SPLIT.split(m.group("rest")) if s.strip()]
         address = segments[0] if segments else ""
         # An address has a house number and a street name; anything else on the

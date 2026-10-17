@@ -27,5 +27,12 @@
    "Assumed"
   ],
   "input": "Plan deliveries from 39.7486, -86.1386 leaving 9:00 to:\n- Fountain Square: 39.7517, -86.1301 - 10 crates\n- Near Eastside: 39.7790, -86.1180 - 12 crates\n- Haughville: 39.7720, -86.2010 - 8 crates"
+ },
+ {
+  "name": "a note with a colon on a coordinates line",
+  "expect": [
+   "8 stops"
+  ],
+  "input": "Depot: 39.7486, -86.1386\nVans: 2, each capacity 40 crates\nDeparture time: 8:00 AM\n\n1. Fountain Square Pantry, 39.7517, -86.1301, 12 crates\n2. Garfield Park Food Shelf, 39.7322, -86.1395, 8 crates\n3. Near Eastside Market, 39.7790, -86.1180, 15 crates\n4. Martindale Brightwood Hub, 39.8000, -86.1260, 10 crates\n5. Haughville Pantry, 39.7720, -86.2010, 9 crates\n6. West Indy Shelf, 39.7550, -86.1900, 7 crates\n7. Butler-Tarkington Pantry, 39.8240, -86.1700, 11 crates\n8. Bates-Hendricks Shelf, 39.7440, -86.1500, 6 crates - NOTE: gate code 4521, ring at the side door."
  }
 ]

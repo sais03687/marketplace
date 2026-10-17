@@ -27,6 +27,12 @@ async def locate(address: str, client: httpx.AsyncClient) -> tuple[float, float,
     for attempt in range(3):
         try:
             resp = await client.get(URL, params=params, timeout=15.0)
+            # A 4xx is the service refusing this input, not the service being
+            # down: it is "not found", and retrying it changes nothing. Reported
+            # as "could not be reached" it sent the sender off to retry later.
+            if 400 <= resp.status_code < 500:
+                _cache[key] = None
+                return None
             if resp.status_code != 200:
                 raise httpx.HTTPStatusError(f"status {resp.status_code}", request=resp.request, response=resp)
             matches = resp.json().get("result", {}).get("addressMatches") or []

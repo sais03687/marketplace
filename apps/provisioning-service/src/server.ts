@@ -342,12 +342,12 @@ async function mailboxDisplayName(address: string): Promise<string | undefined> 
 async function threadHeadersFor(
   mailbox: string,
   messageId: string,
-): Promise<{ inReplyTo?: string; references?: string; subject?: string }> {
+): Promise<{ inReplyTo?: string; references?: string; subject?: string; quote?: QuotedOriginal }> {
   if (!config.microsoftTenantId) return {};
   try {
     const token = await mintTokenForTenant(config.microsoftTenantId);
     const res = await fetch(
-      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageId,internetMessageHeaders,subject`,
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageId,internetMessageHeaders,subject,from,sentDateTime,body`,
       { headers: { Authorization: `Bearer ${token.access_token}` } },
     );
     if (!res.ok) {
@@ -358,15 +358,67 @@ async function threadHeadersFor(
       internetMessageId?: string;
       subject?: string;
       internetMessageHeaders?: Array<{ name?: string; value?: string }>;
+      from?: { emailAddress?: { name?: string; address?: string } };
+      sentDateTime?: string;
+      body?: { contentType?: string; content?: string };
     };
     const refs = (msg.internetMessageHeaders ?? []).find(
       (h) => String(h?.name || "").toLowerCase() === "references",
     )?.value;
-    return { inReplyTo: msg.internetMessageId, references: refs, subject: msg.subject };
+    const who = msg.from?.emailAddress;
+    const quote = msg.body?.content
+      ? {
+          from: who?.name ? `${who.name} <${who.address ?? ""}>` : (who?.address ?? "the sender"),
+          sent: msg.sentDateTime ?? "",
+          html: msg.body.contentType === "html",
+          content: msg.body.content,
+        }
+      : undefined;
+    return { inReplyTo: msg.internetMessageId, references: refs, subject: msg.subject, quote };
   } catch (err: any) {
     console.error(`[outlook-send] could not read thread headers: ${err.message}`);
     return {};
   }
+}
+
+interface QuotedOriginal {
+  from: string;
+  sent: string;
+  html: boolean;
+  content: string;
+}
+
+/** Cap on a quoted original, so a long thread does not grow without bound. */
+const QUOTE_LIMIT = 30_000;
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * The reply with the message it answers quoted beneath it, as mail clients do.
+ *
+ * Graph's reply endpoint used to add this for us. Sending through Resend copied
+ * the threading headers but not the quote, so every agent reply arrived bare. A
+ * person reading the thread barely notices; an agent receiving the reply loses
+ * the conversation, because the quote is the only history the poller can hand
+ * it. On 2026-10-17 the Data Analyst, handed the Route Planner's reply to its own
+ * request, asked the buyer to resend a stop list it had written itself.
+ *
+ * "On <date>, <sender> wrote:" is the marker the poller already splits on.
+ */
+export function withQuotedOriginal(body: string, bodyType: string, quote?: QuotedOriginal): string {
+  if (!quote?.content) return body;
+  const when = quote.sent ? new Date(quote.sent).toUTCString() : "earlier";
+  const marker = `On ${when}, ${quote.from} wrote:`;
+  const original = quote.content.slice(0, QUOTE_LIMIT);
+  if (bodyType === "html") {
+    const inner = quote.html ? original : `<pre style="white-space:pre-wrap">${escapeHtml(original)}</pre>`;
+    return `${body}<br><br><div>${escapeHtml(marker)}</div>` +
+      `<blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">${inner}</blockquote>`;
+  }
+  const plain = quote.html ? original.replace(/<[^>]+>/g, "") : original;
+  return `${body}\n\n${marker}\n${plain.split("\n").map((l) => `> ${l}`).join("\n")}`;
 }
 
 /**
@@ -1102,7 +1154,7 @@ export function startProxyServer() {
               to: toArray,
               cc,
               subject: replySubject,
-              body: emailBody,
+              body: withQuotedOriginal(emailBody, bodyType, thread.quote),
               bodyType,
               attachments,
               inReplyTo: thread.inReplyTo,
