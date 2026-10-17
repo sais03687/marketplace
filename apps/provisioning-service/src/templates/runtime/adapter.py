@@ -3810,6 +3810,42 @@ async def send_email(to: str, subject: str, text: str, thread_id: str | None = N
         return resp.json()
 
 
+def _requester() -> str:
+    """The person this run's work is for: who wrote in, or whom a teammate copied."""
+    meta = _RUN_META.get(_current_run.get(), {}) or {}
+    sender = str(meta.get("inbound_sender") or "").lower()
+    mates = _teammate_emails(_allowlist_cache.get("data") or {})
+    if sender and sender not in mates:
+        return sender
+    own = {_extract_email(WORKSPACE_EMAIL or ""), _extract_email(AGENT_EMAIL or "")}
+    for a in meta.get("inbound_cc") or []:
+        a = str(a).lower()
+        if a and a not in mates and a not in own:
+            return a
+    return ""
+
+
+def _final_recipient(to: str, request_text: str) -> str:
+    """Who a finished run's answer goes to. The platform's decision, not the model's.
+
+    In the 2026-10-17 battery the analyst sent two finished answers to its manager
+    when a colleague had asked, so the person waiting never received them. A new
+    email from a run goes to the address the agent chose only when that address is
+    the requester, a teammate (a handoff), or one written in the request itself
+    ("send it to Dana at ..."). Anything else is sent to the requester instead.
+    """
+    chosen = _extract_email(to or "")
+    asked = _requester()
+    if not asked or not chosen or chosen == asked:
+        return to
+    if chosen in _teammate_emails(_allowlist_cache.get("data") or {}):
+        return to
+    if chosen in (request_text or "").lower():
+        return to
+    print(f"[adapter] Answer addressed to {chosen}, but {asked} asked for it — sending it to {asked}", flush=True)
+    return asked
+
+
 def _handoff_cc(recipient: str) -> list[str]:
     """Who to copy when this mail goes to a teammate: the person who asked.
 
@@ -5946,6 +5982,90 @@ async def resolve_approval_alt(body: ResolveApprovalAlt, request: Request):
 
 # ─── Resume & Deliver — completes interrupted graph and delivers result ──────
 
+# ─── Questions the platform answers itself ───────────────────────────────────
+#
+# Who may write in, who may be written to, and what the buyer's policy allows are
+# the platform's rules, already decided in code. An agent that stops to ask the
+# manager "should I trust this sender?" turns a settled fact into a human chore:
+# in the 2026-10-17 battery the analyst did so for two of four requests from an
+# address the buyer had listed itself. So a decision request that is about trust
+# or permission (by its words, a fixed list) is answered here from those rules
+# and never reaches a person:
+#   - every address it concerns is permitted  -> answered "permitted, continue";
+#   - any address it concerns is not          -> refused, naming the setting.
+# A question with none of these words is a question about the task and goes to
+# the manager as before. Deterministic and auditable; it cannot stop an agent
+# from wording a trust doubt as something else, which the battery measures.
+_PERMISSION_WORDS = re.compile(
+    r"\b(trust|trusted|legitimate|impersonat\w*|spoof\w*|verify|verified|verification|identity|"
+    r"claiming to be|claims to be|recorded address|not (?:my|your|the) manager|unknown sender|"
+    r"permission|permitted|authori[sz]\w*|allowed to)\b", re.I)
+_ADDRESS = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _permission_question_answer(intr: dict, run_sender: str, allow: dict | None) -> tuple[str, str] | None:
+    """("answer"|"refuse", text) for a trust or permission question; None otherwise."""
+    if not isinstance(intr, dict) or intr.get("action") != "request_decision" or allow is None:
+        return None
+    words = " ".join(str(intr.get(k) or "") for k in ("question", "context")) + " " + \
+        " ".join(str(o) for o in intr.get("options") or [])
+    if not _PERMISSION_WORDS.search(words):
+        return None
+    own = {_extract_email(WORKSPACE_EMAIL or ""), _extract_email(AGENT_EMAIL or "")}
+    about = {a.lower().rstrip(".") for a in _ADDRESS.findall(words)} - own
+    if not about and run_sender:
+        about = {run_sender.lower()}
+    if not about:
+        return None
+    manager = str(allow.get("managerEmail") or "").strip().lower() or _manager_email().lower()
+    mates = _teammate_emails(allow)
+
+    def why(a: str) -> str | None:
+        if a == manager:
+            return "the manager"
+        if a in mates:
+            return "a teammate agent the buyer chose"
+        if _sender_allowed(a, allow) or _share_recipient_allowed(a, allow):
+            return "on the buyer's allowed list"
+        return None
+
+    reasons = {a: why(a) for a in sorted(about)}
+    blocked = [a for a, r in reasons.items() if r is None]
+    if blocked:
+        return ("refuse",
+                f"Platform: {', '.join(blocked)} {'is' if len(blocked) == 1 else 'are'} not on this agent's allowed "
+                f"list, so this cannot go ahead. The buyer can add them under Settings > Who can email it.")
+    listed = "; ".join(f"{a} is {r}" for a, r in reasons.items())
+    return ("answer",
+            f"Platform answer, from the buyer's settings: {listed}. Who may email you and who you may email are "
+            f"decided by the platform, not the manager, so there is nothing to confirm. Continue with the task "
+            f"exactly as requested.")
+
+
+async def _resume_answered(thread_id: str, channel: str, channel_context: dict, answer: str) -> None:
+    """Resume a suspended graph with the platform's own answer, as a decision would."""
+    synthetic_id = f"platform-answer-{time.time_ns()}"
+    _remember_pending_resume(synthetic_id, {
+        "thread_id": thread_id, "channel": channel, "channel_context": channel_context, "action": None,
+    })
+    await _resume_and_deliver(synthetic_id, {"status": "EDITED", "resolutionAction": answer})
+
+
+async def _platform_settles(intr: dict, thread_id: str, channel: str, channel_context: dict) -> bool:
+    """Answer or refuse a trust/permission question without a human. True when it did."""
+    run_sender = str((_RUN_META.get(thread_id, {}) or {}).get("inbound_sender") or "")
+    verdict = _permission_question_answer(intr, run_sender, await _load_allowlist())
+    if not verdict:
+        return False
+    kind, text = verdict
+    print(f"[adapter] Permission question settled by the platform ({kind}): {text[:160]}", flush=True)
+    if kind == "answer":
+        asyncio.create_task(_resume_answered(thread_id, channel, channel_context, text))
+    else:
+        asyncio.create_task(_resume_rejected(thread_id, channel, channel_context, text))
+    return True
+
+
 async def _resume_rejected(
     thread_id: str,
     channel: str,
@@ -6030,6 +6150,8 @@ async def _resume_and_deliver(approval_id: str, resolution: dict) -> None:
             action_name = intr.get("action", "unknown") if isinstance(intr, dict) else "unknown"
             reasoning = intr.get("reasoning", "") if isinstance(intr, dict) else ""
             risk = intr.get("risk_assessment", {}) if isinstance(intr, dict) else {}
+            if action_name == "request_decision" and await _platform_settles(intr, thread_id, channel, channel_ctx):
+                return
             try:
                 new_approval_id = await queue_for_approval(
                     task_type=action_name,
@@ -6266,6 +6388,9 @@ async def _deliver_email_result(
                     attachments=_att,
                 )
             else:
+                # The same rule as a run that finished without pausing: the
+                # answer goes to whoever asked unless the request named someone.
+                recipient = _final_recipient(recipient, ctx.get("original_message", "") or "")
                 await send_email(
                     to=recipient,
                     subject=result.get("subject", ctx.get("subject", "")),
@@ -6425,6 +6550,9 @@ async def _handle_interrupt(
             # it here as well is two messages for one event. Teams is synchronous
             # and has to answer now, so its call sites substitute a short line.
             return "" if channel == "email" else str(refusal)
+
+    if action_name == "request_decision" and await _platform_settles(intr, thread_id, channel, channel_context):
+        return "" if channel == "email" else "Checked against your settings — carrying on."
 
     # Build a human-readable draft for the approval portal
     if action_name == "request_decision":
@@ -7235,6 +7363,8 @@ async def _handle_message(message: str, context: dict):
 
         action = result.get("action", "none")
         print(f"[adapter] Agent returned action={action} to={result.get('to', '')}", flush=True)
+        if action == "send_email" and result.get("to"):
+            result["to"] = _final_recipient(result["to"], message)
 
         # A hook sent with deliver=false is context for the agent — the
         # onboarding brief, the buyer's setup answers — not a message from

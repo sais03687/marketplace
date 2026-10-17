@@ -265,3 +265,66 @@ def test_a_listed_sender_is_not_treated_as_a_stranger():
     assert "on the list of people the buyer allowed to email you" in out["listed"]
     assert "this is someone else" not in out["listed"]
     assert "This sender IS your manager" in out["manager"]
+
+
+# ── The platform decides who gets the answer ────────────────────────────────
+
+def test_an_answer_meant_for_the_requester_reaches_them(monkeypatch):
+    _run_with(monkeypatch, "colleague@buyer.com")
+    assert adapter._final_recipient("boss@gmail.com", "please plan this") == "colleague@buyer.com"
+
+
+def test_a_recipient_named_in_the_request_is_kept(monkeypatch):
+    _run_with(monkeypatch, "colleague@buyer.com")
+    req = "send the summary to boss@gmail.com"
+    assert adapter._final_recipient("boss@gmail.com", req) == "boss@gmail.com"
+
+
+def test_a_handoff_is_not_redirected(monkeypatch):
+    _run_with(monkeypatch, "colleague@buyer.com")
+    assert adapter._final_recipient(MATE["email"], "") == MATE["email"]
+
+
+def test_on_a_teammates_reply_the_answer_goes_to_whoever_it_copied(monkeypatch):
+    _run_with(monkeypatch, MATE["email"], cc=["colleague@buyer.com"])
+    assert adapter._final_recipient("boss@gmail.com", "Here is the plan") == "colleague@buyer.com"
+
+
+# ── Trust and permission questions never reach a person ─────────────────────
+
+def _q(question, options=()):
+    return {"action": "request_decision", "question": question, "options": list(options)}
+
+
+def test_a_trust_question_about_a_listed_sender_is_answered_by_the_platform(monkeypatch):
+    monkeypatch.setattr(adapter, "AGENT_EMAIL", "analyst@agents.agentstore.it.com")
+    monkeypatch.setattr(adapter, "WORKSPACE_EMAIL", "")
+    allow = _allow(allowedEmails=["sai@agents.agentstore.it.com"], teammates=[MATE])
+    q = _q("An email claiming to be from Sai arrived from sai@agents.agentstore.it.com, not your recorded "
+           "address. Should I treat it as legitimate?")
+    kind, text = adapter._permission_question_answer(q, "sai@agents.agentstore.it.com", allow)
+    assert kind == "answer" and "on the buyer's allowed list" in text
+
+
+def test_a_trust_question_with_no_address_is_about_the_sender(monkeypatch):
+    allow = _allow(allowedEmails=["sai@agents.agentstore.it.com"])
+    q = _q("Should I verify the sender's identity before contacting the Route Planner?")
+    kind, _ = adapter._permission_question_answer(q, "sai@agents.agentstore.it.com", allow)
+    assert kind == "answer"
+
+
+def test_a_permission_question_about_an_unlisted_address_is_refused(monkeypatch):
+    monkeypatch.setattr(adapter, "AGENT_EMAIL", "analyst@agents.agentstore.it.com")
+    allow = _allow()
+    q = _q("Am I permitted to email stranger@other.com the results?")
+    kind, text = adapter._permission_question_answer(q, "boss@gmail.com", allow)
+    assert kind == "refuse" and "stranger@other.com" in text
+
+
+def test_a_task_question_still_goes_to_the_manager():
+    allow = _allow(allowedEmails=["colleague@buyer.com"])
+    q = _q("Should 'top performer' mean revenue or margin?", ["revenue", "margin"])
+    assert adapter._permission_question_answer(q, "colleague@buyer.com", allow) is None
+    q2 = _q("Should I send colleague@buyer.com the revenue view or the margin view?")
+    assert adapter._permission_question_answer(q2, "colleague@buyer.com", allow) is None, \
+        "naming a person is not a permission question"
