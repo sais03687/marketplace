@@ -242,3 +242,26 @@ def test_mail_to_a_person_copies_nobody(monkeypatch):
 def test_a_teammate_is_never_copied(monkeypatch):
     _run_with(monkeypatch, MATE["email"], cc=[MATE["email"]])
     assert adapter._handoff_cc(MATE["email"]) == []
+
+
+def test_a_teammates_mail_names_the_person_who_asked():
+    out = _run_poller_fragment("""
+        out.text = buildAgentMessage({ from: "Data Analyst <data-analyst-x@agents.agentstore.it.com>",
+          subject: "Re: plan", threadId: "t", request: "Here is the plan", conversation: "",
+          awaitingDecision: "", managerEmail: "boss@gmail.com", teammates: allowlistCache.teammates,
+          cc: ["colleague@buyer.com", "route-planner-x@agents.agentstore.it.com"] });
+    """)
+    assert "The person who asked for this work is copied on it: colleague@buyer.com." in out["text"]
+    assert "route-planner-x@" not in out["text"].split("copied on it:")[1].split("\n")[0], "never the agent itself"
+
+
+def test_a_listed_sender_is_not_treated_as_a_stranger():
+    out = _run_poller_fragment("""
+        out.listed = buildAgentMessage({ from: "colleague@buyer.com", subject: "s", threadId: "t", request: "hi",
+          conversation: "", awaitingDecision: "", managerEmail: "boss@gmail.com", allowedSender: true });
+        out.manager = buildAgentMessage({ from: "boss@gmail.com", subject: "s", threadId: "t", request: "hi",
+          conversation: "", awaitingDecision: "", managerEmail: "boss@gmail.com", allowedSender: true });
+    """)
+    assert "on the list of people the buyer allowed to email you" in out["listed"]
+    assert "this is someone else" not in out["listed"]
+    assert "This sender IS your manager" in out["manager"]

@@ -145,6 +145,20 @@ def _window(text: str):
 ADDRESS_LINE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(?P<name>[^\n:]{2,80}?)\s*:\s*(?P<rest>[^\n]+)$", re.M)
 SEGMENT_SPLIT = re.compile(r"\s+[-–—]\s+|;")
 COORDS_FIRST = re.compile(r"\s*-?\d{1,2}\.\d+\s*,\s*-?\d{1,3}\.\d+")
+# A depot written into a sentence rather than listed: "Depot 39.7486, -86.1386.",
+# "leaving 8:00 from 39.7486, -86.1386", "start at 39.74, -86.13". Coordinates only:
+# an inline street address is left to the model, which reads those well.
+INLINE_DEPOT = re.compile(
+    r"\b(?:depot|warehouse|base|from|start(?:ing)?\s+(?:at|from))\b[^\n\d-]{0,25}?"
+    r"(?P<lat>-?\d{1,2}\.\d+)\s*,\s*(?P<lon>-?\d{1,3}\.\d+)", re.I)
+
+
+def _inline_depot(text: str) -> dict | None:
+    """The depot when it is written inline in the request rather than listed."""
+    m = INLINE_DEPOT.search(text or "")
+    if not m:
+        return None
+    return {"name": "Depot", "lat": float(m.group("lat")), "lon": float(m.group("lon")), "address": ""}
 
 
 def _extras(rest: str):
@@ -745,6 +759,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     # mangles some, and a route built on one wrong digit is thousands of km long.
     listed = _listed_points(request_text if saved else content)
     changes = []
+    depot_assumed = None
     if saved and not (len(listed) >= 3 and any("depot" in p["name"].lower() for p in listed)):
         # A follow-up: start from the thread's plan, then apply what this email adds,
         # replaces or removes.
@@ -774,8 +789,25 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
                                      for v in req["current_routes"]]
     else:
         if len(listed) >= 3:
-            depot_i = next((i for i, p in enumerate(listed) if "depot" in p["name"].lower()), 0)
-            depot = listed.pop(depot_i)
+            # The depot is the line named as one; failing that, one written inline
+            # ("Depot 39.74, -86.13." or "leaving 8:00 from 39.74, -86.13"); only
+            # then the first line. Taking the first line unconditionally turned the
+            # first stop into the depot whenever the depot was given in a sentence:
+            # 4 of 7 Route Planner tasks in the 2026-10-17 battery planned one stop
+            # short, and one reported 22 crates for a 37-crate request.
+            depot_i = next((i for i, p in enumerate(listed) if "depot" in p["name"].lower()), None)
+            inline = _inline_depot(request_text if saved else content)
+            same_place = next((i for i, p in enumerate(listed) if inline and isinstance(p.get("lat"), (int, float))
+                               and _km(inline, p) < 0.05), None)
+            if depot_i is not None:
+                depot = listed.pop(depot_i)
+            elif same_place is not None:
+                depot = listed.pop(same_place)
+            elif inline:
+                depot = inline
+            else:
+                depot = listed.pop(0)
+                depot_assumed = depot.get("name") or "the first place listed"
             stops = listed
         else:
             depot = usable(req.get("depot") or {}) or {}
@@ -814,6 +846,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     if far:
         return {"action": "reply_email", "text": f"These stops are more than {MAX_KM_FROM_DEPOT} km from the depot, "
                 f"which usually means a typo in a coordinate: {', '.join(far)}. Check them and send again."}
+    vans_assumed = not req.get("vans")
     vans = max(1, min(int(req.get("vans") or 1), 10))
     capacity = float(req.get("van_capacity") or 0)
     points = [{"name": depot.get("name") or "Depot", "lat": depot["lat"], "lon": depot["lon"],
@@ -885,6 +918,18 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     if start_min is not None:
         head += f", leaving at {_clock(start_min, 0)}" + (" (my assumption — tell me if not)" if assumed_departure else "")
     lines = ([f"Re-planned with your changes: {'; '.join(changes)}.", ""] if changes else []) + [head + ".", ""]
+    # Say what was assumed rather than plan on it silently.
+    assumed = []
+    if depot_assumed:
+        assumed.append(f"I used {depot_assumed} as the depot, since none was marked — tell me if the vans start "
+                       "somewhere else")
+    if vans_assumed:
+        assumed.append("you didn't say how many vans, so I planned for one"
+                       + ("" if capacity else " with no load limit") + " — tell me how many and how much each carries")
+    elif not capacity and any(d > 0 for d in demands):
+        assumed.append("you didn't say how much each van carries, so I planned with no load limit")
+    if assumed:
+        lines += ["Assumed: " + "; ".join(assumed) + ".", ""]
 
     plan_t = _totals(routes, fuel_price, driver_rate) if on_roads else None
     if on_roads and today:

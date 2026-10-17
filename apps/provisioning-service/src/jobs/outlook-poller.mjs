@@ -871,6 +871,8 @@ function buildAgentMessage({
   awaitingDecision,
   managerEmail,
   teammates = [],
+  cc = [],
+  allowedSender = false,
 }) {
   const parts = [];
 
@@ -905,9 +907,28 @@ function buildAgentMessage({
     const isManager = sender.trim().toLowerCase() === mgr.toLowerCase();
     const mate = teammates.find((t) => (t.email || "").toLowerCase() === sender.trim().toLowerCase());
     if (mate) {
+      // Who the teammate copied is the person who asked for this work. Named so
+      // the answer goes back to them: in the 2026-10-17 battery the analyst sent
+      // its summaries to the manager instead of the colleague who had asked.
+      const mates = new Set(teammates.map((t) => (t.email || "").toLowerCase()));
+      const asked = cc.filter((a) => a && !mates.has(a.toLowerCase())
+                                  && a.toLowerCase() !== String(OUTLOOK_AGENT_EMAIL || "").toLowerCase());
       return (
         `\nThis sender is your teammate ${mate.name}, another agent this buyer hired — not a person. ` +
-        `Your manager on the platform's record is ${mgr}.`
+        `Your manager on the platform's record is ${mgr}.` +
+        (asked.length
+          ? `\nThe person who asked for this work is copied on it: ${asked.join(", ")}. Send your answer to them.`
+          : "")
+      );
+    }
+    // Someone the buyer put on this agent's list of allowed senders (or a
+    // colleague on their domain) is expected, not a stranger. "This is someone
+    // else" alone read as a warning: in the same battery the analyst stopped to
+    // ask the manager whether to trust an address the buyer had listed itself.
+    if (!isManager && allowedSender) {
+      return (
+        `\nThis sender is on the list of people the buyer allowed to email you; your manager on the ` +
+        `platform's record is ${mgr}. Answer the sender.`
       );
     }
     return isManager
@@ -985,6 +1006,10 @@ async function forwardToGateway(message, attachments) {
     awaitingDecision: approvalContext,
     managerEmail: allowlistCache.managerEmail,
     teammates: allowlistCache.teammates || [],
+    cc: (message.ccRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean),
+    // Only mail that got this far was admitted; this says whether it was by the
+    // buyer's own list or domain rather than because it is the manager.
+    allowedSender: isSenderAllowed(fromFormatted),
   });
 
   const payload = {
