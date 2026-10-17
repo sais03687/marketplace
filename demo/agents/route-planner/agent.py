@@ -2,14 +2,13 @@
 
 Email the depot and the stops (name plus latitude/longitude, and optionally how
 much each stop needs), how many vans and how much each carries, and optionally a
-departure time. It loads the area's roads from OpenStreetMap, works out driving
-times between every pair of stops, plans the routes that take the least driving
+departure time. It uses the area's real roads (OpenStreetMap, built into the agent
+for a fixed area — see build.sh), works out driving times between every pair of stops, plans the routes that take the least driving
 time, then drives each van through a SUMO simulation of those roads — speed
 limits, one-way streets, turns and traffic lights — to get its arrival time at
 every stop. Attaches a CSV of the routes and a map of them on the roads.
 
-If the road map cannot be loaded (the map service is down, or the stops span too
-large an area), it plans on straight-line distances instead and says so.
+For stops outside that area it plans on straight-line distances instead and says so.
 """
 import asyncio
 import io

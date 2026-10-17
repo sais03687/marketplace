@@ -5,104 +5,100 @@ turns and speed limits.
 Kept apart from agent.py so the email handling stays readable. Nothing here talks to
 the model; everything is computed.
 
-Sizes are chosen for the platform's standard tier (512 MB): the network is built
-without junction-internal lanes or turnarounds, which routing does not need and which
-roughly triple its size. Measured on central Indianapolis (15 x 14 km): 11 MB of map
-data, 6 s to convert, 30 MB network, 320 MB peak while loaded.
+The network is built once by build.sh for a fixed area (see there for sizes); this
+module only reads it, so nothing here runs other programs or reaches the internet.
 """
-import hashlib
+import json
 import math
 import os
-import subprocess
-import time
 
-import requests
-
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-ROAD_TYPES = ("motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|"
-              "motorway_link|trunk_link|primary_link|secondary_link|tertiary_link")
-MARGIN_KM = 2.0          # map beyond the outermost stops, so routes can leave the box a little
-MAX_SIDE_KM = 35.0       # larger areas do not fit the standard tier; the caller falls back
+HERE = os.path.dirname(os.path.abspath(__file__))
+NET = os.path.join(HERE, "roads.net.xml")       # built by build.sh
+AREA = os.path.join(HERE, "map_area.json")
 SNAP_WARN_M = 250.0      # a stop further than this from any road is probably a wrong coordinate
-CACHE = os.environ.get("ROUTE_PLANNER_CACHE", "/tmp/route-planner")
-USER_AGENT = "AgentStore-RoutePlanner/1.1 (route planning agent; contact via agentstore.it.com)"
 
 
 class RoadsUnavailable(Exception):
-    """The road map could not be had; the message says why, in words for the buyer."""
+    """The road map cannot be used for this request; the message says why, in words for the buyer."""
 
 
-def _box(points, margin_km=MARGIN_KM):
-    lats = [p["lat"] for p in points]
-    lons = [p["lon"] for p in points]
-    mid = math.radians(sum(lats) / len(lats))
-    dlat = margin_km / 111.0
-    dlon = margin_km / (111.0 * max(0.2, math.cos(mid)))
-    return min(lats) - dlat, min(lons) - dlon, max(lats) + dlat, max(lons) + dlon
+def area() -> dict | None:
+    try:
+        with open(AREA, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
 
 
-def _side_km(box):
-    s, w, n, e = box
-    mid = math.radians((s + n) / 2)
-    return max((n - s) * 111.0, (e - w) * 111.0 * math.cos(mid))
+def build_network(points) -> str:
+    """Path to the road network, if every point lies in the area it covers."""
+    a = area()
+    if a is None or not os.path.exists(NET):
+        raise RoadsUnavailable("the road map is missing from this installation")
+    outside = [p["name"] for p in points
+               if not (a["south"] <= p["lat"] <= a["north"] and a["west"] <= p["lon"] <= a["east"])]
+    if outside:
+        listed = ", ".join(outside[:5]) + (f" and {len(outside) - 5} more" if len(outside) > 5 else "")
+        raise RoadsUnavailable(f"I have road maps for {a['name']} only, and these are outside it: {listed}")
+    return NET
 
 
-def build_network(points, timeout_s=150) -> str:
-    """Path to a SUMO network covering `points`; downloads and converts it on first use."""
-    box = _box(points)
-    side = _side_km(box)
-    if side > MAX_SIDE_KM:
-        raise RoadsUnavailable(f"the stops span about {side:.0f} km, more than the {MAX_SIDE_KM:.0f} km "
-                               f"area I can load road maps for")
-    os.makedirs(CACHE, exist_ok=True)
-    # Rounded so the same delivery area reuses its network across emails.
-    key = hashlib.sha1(",".join(f"{v:.2f}" for v in box).encode()).hexdigest()[:12]
-    net = os.path.join(CACHE, f"{key}.net.xml")
-    if os.path.exists(net):
-        return net
-    s, w, n, e = box
-    query = (f'[out:xml][timeout:{timeout_s}];way["highway"~"^({ROAD_TYPES})$"]({s:.5f},{w:.5f},{n:.5f},{e:.5f});'
-             f"(._;>;);out body;")
-    osm = os.path.join(CACHE, f"{key}.osm.xml")
-    # The public map service is shared and answers 429/502/504 when busy; measured
-    # 2026-10-16 it recovered within a minute. Its mirrors were all failing that day,
-    # so retrying the one service beats spreading over several.
-    problem = "the map service could not be reached"
-    for wait in (0, 15, 45):
-        time.sleep(wait)
-        try:
-            with requests.post(OVERPASS_URL, data={"data": query}, headers={"User-Agent": USER_AGENT},
-                               timeout=timeout_s + 30, stream=True) as resp:
-                if resp.status_code != 200:
-                    problem = f"the map service was busy (it answered {resp.status_code})"
-                    continue
-                with open(osm, "wb") as fh:
-                    for chunk in resp.iter_content(1 << 16):
-                        fh.write(chunk)
-                break
-        except requests.RequestException as exc:
-            problem = f"the map service could not be reached ({type(exc).__name__})"
-    else:
-        raise RoadsUnavailable(problem)
-    if os.path.getsize(osm) < 2000:
-        os.remove(osm)
-        raise RoadsUnavailable("the map service returned no roads for this area")
-    import sumo
-    netconvert = os.path.join(sumo.SUMO_HOME, "bin", "netconvert")
-    proc = subprocess.run(
-        [netconvert, "--osm-files", osm, "-o", net + ".tmp",
-         "--geometry.remove", "--ramps.guess", "--junctions.join",
-         "--tls.guess-signals", "--tls.discard-simple", "--tls.join",
-         "--keep-edges.by-vclass", "passenger", "--remove-edges.isolated",
-         "--keep-edges.components", "1",
-         "--no-internal-links", "--no-turnarounds", "--junctions.corner-detail", "0",
-         "--no-warnings", "--output.street-names", "true"],
-        capture_output=True, text=True, timeout=600)
-    os.remove(osm)
-    if proc.returncode != 0 or not os.path.exists(net + ".tmp"):
-        raise RoadsUnavailable("the road map could not be converted for simulation")
-    os.replace(net + ".tmp", net)
-    return net
+def _largest_scc(succ: dict) -> set:
+    """The largest strongly connected set of nodes in a successor map (iterative Tarjan)."""
+    index, low, on, stack, best, counter = {}, {}, set(), [], set(), 0
+    for root in succ:
+        if root in index:
+            continue
+        index[root] = low[root] = counter; counter += 1
+        stack.append(root); on.add(root)
+        work = [(root, iter(succ[root]))]
+        while work:
+            v, it = work[-1]
+            for w in it:
+                if w not in index:
+                    index[w] = low[w] = counter; counter += 1
+                    stack.append(w); on.add(w)
+                    work.append((w, iter(succ[w])))
+                    break
+                if w in on:
+                    low[v] = min(low[v], index[w])
+            else:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[v])
+                if low[v] == index[v]:
+                    comp = set()
+                    while True:
+                        w = stack.pop(); on.discard(w); comp.add(w)
+                        if w == v:
+                            break
+                    if len(comp) > len(best):
+                        best = comp
+    return best
+
+
+def strong_core(net_path: str) -> set:
+    """Edges in the largest strongly connected part of a SUMO network file.
+
+    A stop snapped to a one-way stub at the map's edge can be reached but not left
+    (or the reverse), which makes every route through it impossible; keeping only
+    this core rules that out. Run by build.sh, reading the XML directly: the build
+    stage has SUMO's programs but not the libraries its Python engine loads, and
+    doing it there keeps a 31,000-edge graph out of the running agent's memory.
+    """
+    import xml.etree.ElementTree as ET
+
+    succ = {}
+    for _, el in ET.iterparse(net_path, events=("end",)):
+        if el.tag == "edge" and el.get("function") != "internal":
+            succ.setdefault(el.get("id"), set())
+        elif el.tag == "connection":
+            frm, to = el.get("from"), el.get("to")
+            if frm and to and not frm.startswith(":") and not to.startswith(":"):
+                succ.setdefault(frm, set()).add(to)
+                succ.setdefault(to, set())
+        el.clear()
+    return _largest_scc(succ)
 
 
 class Roads:
@@ -119,63 +115,15 @@ class Roads:
         libsumo.start(["sumo", "-n", net_path, "--no-step-log", "--no-warnings",
                        "--ignore-route-errors", "--time-to-teleport", "600",
                        "--collision.action", "none"])
-        self._core = self._strong_core()
+        # build.sh already cut the network down to its strongly connected core
+        # (see strong_core below), so every road left can be reached and left.
+        self._core = {e for e in libsumo.edge.getIDList() if not e.startswith(":")}
 
     def close(self):
         try:
             self.ts.close()
         except Exception:
             pass
-
-    # ── which roads a van can both reach and leave ──────────────────────────────
-    def _strong_core(self) -> set:
-        """Edges in the largest strongly connected part of the network.
-
-        A stop snapped to a one-way stub at the map's edge can be reached but not
-        left (or the reverse), which makes every route through it impossible.
-        """
-        ts = self.ts
-        edges = [e for e in ts.edge.getIDList() if not e.startswith(":")]
-        succ = {e: set() for e in edges}
-        for e in edges:
-            for i in range(ts.edge.getLaneNumber(e)):
-                for link in ts.lane.getLinks(f"{e}_{i}"):
-                    to = link[0].rsplit("_", 1)[0]
-                    if to in succ:
-                        succ[e].add(to)
-        # Iterative Tarjan: the network has tens of thousands of edges.
-        index, low, on, stack, comps, counter = {}, {}, set(), [], [], [0]
-        for root in edges:
-            if root in index:
-                continue
-            work = [(root, iter(succ[root]))]
-            index[root] = low[root] = counter[0]; counter[0] += 1
-            stack.append(root); on.add(root)
-            while work:
-                v, it = work[-1]
-                advanced = False
-                for w in it:
-                    if w not in index:
-                        index[w] = low[w] = counter[0]; counter[0] += 1
-                        stack.append(w); on.add(w)
-                        work.append((w, iter(succ[w])))
-                        advanced = True
-                        break
-                    if w in on:
-                        low[v] = min(low[v], index[w])
-                if advanced:
-                    continue
-                work.pop()
-                if work:
-                    low[work[-1][0]] = min(low[work[-1][0]], low[v])
-                if low[v] == index[v]:
-                    comp = set()
-                    while True:
-                        w = stack.pop(); on.discard(w); comp.add(w)
-                        if w == v:
-                            break
-                    comps.append(comp)
-        return max(comps, key=len) if comps else set()
 
     def snap(self, lat: float, lon: float):
         """(edge, position on it, metres from the point to the road)."""
@@ -310,3 +258,13 @@ class Roads:
             if all(p["back"] is not None for p in plan.values()):
                 break
         return {p["van"]: p for p in plan.values()}
+
+
+if __name__ == "__main__":
+    # build.sh: python roads.py core <network> <edge list out>
+    import sys
+    if len(sys.argv) == 4 and sys.argv[1] == "core":
+        core = strong_core(sys.argv[2])
+        with open(sys.argv[3], "w", encoding="utf-8") as fh:
+            fh.writelines(e + "\n" for e in sorted(core))
+        print(f"strong core: {len(core)} edges")

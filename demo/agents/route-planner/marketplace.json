@@ -2,9 +2,9 @@
   "name": "Route Planner",
   "slug": "route-planner",
   "tagline": "Email it your stops and vans; it plans routes on real roads and simulates them, with a map and a CSV.",
-  "description": "Send the depot and the stops with their coordinates (and how much each needs), how many vans you have, and optionally when they leave. It loads your area's roads from OpenStreetMap, plans the routes that take the least driving time with Google's OR-tools solver, respecting van capacity, then drives each van through a SUMO simulation of those roads (speed limits, one-way streets, turns and traffic lights) and replies with the arrival time at every stop.\n\nFor rush hour it slows the roads by a stated amount (main roads at 70% of the limit unless you say otherwise), so you can ask \"what if main roads run at 50%?\". It does not model other traffic. Stops should be within about 30 km of each other; for larger areas it falls back to straight-line estimates and says so.",
+  "description": "Send the depot and the stops with their coordinates (and how much each needs), how many vans you have, and optionally when they leave. It plans the routes that take the least driving time on the real road network (OpenStreetMap) with Google's OR-tools solver, respecting van capacity, then drives each van through a SUMO simulation of those roads (speed limits, one-way streets, turns and traffic lights) and replies with the arrival time at every stop.\n\nFor rush hour it slows the roads by a stated amount (main roads at 70% of the limit unless you say otherwise), so you can ask \"what if main roads run at 50%?\". It does not model other traffic.\n\nRoad maps cover central Indianapolis (about 15 x 15 km). Stops outside it get straight-line estimates, and the reply says so. It connects to no outside sites.",
   "category": "GENERAL",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "model": "openai/gpt-oss-120b",
   "modelTier": "standard",
   "runtime": "custom",
@@ -46,8 +46,5 @@
     "libxrender1",
     "libatomic1",
     "libexpat1"
-  ],
-  "connectsTo": [
-    "overpass-api.de"
   ]
 }
