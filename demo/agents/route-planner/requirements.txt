@@ -2,4 +2,5 @@ eclipse-sumo
 libsumo
 ortools
 matplotlib
+requests
 langchain-openai
