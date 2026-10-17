@@ -1,13 +1,14 @@
-"""The homepage does not sell an integration the hire wizard calls unfinished.
+"""The homepage does not sell an integration the product does not have.
 
 The hero read "they live in your email and Slack" and the comparison table
 claimed "Works in existing tools (email, Slack)" with a tick, while the hire
 wizard badged Slack "Coming soon" and nothing in the product ever set it
 connected. A buyer reached the wizard expecting a thing that was not there.
 
-Found on 2026-09-21 while walking the platform as a new user. The general rule
-is the one worth holding: whatever the wizard admits is unfinished, the front
-page must not advertise as present.
+Found on 2026-09-21 while walking the platform as a new user. Since 2026-10-16
+the wizard shows nothing unfinished at all (the Slack card was removed), so the
+rule is now simply: no "Coming soon" in the wizard, and no unbuilt integration
+named on the homepage.
 """
 import re
 from pathlib import Path
@@ -16,29 +17,16 @@ WEB = Path(__file__).resolve().parents[1] / "apps" / "web"
 WIZARD = WEB / "components" / "hire"
 HOME = WEB / "components" / "home"
 
+# Integrations that are not built.
+UNBUILT = {"Slack"}
 
-def _unfinished_integrations() -> set[str]:
-    """Names the hire wizard shows with a "Coming soon" badge."""
-    names: set[str] = set()
+
+def test_the_wizard_shows_nothing_unfinished():
     for f in WIZARD.glob("*.tsx"):
-        src = f.read_text(encoding="utf-8")
-        for m in re.finditer(r"Coming soon", src):
-            # The label sits in the nearest preceding <p className="font-medium...">
-            before = src[max(0, m.start() - 800):m.start()]
-            labels = re.findall(r'className="font-medium text-sm">([A-Za-z0-9 ]+)<', before)
-            if labels:
-                names.add(labels[-1].strip())
-    return names
-
-
-def test_the_wizard_is_the_source_of_truth():
-    # If this ever empties, the extraction broke rather than the product becoming
-    # complete — and the test below would pass for the wrong reason.
-    assert _unfinished_integrations(), "found no 'Coming soon' integrations to check against"
+        assert "Coming soon" not in f.read_text(encoding="utf-8"), f.name
 
 
 def test_the_homepage_does_not_claim_them():
-    unfinished = _unfinished_integrations()
     offences = []
     for f in HOME.glob("*.tsx"):
         src = f.read_text(encoding="utf-8")
@@ -48,7 +36,7 @@ def test_the_homepage_does_not_claim_them():
         # and the test passed on a homepage that did make the claim.
         body = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
         body = re.sub(r"//[^\n]*", "", body)
-        for name in unfinished:
+        for name in UNBUILT:
             if re.search(rf"\b{re.escape(name)}\b", body):
-                offences.append(f"{f.name} advertises {name!r}, which the wizard calls unfinished")
+                offences.append(f"{f.name} advertises {name!r}, which is not built")
     assert not offences, offences

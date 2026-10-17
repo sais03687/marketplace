@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import scan_rules
+
 ERROR = "error"
 WARN = "warning"
 
@@ -392,7 +394,7 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
     manifest = root / "marketplace.json"
     if not manifest.exists():
         out.append(Finding(ERROR, "marketplace.json", 0, "there is no marketplace.json",
-                           "add one — name, slug, version, price and model; see the manifest reference"))
+                           "add one — name, slug, price and model; see the manifest reference"))
     else:
         try:
             data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -400,7 +402,8 @@ def _check_package_files(root: Path, out: list[Finding]) -> None:
             out.append(Finding(ERROR, "marketplace.json", 0, f"marketplace.json is not valid JSON: {e}", "fix the JSON"))
             data = None
         if isinstance(data, dict):
-            for field in ("name", "slug", "version"):
+            # No "version": the platform numbers versions itself (1, 2, 3).
+            for field in ("name", "slug"):
                 if not data.get(field):
                     out.append(Finding(ERROR, "marketplace.json", 0, f'"{field}" is missing', f'add "{field}"'))
             # A placeholder left in by `agentstore init` would become the public
@@ -479,5 +482,8 @@ def check(folder: str | Path) -> list[Finding]:
                 out.append(Finding(ERROR, rel, 0, f"{rel} does not parse", "fix the syntax error"))
             continue
         _Visitor(rel, out, declared).visit(tree)
+        for line, label in scan_rules.scan(path.read_text(encoding="utf-8")):
+            out.append(Finding(ERROR, rel, line, f"the platform's vetting refuses this: {label}",
+                               scan_rules.fix_for(label)))
     out.sort(key=lambda f: (f.level != ERROR, f.file, f.line))
     return out

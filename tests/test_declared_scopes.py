@@ -169,8 +169,10 @@ def test_the_declaration_reaches_the_container_and_the_database():
     # DbNull, not undefined: undefined leaves a stale declaration in place after
     # a creator removes the field.
     assert "graphScopes: manifest.graphScopes ?? Prisma.DbNull" in upload
-    assert len(re.findall(r"graphScopes: manifest\.graphScopes", upload)) == 2, \
-        "both the create and the update path must persist it"
+    # A new version of an existing agent declares its scopes on approval, from
+    # the manifest stored on the version (vet-decision), not at upload.
+    approve = (UPLOAD.parents[2] / "packages" / "[id]" / "vet-decision" / "route.ts").read_text(encoding="utf-8")
+    assert "updateData.graphScopes = m.graphScopes ?? Prisma.DbNull" in approve
 
 
 def test_creators_are_told_how_and_why_to_declare():

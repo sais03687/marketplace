@@ -5,7 +5,7 @@ import { useSearchParams, usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useHire } from "@/lib/hire-context";
 import { Badge } from "@/components/ui/badge";
-import { MessageSquare, Info, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
+import { Info, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
 import { InboxHelp } from "@/components/hire/inbox-help";
 import { GRAPH_SCOPE_LABELS, type GraphScope } from "@marketplace/agent-package-schema";
 
@@ -396,25 +396,7 @@ export function StepConnect() {
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-muted-foreground">
-        Your agent will use these integrations when available. All are
-        pre-configured server-side during provisioning.
-      </p>
-
       <div className="space-y-3">
-        <div className="flex items-center justify-between rounded-lg border p-4">
-          <div className="flex items-center gap-3">
-            <MessageSquare className="h-5 w-5 text-[#4A154B]" />
-            <div>
-              <p className="font-medium text-sm">Slack</p>
-              <p className="text-xs text-muted-foreground">
-                Notifications and approvals
-              </p>
-            </div>
-          </div>
-          <Badge variant="secondary">Coming soon</Badge>
-        </div>
-
         <div className="space-y-2">
           <p className="text-sm font-medium">How {state.hireName} gets its work</p>
           <p className="text-xs text-muted-foreground">

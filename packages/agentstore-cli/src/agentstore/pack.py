@@ -31,7 +31,7 @@ def pack(folder: str, out: str | None = None) -> int:
             print(f"  {f.file}{':' + str(f.line) if f.line else ''}: {f.message}")
         return 1
     manifest = json.loads((root / "marketplace.json").read_text(encoding="utf-8"))
-    target = Path(out) if out else root.parent / f"{manifest['slug']}-{manifest['version']}.zip"
+    target = Path(out) if out else root.parent / f"{manifest['slug']}.zip"
     files = [p for p in sorted(root.rglob("*")) if p.is_file() and _included(p.relative_to(root))
              and p.resolve() != target.resolve()]
     # Contents at the top level, not the folder: the platform looks for

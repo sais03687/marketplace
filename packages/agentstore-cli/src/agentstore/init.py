@@ -49,7 +49,6 @@ def init(folder: str) -> int:
             "tagline": f"{TODO} one line a buyer reads first",
             "description": f"{TODO} what the agent does, in plain words — this becomes your public listing",
             "category": "GENERAL",
-            "version": "0.1.0",
             "pricePerMonth": 29,
             "model": "openai/gpt-oss-120b",
             # Required by the validator; the upload recomputes it from the model's price.

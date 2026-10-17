@@ -15,10 +15,9 @@
 # Agentstore whether it would accept the package. Any of them failing stops the
 # run, so nothing broken reaches the review queue.
 #
-# Each push publishes the version named in marketplace.json and puts it in the
-# review queue. Publishing a version that has already been approved is refused
-# with a 409 — bump "version" in marketplace.json when you change the code, so
-# buyers already running a version never have it swapped underneath them.
+# Each push that changes the agent publishes a new version and puts it in the
+# review queue. Agentstore numbers versions itself (1, 2, 3), so there is no
+# version to bump; a push that changes nothing about the agent is skipped.
 
 name: Publish agent
 
@@ -47,14 +46,13 @@ jobs:
         run: |
           test -f marketplace.json || { echo "::error::no marketplace.json in ${{ env.AGENT_DIR }}"; exit 1; }
           test -f agent.py || { echo "::error::no agent.py in ${{ env.AGENT_DIR }}"; exit 1; }
-          jq -e '.slug and .version' marketplace.json >/dev/null \
-            || { echo "::error::marketplace.json needs slug and version"; exit 1; }
+          jq -e '.slug' marketplace.json >/dev/null \
+            || { echo "::error::marketplace.json needs a slug"; exit 1; }
           # Both entry points are imported at container start, so a package
           # missing either cannot run at all.
           grep -q "def run_agent" agent.py || { echo "::error::agent.py defines no run_agent"; exit 1; }
           grep -q "def resume_agent" agent.py || { echo "::error::agent.py defines no resume_agent"; exit 1; }
           echo "slug=$(jq -r .slug marketplace.json)" >> "$GITHUB_OUTPUT"
-          echo "version=$(jq -r .version marketplace.json)" >> "$GITHUB_OUTPUT"
         id: manifest
 
       # The platform runs agents on Python 3.12, so check on the same version.
@@ -141,8 +139,8 @@ jobs:
           fi
 
           # Runs every check the real upload runs (manifest, price for the
-          # model's tier, forbidden files, the code scan, version already
-          # approved) and stops before anything is stored or sent to vetting.
+          # model's tier, forbidden files, the code scan, nothing changed) and
+          # stops before anything is stored or sent to vetting.
           code=$(curl -s -o "$RUNNER_TEMP/dryrun.json" -w '%{http_code}' \
             -X POST "$MARKETPLACE_URL/api/packages/upload?dryRun=1" \
             -H "Authorization: Bearer $MARKETPLACE_API_KEY" \
@@ -150,6 +148,11 @@ jobs:
 
           case "$code" in
             200|201) ;;
+            409)
+              echo "Nothing about the agent changed since the last version, so there is nothing to publish."
+              echo "uploaded=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
             401)
               echo "::error::MARKETPLACE_API_KEY was rejected. Generate a new one in creator settings."
               exit 1
@@ -187,11 +190,10 @@ jobs:
 
           case "$code" in
             200|201)
-              echo "Published ${{ steps.manifest.outputs.slug }} v${{ steps.manifest.outputs.version }} — pending review"
+              echo "Published a new version of ${{ steps.manifest.outputs.slug }} — pending review"
               ;;
             409)
-              echo "::error::v${{ steps.manifest.outputs.version }} is already approved. Bump the version in marketplace.json."
-              exit 1
+              echo "Nothing about the agent changed since the last version, so there is nothing to publish."
               ;;
             401)
               echo "::error::MARKETPLACE_API_KEY was rejected. Generate a new one in creator settings."

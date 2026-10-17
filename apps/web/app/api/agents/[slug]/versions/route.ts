@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/db";
 import { undeclaredGraphUse } from "@/lib/package-checks";
-import { Prisma } from "@prisma/client";
 import { priceRejection } from "@/lib/agent-pricing";
 import { jsonError, jsonSuccess, requireAuth } from "@/lib/api-utils";
 import { validateManifest } from "@marketplace/agent-package-schema";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
+import { getProvisioningQueue } from "@/lib/provisioning-queue";
+import { nextVersionNumber, packageHash, supersedePending, unchangedSince } from "@/lib/agent-versions";
 
 export async function GET(
   request: Request,
@@ -98,7 +99,6 @@ export async function POST(
     );
   }
 
-  const version = manifest.version as string;
   const versionRuntime = ((manifest.runtime as string) || "custom").toUpperCase();
 
   if (versionRuntime === "OPENCLAW") {
@@ -177,20 +177,6 @@ export async function POST(
     );
   }
 
-  // Check version doesn't already exist as an approved/live version
-  const existingVersion = await prisma.agentVersion.findFirst({
-    where: { agentId: agent.id, version },
-  });
-  if (existingVersion && existingVersion.vetStatus !== "PENDING") {
-    return jsonError(`Version ${version} already exists and has been approved. Bump the version number.`, 409);
-  }
-  if (!existingVersion && version === agent.currentVersion) {
-    return jsonError(
-      `Version ${version} is the same as current version. Bump the version number.`,
-      409,
-    );
-  }
-
   // Store files
   const files = new Map<string, Buffer>();
   for (const [path, entry] of Object.entries(zip.files)) {
@@ -198,37 +184,46 @@ export async function POST(
       files.set(path, await entry.async("nodebuffer"));
     }
   }
+
+  // The platform numbers versions (see lib/agent-versions.ts); the manifest's
+  // own "version" is ignored. An upload identical to the latest one is refused
+  // rather than becoming a version that changes nothing.
+  const hash = packageHash(files);
+  const same = await unchangedSince(prisma, agent.id, hash);
+  if (same) {
+    return jsonError(`Nothing has changed since version ${same}, so there is nothing new to publish.`, 409);
+  }
+  const version = await nextVersionNumber(prisma, agent.id);
   const storagePath = await storeExtractedPackage(slug, version, files);
 
-  // If a pending version already exists for this number, replace it
-  let agentVersion;
-  if (existingVersion) {
-    agentVersion = await prisma.agentVersion.update({
-      where: { id: existingVersion.id },
-      data: {
-        packageUrl: `storage://${slug}/${version}`,
-        manifestData: manifest as any,
-        storagePath,
-        changelog: changelog ?? null,
-        vetStatus: "PENDING",
-        // The previous attempt's report was run against code that is no longer
-        // stored here. Kept, it shows a verdict beside a package it never saw.
-        vetNotes: null,
-        testResults: Prisma.DbNull,
-      },
-    });
-  } else {
-    agentVersion = await prisma.agentVersion.create({
-      data: {
-        agentId: agent.id,
-        version,
-        packageUrl: `storage://${slug}/${version}`,
-        manifestData: manifest as any,
-        storagePath,
-        changelog: changelog ?? null,
-        vetStatus: "PENDING",
-      },
-    });
+  const agentVersion = await prisma.agentVersion.create({
+    data: {
+      agentId: agent.id,
+      version,
+      packageUrl: `storage://${slug}/${version}`,
+      manifestData: { ...manifest, version, _packageHash: hash } as any,
+      storagePath,
+      changelog: changelog ?? null,
+      vetStatus: "PENDING",
+    },
+  });
+  await supersedePending(prisma, agent.id, agentVersion.id, version);
+
+  // Start vetting, as the publish wizard's upload does. This route never did,
+  // so a new version sat untested until an admin clicked Run Sandbox.
+  if (versionRuntime === "CUSTOM") {
+    try {
+      await getProvisioningQueue().add("vet_package", { type: "vet_package", versionId: agentVersion.id } as any);
+      await prisma.agentVersion.update({
+        where: { id: agentVersion.id },
+        data: {
+          vetNotes: "Queued for vetting sandbox...",
+          testResults: { status: "queued", queuedAt: new Date().toISOString() } as any,
+        },
+      });
+    } catch (e) {
+      console.error("[versions] could not queue vetting:", e);
+    }
   }
 
   return jsonSuccess(agentVersion, 201);

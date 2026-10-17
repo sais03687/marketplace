@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/db";
+import { Prisma } from "@prisma/client";
+import { resolveModel } from "@/lib/model-resolver";
 import { hostsOfVersion } from "@/lib/connects-to";
 import { addedHosts } from "@marketplace/agent-package-schema";
 import { jsonError, jsonSuccess, requireAdmin } from "@/lib/api-utils";
@@ -93,6 +95,28 @@ export async function POST(
       status: "LIVE",
       currentVersion: version.version,
     };
+
+    // The listing follows the approved version. Uploading a version used to
+    // change only some of this (and before review); approval updated just the
+    // capabilities, so a new version's description never reached the page.
+    if (version.manifestData) {
+      const m = version.manifestData as Record<string, unknown>;
+      for (const field of ["name", "tagline", "description", "category"] as const) {
+        if (typeof m[field] === "string" && (m[field] as string).trim()) updateData[field] = m[field];
+      }
+      if ("graphScopes" in m) updateData.graphScopes = m.graphScopes ?? Prisma.DbNull;
+      let model = typeof m._resolvedModel === "string" ? (m._resolvedModel as string) : null;
+      let tier = typeof m._modelTier === "string" ? (m._modelTier as string) : null;
+      if (!model && typeof m.model === "string" && m.model.trim()) {
+        const resolved = await resolveModel(m.model.trim());
+        if (!("error" in resolved)) {
+          model = m.model.trim();
+          tier = resolved.model.tier.toUpperCase();
+        }
+      }
+      if (model) updateData.model = model;
+      if (tier) updateData.modelTier = tier;
+    }
 
     // Extract capabilities from manifest
     if (version.manifestData) {

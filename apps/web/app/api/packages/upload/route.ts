@@ -8,22 +8,10 @@ import { validateManifest, canonicalTier } from "@marketplace/agent-package-sche
 import { resolveModel } from "@/lib/model-resolver";
 import { storeExtractedPackage } from "@/lib/package-storage";
 import JSZip from "jszip";
+import { nextVersionNumber, packageHash, supersedePending, unchangedSince } from "@/lib/agent-versions";
 import { priceRejection } from "@/lib/agent-pricing";
 import { getProvisioningQueue } from "@/lib/provisioning-queue";
 
-/**
- * Thrown inside the publish transaction when the version already passed review.
- *
- * Raised rather than returned so the transaction rolls back: the agent row is
- * updated before the version is written, and a refused publish must not leave
- * the listing describing a package that was never stored.
- */
-class VersionAlreadyApprovedError extends Error {
-  constructor(public readonly version: string) {
-    super(`Version ${version} already exists and has been approved`);
-    this.name = "VersionAlreadyApprovedError";
-  }
-}
 
 // ── Code scanning ─────────────────────────────────────────────────────────────
 
@@ -140,7 +128,6 @@ export async function POST(request: Request) {
   }
 
   const slug = manifest.slug as string;
-  const version = manifest.version as string;
   const runtime = ((manifest.runtime as string) || "custom").toUpperCase();
 
   if (runtime !== "CUSTOM") {
@@ -329,17 +316,15 @@ export async function POST(request: Request) {
   // workflow calls it before the real upload, so a package that would be
   // refused costs the creator seconds rather than a slot in the vetting queue.
   if (new URL(request.url).searchParams.get("dryRun") === "1") {
+    let version = "1";
     if (existingAgent) {
-      const existingVersion = await prisma.agentVersion.findFirst({
-        where: { agentId: existingAgent.id, version },
-        orderBy: { createdAt: "desc" },
-      });
-      if (existingVersion && existingVersion.vetStatus !== "PENDING") {
-        return jsonError(
-          `Version ${version} already exists and has been approved — bump "version" in marketplace.json`,
-          409,
-        );
+      // Same refusal as the real upload, so the GitHub workflow can skip a push
+      // that did not change the agent instead of failing on it.
+      const same = await unchangedSince(prisma, existingAgent.id, packageHash(await zipFiles(zip)));
+      if (same) {
+        return jsonError(`Nothing has changed since version ${same}, so there is nothing new to publish.`, 409);
       }
+      version = await nextVersionNumber(prisma, existingAgent.id);
     }
     return jsonSuccess({
       dryRun: true,
@@ -388,14 +373,17 @@ export async function POST(request: Request) {
     }
   }
 
-  // 6. Store all extracted files
-  const files = new Map<string, Buffer>();
-  for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
-    if (!zipEntry.dir) {
-      const content = await zipEntry.async("nodebuffer");
-      files.set(relativePath, content);
+  // 6. Store all extracted files, under the number the platform assigns
+  // (lib/agent-versions.ts). An upload identical to the latest is refused.
+  const files = await zipFiles(zip);
+  const hash = packageHash(files);
+  if (existingAgent) {
+    const same = await unchangedSince(prisma, existingAgent.id, hash);
+    if (same) {
+      return jsonError(`Nothing has changed since version ${same}, so there is nothing new to publish.`, 409);
     }
   }
+  const version = existingAgent ? await nextVersionNumber(prisma, existingAgent.id) : "1";
 
   let storagePath: string;
   try {
@@ -426,31 +414,15 @@ export async function POST(request: Request) {
       // New agents start as PENDING until an admin approves them.
       // Existing agents keep their current status — the new version goes to PENDING
       // and won't be used for provisioning until approved.
+      // A new version of an existing agent changes nothing a buyer sees until it
+      // is approved: the listing text, capabilities, model and declared access
+      // are applied by the approval (packages/[id]/vet-decision), from the
+      // manifest stored on the version. Applying them here put unreviewed claims
+      // on a live listing, and a model change reached running hires early.
       const agent = existingAgent
-        ? await tx.agent.update({
-            where: { id: existingAgent.id },
-            data: {
-              name: agentName,
-              tagline,
-              description,
-              category: category as any,
-              pricePerMonth,
-              model: agentModel,
-              modelTier: modelTier as any,
-              runtime,
-              onboardingQuestions: onboardingQuestions ?? undefined,
-              memoryTemplate: memoryTemplate ?? undefined,
-              // Declared on every publish, so a version that drops a scope narrows
-              // what the listing claims rather than leaving the old claim standing.
-              // Prisma.DbNull, not undefined: undefined means "leave as it was",
-              // which would keep a stale declaration after the creator removed it.
-              graphScopes: manifest.graphScopes ?? Prisma.DbNull,
-              // If the agent was suspended (deleted by creator), revive it to IN_REVIEW.
-              // For LIVE/IN_REVIEW agents keep the current status — the new version must
-              // be approved before it becomes the active version.
-              ...(existingAgent.status === "SUSPENDED" ? { status: "IN_REVIEW" } : {}),
-            },
-          })
+        ? existingAgent.status === "SUSPENDED"
+          ? await tx.agent.update({ where: { id: existingAgent.id }, data: { status: "IN_REVIEW" } })
+          : existingAgent
         : await tx.agent.create({
             data: {
               slug,
@@ -471,58 +443,33 @@ export async function POST(request: Request) {
             },
           });
 
-      // Re-publishing a version replaces it; it does not stack a second row.
-      //
-      // This created one row per upload unconditionally, so correcting a package
-      // and publishing again left two rows with the same version number, both
-      // PENDING, in the admin queue — indistinguishable in the list, and pointing
-      // at different code now that each upload stores its own package. Approving
-      // the wrong one ships the code the creator replaced. /api/agents/[slug]/
-      // versions has always done this correctly; this route, the one the publish
-      // wizard actually calls, did not. Found on 2026-09-21 by publishing twice.
-      //
-      // An already-approved version is not replaced. Letting a creator overwrite
-      // code that passed review, under the same version number, would route
-      // unreviewed code to every buyer running it.
-      const existingVersion = await tx.agentVersion.findFirst({
-        where: { agentId: agent.id, version },
-        orderBy: { createdAt: "desc" },
+      const agentVersion = await tx.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version,
+          packageUrl: `storage://${slug}/${version}`,
+          manifestData: {
+            ...manifest,
+            version,
+            // The wizard's own wording wins over the manifest's, as it does for a
+            // new agent, and reaches the listing when this version is approved.
+            tagline,
+            description,
+            _packageHash: hash,
+            // What the upload resolved, so approval applies the same model and
+            // tier without asking the provider again.
+            _resolvedModel: agentModel,
+            _modelTier: modelTier,
+          } as any,
+          storagePath,
+          vetStatus: "PENDING",
+          publishedAt: null,
+        },
       });
-      if (existingVersion && existingVersion.vetStatus !== "PENDING") {
-        throw new VersionAlreadyApprovedError(version);
-      }
+      await supersedePending(tx, agent.id, agentVersion.id, version);
 
-      const agentVersion = existingVersion
-        ? await tx.agentVersion.update({
-            where: { id: existingVersion.id },
-            data: {
-              packageUrl: `storage://${slug}/${version}`,
-              manifestData: manifest as any,
-              storagePath,
-              vetStatus: "PENDING",
-              publishedAt: null,
-              // The previous attempt's report describes code that is no longer
-              // here. Leaving it would show a verdict next to a package it was
-              // never run against.
-              vetNotes: null,
-              testResults: Prisma.DbNull,
-            },
-          })
-        : await tx.agentVersion.create({
-            data: {
-              agentId: agent.id,
-              version,
-              packageUrl: `storage://${slug}/${version}`,
-              manifestData: manifest as any,
-              storagePath,
-              vetStatus: "PENDING",
-              publishedAt: null,
-            },
-          });
-
-      // Replace capabilities atomically
-      await tx.capability.deleteMany({ where: { agentId: agent.id } });
-      if (capabilities.length > 0) {
+      // A new agent's capabilities; an existing agent's change on approval.
+      if (!existingAgent && capabilities.length > 0) {
         await tx.capability.createMany({
           data: capabilities.map((cap) => ({
             agentId: agent.id,
@@ -535,13 +482,6 @@ export async function POST(request: Request) {
       return { agent, version: agentVersion };
     });
   } catch (e) {
-    if (e instanceof VersionAlreadyApprovedError) {
-      return jsonError(
-        `Version ${e.version} already exists and has been approved. ` +
-          `Bump the version number in marketplace.json and publish again.`,
-        409,
-      );
-    }
     throw e;
   }
 
@@ -580,4 +520,13 @@ export async function POST(request: Request) {
   }
 
   return jsonSuccess(result, 201);
+}
+
+
+async function zipFiles(zip: JSZip): Promise<Map<string, Buffer>> {
+  const files = new Map<string, Buffer>();
+  for (const [relativePath, zipEntry] of Object.entries(zip.files)) {
+    if (!zipEntry.dir) files.set(relativePath, await zipEntry.async("nodebuffer"));
+  }
+  return files;
 }

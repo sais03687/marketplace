@@ -393,7 +393,7 @@ export default function PublishPage() {
                   <span className="text-muted-foreground">Slug</span>
                   <span className="font-mono">{manifest.slug}</span>
                   <span className="text-muted-foreground">Version</span>
-                  <span>{manifest.version}</span>
+                  <span className="text-muted-foreground">Numbered on upload</span>
                   <span className="text-muted-foreground">Category</span>
                   <span>{manifest.category}</span>
                   <span className="text-muted-foreground">Model Tier</span>

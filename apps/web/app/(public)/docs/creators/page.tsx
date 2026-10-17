@@ -1065,7 +1065,6 @@ async def run_agent(content: str, context: dict, progress_fn) -> dict:
   "tagline": "Screens candidates, schedules interviews, and handles offer letters.",
   "description": "Alex handles the full recruiting workflow...",
   "category": "HR_OPS",
-  "version": "1.0.0",
   "pricePerMonth": 5900,
   "model": "anthropic/claude-sonnet-5",
   "modelTier": "pro",
@@ -1090,7 +1089,7 @@ async def run_agent(content: str, context: dict, progress_fn) -> dict:
           ["tagline", "string", "Yes", "One-line description, max 100 characters"],
           ["description", "string", "Yes", "Markdown. Max 2000 characters. Shown on the agent detail page."],
           ["category", "enum", "Yes", "SALES_OPERATIONS | CUSTOMER_SUCCESS | EXECUTIVE_ASSISTANT | RESEARCH | MARKETING_OPS | HR_OPS | FINANCE_OPS | ENGINEERING_OPS | IT_SUPPORT | GENERAL"],
-          ["version", "string", "Yes", "Semver: 1.0.0, 1.1.0, etc."],
+          ["version", "string", "No", "Ignored. AgentStore numbers versions itself (1, 2, 3)."],
           ["pricePerMonth", "integer", "Yes", "Whole US dollars — write 29, not 2900. Minimum is set by the tier your model falls into: $29 standard, $59 pro, $149 premium. Buyers pay this monthly."],
           ["model", "string", "No", "Any text model on OpenRouter, as \"vendor/model\" — e.g. openai/gpt-oss-120b. The current list is at openrouter.ai/models. Sets which model runs your agent, and decides the tier. Omit it and the platform default is used."],
           ["modelTier", "enum", "Yes", "standard | pro | premium. Ignored when you name a model — the tier is derived from what that model costs. Sets the price floor."],
@@ -1192,10 +1191,10 @@ async def run_agent(content: str, context: dict, progress_fn) -> dict:
           must not include a top-level directory wrapper — files must be at the root of the archive.
         </P>
         <Pre>{`# macOS / Linux
-zip -r my-agent-1.0.0.zip . -x "*.DS_Store" -x "__pycache__/*"
+zip -r my-agent.zip . -x "*.DS_Store" -x "__pycache__/*"
 
 # Windows (PowerShell)
-Compress-Archive -Path * -DestinationPath my-agent-1.0.0.zip`}</Pre>
+Compress-Archive -Path * -DestinationPath my-agent.zip`}</Pre>
       </Step>
 
       <Step n={2} title="Check it imports before you upload">
@@ -1244,7 +1243,7 @@ print('imports clean; both entry points present')
         </P>
         <Pre>{`curl -X POST https://marketplace.yourdomain.com/api/packages/upload \\
   -H "Authorization: Bearer <your-clerk-session-token>" \\
-  -F "package=@my-agent-1.0.0.zip"`}</Pre>
+  -F "package=@my-agent.zip"`}</Pre>
         <P>
           On success you receive a <Code>201</Code> with the agent and version IDs. The agent
           is immediately placed in <Code>IN_REVIEW</Code> status.
@@ -1365,23 +1364,14 @@ print('imports clean; both entry points present')
       {/* Versioning */}
       <H2 id="versioning">Updating Your Agent</H2>
       <P>
-        To release an update, increment the <Code>version</Code> field in{" "}
-        <Code>marketplace.json</Code> (semver) and re-upload. The new version enters the
-        vetting queue. Existing deployments continue running the previous version until
-        you approve the rollout — buyers with <Code>autoUpdate: true</Code> are migrated
-        automatically once the new version is approved.
+        To release an update, upload the new package from <Code>Creator → your agent → Versions</Code>,
+        or push to GitHub. AgentStore numbers versions for you — 1, 2, 3 — so there is nothing to
+        bump in <Code>marketplace.json</Code>. The new version is tested automatically and enters
+        the review queue; an upload identical to the last one is refused because it changes
+        nothing. Buyers keep the version they have until the new one is approved, and those with
+        auto-update on move to it then. The listing&apos;s name, tagline, description and
+        capabilities change when the version is approved, not before.
       </P>
-      <P>
-        Use semantic versioning to communicate the scope of changes:
-      </P>
-      <Table
-        headers={["Bump", "When to use", "Example"]}
-        rows={[
-          ["Patch (x.x.1)", "Bug fixes, wording corrections, small logic tweaks", "1.0.0 → 1.0.1"],
-          ["Minor (x.1.0)", "New capabilities, improved logic, additional integrations", "1.0.0 → 1.1.0"],
-          ["Major (2.0.0)", "Breaking changes to onboarding questions or memory structure", "1.0.0 → 2.0.0"],
-        ]}
-      />
 
       <H3 id="publish-from-github">Publishing from GitHub</H3>
       <P>
@@ -1432,10 +1422,8 @@ print('imports clean; both entry points present')
         with the reason, rather than after a vetting run.
       </P>
       <Note>
-        <strong>Bump the version when you change the code.</strong> A push that reuses a
-        version number which has already been approved is refused with{" "}
-        <Code>409</Code>, because buyers may be running that version and their code must
-        not change underneath them. A version still awaiting review is replaced in place,
+        <strong>Every push that changes the agent becomes a new version.</strong> A push
+        that changes nothing is skipped. A newer upload replaces one still awaiting review,
         so pushing repeatedly while you iterate is fine — up to 10 uploads a day, since
         each one is built and vetted. Checks that store nothing, like the workflow&apos;s
         dry run, do not count, and <Code>agentstore test</Code> lets you iterate on your

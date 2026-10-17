@@ -46,7 +46,8 @@ export interface MarketplaceManifest {
   tagline: string;        // max 100 chars
   description: string;    // markdown, max 2000 chars
   category: AgentCategory;
-  version: string;        // semver "1.0.0"
+  /** Ignored: the platform numbers versions itself (1, 2, 3). Kept optional for old manifests. */
+  version?: string;
   /** Whole US dollars. Converted to cents on the way in, for Stripe. */
   pricePerMonth: number;
   /**

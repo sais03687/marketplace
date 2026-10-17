@@ -8,7 +8,6 @@ export interface ValidationError {
 }
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 /** "vendor/model", optionally with a :variant suffix the provider uses. */
 const MODEL_ID_RE = /^[a-z0-9][\w.-]*\/[\w.:-]+$/i;
 
@@ -47,7 +46,9 @@ export function validateManifest(m: unknown): ValidationError[] {
   const manifest = m as Record<string, unknown>;
 
   // Required string fields
-  for (const field of ["name", "slug", "tagline", "description", "version"] as const) {
+  // "version" is not required: the platform numbers versions itself (1, 2, 3)
+  // and ignores whatever the manifest says.
+  for (const field of ["name", "slug", "tagline", "description"] as const) {
     if (typeof manifest[field] !== "string" || (manifest[field] as string).trim() === "") {
       errors.push({ field, message: `${field} is required and must be a non-empty string` });
     }
@@ -56,11 +57,6 @@ export function validateManifest(m: unknown): ValidationError[] {
   // Slug format
   if (typeof manifest.slug === "string" && !SLUG_RE.test(manifest.slug)) {
     errors.push({ field: "slug", message: "slug must be lowercase alphanumeric with hyphens (e.g. my-agent)" });
-  }
-
-  // Semver
-  if (typeof manifest.version === "string" && !SEMVER_RE.test(manifest.version)) {
-    errors.push({ field: "version", message: "version must be semver (e.g. 1.0.0)" });
   }
 
   // Category enum

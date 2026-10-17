@@ -151,7 +151,7 @@ def test_pack_builds_a_flat_zip_without_the_key(tmp_path, capsys):
     (folder / "__pycache__" / "agent.cpython-312.pyc").write_bytes(b"x")
     (folder / "helpers.py").write_text("X = 1\n")
     assert pack(str(folder)) == 0
-    names = set(zipfile.ZipFile(tmp_path / "t-1.0.0.zip").namelist())
+    names = set(zipfile.ZipFile(tmp_path / "t.zip").namelist())
     assert names == {"agent.py", "marketplace.json", "requirements.txt", "helpers.py"}
 
 
