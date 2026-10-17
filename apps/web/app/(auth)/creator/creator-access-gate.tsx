@@ -86,7 +86,7 @@ function RequestForm({
 
   return (
     <div className="mx-auto max-w-lg py-12">
-      <h2 className="text-xl font-semibold">Build on the Marketplace</h2>
+      <h2 className="text-xl font-semibold">Build on AgentStore</h2>
       <p className="mt-2 text-muted-foreground">
         Creator access is invite-only during the beta. Tell us a little about yourself and what
         you want to build — we&apos;ll review it and get back to you by email.

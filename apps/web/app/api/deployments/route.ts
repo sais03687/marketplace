@@ -134,19 +134,11 @@ export async function POST(request: Request) {
     const reqList = toList(a.require_approval_list);
     if (reqList.length) autonomyConfig.requireApprovalList = reqList;
 
-    if (typeof a.agentmind_enabled === "string") {
-      if (a.agentmind_enabled === "no") {
-        autonomyConfig.agentMindEnabled = false;
-        autonomyConfig.agentMindAutoApprove = false;
-      } else if (a.agentmind_enabled === "no_auto") {
-        autonomyConfig.agentMindEnabled = true;
-        autonomyConfig.agentMindAutoApprove = false;
-      } else {
-        autonomyConfig.agentMindEnabled = true;
-        autonomyConfig.agentMindAutoApprove = true;
-      }
-    }
   }
+  // AgentMind is being retired and the hire wizard no longer asks about it.
+  // Unset reads as "on" in its routes, so a new hire is switched off explicitly.
+  autonomyConfig.agentMindEnabled = false;
+  autonomyConfig.agentMindAutoApprove = false;
 
   const deployment = await prisma.deployment.create({
     data: {

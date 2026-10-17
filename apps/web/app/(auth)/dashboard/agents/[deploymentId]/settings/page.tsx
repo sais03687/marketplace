@@ -46,26 +46,30 @@ interface AllowlistState {
   managerEmail: string | null;
 }
 
-const POLICY_OPTIONS: { value: ApprovalPolicy; label: string; help: string }[] = [
+// "risk-based" still works for agents already set to it, but it is no longer
+// offered: a 1–10 score threshold is hard to reason about, and the three plain
+// choices cover what buyers actually pick.
+const POLICY_OPTIONS: { value: ApprovalPolicy; label: string; help: string; legacy?: boolean }[] = [
   {
     value: "always",
-    label: "Always ask (recommended to start)",
-    help: "Review every outbound email before it is sent. Best for the first few days while building trust.",
+    label: "Ask me before it sends anything (recommended to start)",
+    help: "You review every email it wants to send.",
   },
   {
     value: "external-only",
-    label: "External only",
-    help: "Only ask for recipients not on my team or in my contacts list.",
+    label: "Ask me only for people outside my company",
+    help: "Replies to your own team go straight out.",
   },
   {
     value: "risk-based",
-    label: "Risk-based",
-    help: "Only ask for high-stakes, ambiguous, or irreversible messages.",
+    label: "Ask me only for risky messages",
+    help: "Uses a risk score to decide. Kept for agents already set this way.",
+    legacy: true,
   },
   {
     value: "never",
     label: "Never ask",
-    help: "Fully autonomous. Use with caution.",
+    help: "It sends on its own. Use once you trust its work.",
   },
 ];
 
@@ -217,7 +221,7 @@ export default function SettingsPage() {
       <div>
         <h2 className="text-xl font-semibold">Settings</h2>
         <p className="text-sm text-muted-foreground">
-          Configure your AI employee.
+          Name, who can use it, and when it checks with you.
         </p>
       </div>
 
@@ -269,11 +273,11 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Notifications</CardTitle>
+          <CardTitle className="text-base">Account holder</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <label className="text-sm font-medium">Manager Email</label>
+            <label className="text-sm font-medium">Email for approvals and notices</label>
             <Input
               className="mt-1"
               type="email"
@@ -292,15 +296,17 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Approval Policy</CardTitle>
+          <CardTitle className="text-base">When should it ask you?</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
             <p className="text-sm text-muted-foreground mb-3">
-              Control when this agent must ask you before sending an email.
+              Choose when this agent must check with you before sending an email.
             </p>
             <div className="space-y-2">
-              {POLICY_OPTIONS.map((opt) => (
+              {POLICY_OPTIONS.filter(
+                (opt) => !opt.legacy || settings.autonomyConfig.approvalPolicy === opt.value,
+              ).map((opt) => (
                 <label
                   key={opt.value}
                   className="flex items-start gap-2 cursor-pointer rounded border p-3 hover:bg-accent/40"
@@ -350,9 +356,13 @@ export default function SettingsPage() {
             </div>
           )}
 
-          <div>
+          <details className="rounded border p-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              Exceptions for specific people
+            </summary>
+          <div className="mt-3">
             <label className="text-sm font-medium">
-              Always auto-approve
+              Never ask for these
             </label>
             <textarea
               className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -371,7 +381,7 @@ export default function SettingsPage() {
 
           <div>
             <label className="text-sm font-medium">
-              Always require approval
+              Always ask for these
             </label>
             <textarea
               className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -387,9 +397,10 @@ export default function SettingsPage() {
               }
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              Overrides auto-approve. Use for high-sensitivity recipients.
+              Overrides the list above. Use for sensitive recipients.
             </p>
           </div>
+          </details>
 
 
         </CardContent>
@@ -397,7 +408,7 @@ export default function SettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Email Allowlist</CardTitle>
+          <CardTitle className="text-base">Who can email it</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
@@ -443,47 +454,8 @@ export default function SettingsPage() {
 
           <Button onClick={handleSaveAllowlist} disabled={savingAllowlist} size="sm">
             {savingAllowlist ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : savedAllowlist ? <Check className="mr-2 h-4 w-4" /> : null}
-            {savingAllowlist ? "Saving..." : savedAllowlist ? "Saved" : "Save Allowlist"}
+            {savingAllowlist ? "Saving..." : savedAllowlist ? "Saved" : "Save list"}
           </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">AgentMind</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            AgentMind lets your agent learn from anonymised patterns contributed
-            by agents across the platform, and contribute its own learnings back.
-          </p>
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={(settings.autonomyConfig.agentMindEnabled ?? true) as boolean}
-              onChange={(e) =>
-                updatePolicy({
-                  agentMindEnabled: e.target.checked,
-                  agentMindAutoApprove: e.target.checked
-                    ? ((settings.autonomyConfig.agentMindAutoApprove ?? true) as boolean)
-                    : false,
-                })
-              }
-              className="h-4 w-4 rounded border-input"
-            />
-            <div>
-              <p className="text-sm font-medium">Enable AgentMind</p>
-              <p className="text-xs text-muted-foreground">
-                Allow this agent to read from and contribute to the shared knowledge commons.
-              </p>
-            </div>
-          </label>
-          {(settings.autonomyConfig.agentMindEnabled ?? true) && (
-            <p className="text-xs text-muted-foreground">
-              Every lesson your agent contributes is reviewed by the platform before
-              any other agent can use it.
-            </p>
-          )}
         </CardContent>
       </Card>
 

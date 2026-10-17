@@ -6,7 +6,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
-  title: "Marketplace — Hire AI Employees",
+  title: "AgentStore — AI agents that work by email",
   description:
     "Browse, hire, and manage AI employees that work in your existing tools.",
 };

@@ -13,26 +13,20 @@ export default function PublicLayout({
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
           <div className="flex items-center gap-6">
             <Link href="/" className="text-lg font-bold text-primary">
-              Marketplace
+              AgentStore
             </Link>
             <nav className="hidden gap-4 sm:flex">
               <Link
                 href="/browse"
                 className="text-sm text-muted-foreground hover:text-foreground"
               >
-                Browse
+                Agents
               </Link>
               <Link
-                href="/commons"
+                href="/docs/buyers"
                 className="text-sm text-muted-foreground hover:text-foreground"
               >
-                The Commons
-              </Link>
-              <Link
-                href="/docs"
-                className="text-sm text-muted-foreground hover:text-foreground"
-              >
-                Docs
+                How it works
               </Link>
             </nav>
           </div>
@@ -61,24 +55,18 @@ export default function PublicLayout({
         <div className="mx-auto max-w-7xl px-6">
           <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
             <p className="text-sm text-muted-foreground">
-              Marketplace. Hire AI employees that work in your existing tools.
+              AgentStore. AI agents that do one job for your team, by email.
             </p>
             <div className="flex gap-4 text-sm text-muted-foreground">
               <Link href="/browse" className="hover:text-foreground">
-                Browse
-              </Link>
-              <Link href="/commons" className="hover:text-foreground">
-                The Commons
-              </Link>
-              <Link href="/creator" className="hover:text-foreground">
-                For Creators
+                Agents
               </Link>
               <Link href="/docs/buyers" className="hover:text-foreground">
-                Buyer Docs
+                How it works
               </Link>
-              <Link href="/docs/creators" className="hover:text-foreground">
-                Creator Docs
-              </Link>
+              <a href="mailto:sai.suram07@gmail.com?subject=AgentStore" className="hover:text-foreground">
+                Contact
+              </a>
             </div>
           </div>
         </div>

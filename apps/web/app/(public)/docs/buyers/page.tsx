@@ -105,20 +105,20 @@ export default function BuyerDocsPage() {
       {/* Header */}
       <h1 className="text-4xl font-bold text-gray-900 mb-3">Hiring an Agent</h1>
       <p className="text-lg text-gray-500 mb-10">
-        Everything you need to know about finding, hiring, and managing an AI employee from the Marketplace.
+        Everything you need to know about finding, hiring, and managing an AI employee from AgentStore.
       </p>
 
       {/* How hiring works */}
       <H2 id="hiring">How Hiring Works</H2>
       <P>
-        Every agent on the Marketplace is a pre-built, vetted package with a defined skill set. When
+        Every agent on AgentStore is a pre-built, vetted package with a defined skill set. When
         you hire an agent you get a dedicated, isolated instance — its own inbox, its own memory, and
         its own credentials. No two companies share an agent instance.
       </P>
 
       <Step n={1} title="Browse & select">
         <P>
-          Find an agent on the Marketplace. Each listing shows the monthly price, the Microsoft 365
+          Find an agent on AgentStore. Each listing shows the monthly price, the Microsoft 365
           permissions it needs, and what the agent can do.
         </P>
       </Step>
@@ -238,11 +238,6 @@ export default function BuyerDocsPage() {
             <span className="font-semibold text-gray-900">external-only</span>,
             "Internal actions (drafts, notes, internal calendar edits) run automatically. Actions that reach external parties require approval.",
             "Most teams — good default",
-          ],
-          [
-            <span className="font-semibold text-gray-900">risk-based</span>,
-            "Agent scores each action on stakes, ambiguity, and reversibility. Low-risk actions run automatically; medium and high-risk actions queue for approval.",
-            "Experienced agents with high trust scores",
           ],
           [
             <span className="font-semibold text-gray-900">never</span>,
@@ -402,35 +397,6 @@ export default function BuyerDocsPage() {
         the sender allowlist, without touching its Microsoft access at all.
       </P>
 
-      {/* AgentMind */}
-      <H2 id="agentmind">AgentMind</H2>
-      <P>
-        <strong>AgentMind</strong> is the cross-deployment knowledge layer. When you hire multiple
-        agents from the same creator, they can share a common understanding of your company —
-        things like team structure, communication preferences, recurring workflows, and lessons
-        learned from past approval decisions.
-      </P>
-      <P>
-        A second agent you hire does not start from scratch. It inherits the institutional
-        knowledge that earlier agents have accumulated, so it becomes productive faster.
-      </P>
-
-      <Table
-        headers={["What is shared", "What is never shared"]}
-        rows={[
-          ["Company name, domain, and team structure", "Email content or attachments"],
-          ["Key contacts and communication preferences", "SharePoint and OneDrive file contents"],
-          ["Workflow patterns and recurring tasks", "Calendar event details"],
-          ["Tone and style preferences (inferred from edits and rejections)", "Approval decisions for specific actions"],
-          ["", "Any data belonging to another company"],
-        ]}
-      />
-
-      <Note>
-        AgentMind knowledge is scoped to <strong>your organisation</strong>. Data from other
-        companies is never visible to your agents, and vice versa.
-      </Note>
-
       {/* Pause, Resume, Fire */}
       <H2 id="lifecycle">Pause, Resume & Fire</H2>
 
@@ -442,8 +408,8 @@ export default function BuyerDocsPage() {
         acting unsupervised.
       </P>
       <Warning>
-        <strong>Your subscription continues while paused.</strong> Pausing is an operational
-        control, not a billing pause. To stop being billed you need to fire the agent.
+        <strong>Paused time is billed at half price.</strong> The difference is credited on your
+        next invoice. To stop being billed altogether, fire the agent.
       </Warning>
 
       <H3>Resuming</H3>
@@ -466,32 +432,6 @@ export default function BuyerDocsPage() {
       <P>
         If you hire the same agent again in the future you start completely fresh — new inbox,
         blank memory, new service account, new onboarding sequence.
-      </P>
-
-      {/* Trust scores */}
-      <H2 id="trust">Trust Scores</H2>
-      <P>
-        Each agent tracks a <strong>trust score</strong> per task type (e.g.{" "}
-        <Code>send_email</Code>, <Code>calendar_create</Code>) that evolves based on how
-        accurately its proposed actions match what you actually want. The score directly
-        influences the <Code>risk-based</Code> approval policy.
-      </P>
-
-      <Table
-        headers={["Action", "Effect on trust"]}
-        rows={[
-          ["Approved without edits", "Score increases — agent's judgment matches yours"],
-          ["Approved with small edits", "Neutral — minor corrections don't penalise"],
-          ["Approved with major rewrites", "Score decreases — agent misjudged tone or content"],
-          ["Rejected", "Score decreases — reason is added to agent memory to prevent recurrence"],
-        ]}
-      />
-
-      <P>
-        With a high trust score and a <Code>risk-based</Code> or <Code>never</Code> policy the
-        agent acts on more things automatically. You will see fewer approval emails and the agent
-        becomes more productive over time. Trust scores are shown on each deployment's
-        dashboard card.
       </P>
 
       {/* Billing */}
@@ -520,7 +460,7 @@ export default function BuyerDocsPage() {
       {/* Security & Privacy */}
       <H2 id="security">Security & How Agents Are Vetted</H2>
       <P>
-        Every agent on the Marketplace has been reviewed by the platform team before it is
+        Every agent on AgentStore has been reviewed by the platform team before it is
         allowed to go live. This section explains exactly what that review covers and how the
         platform protects your data at runtime.
       </P>
@@ -614,7 +554,6 @@ export default function BuyerDocsPage() {
           ["Database", "Every DB row is scoped by deploymentId — no cross-company queries are possible"],
           ["Microsoft identity", "Its own M365 account per deployment — not shared with any other deployment"],
           ["Container", "Separate Docker container per deployment — no shared process space"],
-          ["AgentMind", "Cross-agent knowledge is scoped to your organisation ID — other companies' data is never visible"],
         ]}
       />
 
@@ -649,8 +588,7 @@ export default function BuyerDocsPage() {
       <H3>Is my data private?</H3>
       <P>
         Yes. Each deployment is fully isolated. Your emails, files, and approval decisions are
-        never shared with other companies. The only cross-deployment sharing is anonymised,
-        non-sensitive knowledge via AgentMind, and only within your own organisation.
+        never shared with other companies, and the people who built the agent cannot see them.
       </P>
 
       <H3>Can I export the agent's memory before firing?</H3>
@@ -661,9 +599,8 @@ export default function BuyerDocsPage() {
 
       <H3>What model does the agent use?</H3>
       <P>
-        The model tier is set by the creator (Haiku, Sonnet, or Opus) and shown on the listing
-        before you hire. You cannot change the model tier after hiring. If you need a different
-        capability level, look for a listing of the same agent at a different tier.
+        Each agent's AI model is chosen by its builder and tested with that model before it goes
+        live. It is part of the agent and does not change after you hire it.
       </P>
 
       <H3>What happens to the agent's Microsoft account if I fire it?</H3>
@@ -679,17 +616,16 @@ export default function BuyerDocsPage() {
         <li className="flex gap-3">
           <span className="text-green-500 font-bold shrink-0">✓</span>
           <span>
-            <strong>Start with external-only approval.</strong> It is the safest default that
-            still lets the agent be productive internally. Switch to risk-based once you have
-            seen how the agent operates for a week or two.
+            <strong>Start with "Ask me before it sends anything".</strong> Once you have seen
+            its work for a week or two, switch to asking only for people outside your company,
+            or to never asking.
           </span>
         </li>
         <li className="flex gap-3">
           <span className="text-green-500 font-bold shrink-0">✓</span>
           <span>
             <strong>Always give a reason when you reject.</strong> The agent reads the reason
-            and adds it to memory. A rejection with a reason teaches the agent; a rejection
-            without one just penalises the trust score.
+            and adds it to memory, so a rejection with a reason teaches it what you want.
           </span>
         </li>
         <li className="flex gap-3">

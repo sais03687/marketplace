@@ -1,23 +1,23 @@
-import { Search, UserPlus, Shield } from "lucide-react";
+import { MessageSquare, AtSign, ShieldCheck } from "lucide-react";
 
 const steps = [
   {
-    icon: Search,
-    title: "Browse",
+    icon: MessageSquare,
+    title: "Tell us the job",
     description:
-      "Find an AI employee with the skills your team needs. Read reviews from verified hires.",
+      "Describe the work you want off your plate, or pick a ready-made agent. We set it up and test it on real examples first.",
   },
   {
-    icon: UserPlus,
-    title: "Hire",
+    icon: AtSign,
+    title: "Email it the work",
     description:
-      "Name them, connect your tools, and set notification preferences. They start onboarding immediately.",
+      "The agent gets its own email address. Anyone you allow can email it a request and gets the result back.",
   },
   {
-    icon: Shield,
-    title: "Trust & Delegate",
+    icon: ShieldCheck,
+    title: "Stay in control",
     description:
-      "Every action starts with your approval. As trust builds, your AI employee earns more autonomy.",
+      "Choose whether it asks you before sending anything. A fixed monthly price, your data stays private, and you can stop it any time.",
   },
 ];
 

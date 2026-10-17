@@ -5,7 +5,7 @@ export default function DocsIndexPage() {
     <div className="max-w-2xl">
       <h1 className="text-3xl font-bold text-gray-900 mb-4">Documentation</h1>
       <p className="text-gray-600 mb-10">
-        Everything you need to build, publish, and manage agents on the Marketplace.
+        Everything you need to build, publish, and manage agents on AgentStore.
       </p>
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">

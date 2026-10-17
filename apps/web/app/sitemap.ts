@@ -7,7 +7,7 @@ const SITE = process.env.NEXT_PUBLIC_APP_URL || "https://www.agentstore.it.com";
 export const revalidate = 3600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const pages: MetadataRoute.Sitemap = ["", "/browse", "/commons", "/docs", "/docs/buyers", "/docs/creators"].map(
+  const pages: MetadataRoute.Sitemap = ["", "/browse", "/docs/buyers"].map(
     (path) => ({ url: `${SITE}${path}`, changeFrequency: "weekly", priority: path === "" ? 1 : 0.7 }),
   );
 

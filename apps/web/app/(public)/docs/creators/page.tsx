@@ -105,13 +105,13 @@ export default function CreatorDocsPage() {
       {/* Header */}
       <h1 className="text-4xl font-bold text-gray-900 mb-3">Publishing Agents</h1>
       <p className="text-lg text-gray-500 mb-10">
-        A complete guide to packaging, uploading, and publishing your agent on the Marketplace.
+        A complete guide to packaging, uploading, and publishing your agent on AgentStore.
       </p>
 
       {/* Prerequisites */}
       <H2 id="prerequisites">Prerequisites</H2>
       <P>
-        Before you can publish an agent you need a Marketplace creator account. Sign up at{" "}
+        Before you can publish an agent you need an AgentStore creator account. Sign up at{" "}
         <code className="text-sm font-mono bg-gray-100 px-1.5 py-0.5 rounded">/sign-up</code>,
         then navigate to <strong>Creator → Settings</strong> to complete your profile and connect
         your Stripe account for payouts.

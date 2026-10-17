@@ -191,7 +191,7 @@ export function buildIntroductionEmail({
     <p style="margin:0 0 16px;">For anything that seems risky or ambiguous, I'll ask for your approval before proceeding. Over time, as we build trust, I'll handle more on my own.</p>
     ${googleServiceAccountEmail ? `<p style="margin:0 0 16px;">Google Workspace: my service account address is ${googleServiceAccountEmail}. Share any Google Drive files, Sheets, or Docs with that address and I'll be able to read and edit them directly.</p>` : ""}
     <p style="margin:0 0 16px;">What would you like me to focus on first?</p>
-    <p style="margin:0;color:#71717a;font-size:13px;">Sent by the Marketplace platform on behalf of ${agentName}.</p>
+    <p style="margin:0;color:#71717a;font-size:13px;">Sent by AgentStore on behalf of ${agentName}.</p>
   `);
 
   return { subject, html };
@@ -224,7 +224,7 @@ export function buildVettingDecisionEmail({
     : `Changes needed: ${agentName} v${version}`;
 
   const bodyText = approved
-    ? `Your agent <strong>${agentName}</strong> v${version} has been reviewed and approved. It is now live on the Marketplace and available for buyers to hire.`
+    ? `Your agent <strong>${agentName}</strong> v${version} has been reviewed and approved. It is now live on AgentStore and available for buyers to hire.`
     : `Your agent <strong>${agentName}</strong> v${version} was reviewed but did not pass. Please review the feedback below, make the necessary changes, and re-upload a new version.`;
 
   const feedbackBlock = feedback

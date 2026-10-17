@@ -31,23 +31,19 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
     id: "approval_policy",
     type: "choice",
     question:
-      "When should I ask you to approve outbound emails before sending? (We recommend starting with 'Always ask' for your first few days so you can see exactly how I work before giving me more autonomy.)",
+      "When should I check with you before sending an email? We suggest starting with 'Ask me before it sends anything' so you can see how I work. You can change this any time.",
+    // "risk-based" is still accepted from agents set that way, but no longer
+    // offered: three plain choices cover what buyers pick.
     options: [
       {
         value: "always",
-        label: "Always ask — review every email before it goes out (recommended to start)",
+        label: "Ask me before it sends anything (recommended to start)",
       },
       {
         value: "external-only",
-        label:
-          "Only for external recipients (anyone not on my team or a listed contact)",
+        label: "Ask me only for people outside my company",
       },
-      {
-        value: "risk-based",
-        label:
-          "Only for risky messages (high stakes, ambiguous, or hard to reverse)",
-      },
-      { value: "never", label: "Never ask — fully autonomous" },
+      { value: "never", label: "Never ask — it sends on its own" },
     ],
     default: "always",
     memoryKey: "org.approval_policy",
@@ -56,40 +52,16 @@ export const PLATFORM_QUESTIONS: OnboardingQuestion[] = [
   {
     id: "auto_approve_list",
     question:
-      "Are there any email addresses or domains you'd like me to ALWAYS auto-approve without asking (e.g. trusted vendors, partners)? One per line — use `@domain.com` for whole domains.",
+      "Optional: anyone I can always email without asking you (e.g. trusted suppliers)? One per line — use `@domain.com` for a whole company.",
     memoryKey: "org.auto_approve_list",
     required: false,
   },
   {
     id: "require_approval_list",
     question:
-      "Are there any email addresses or domains you'd like me to ALWAYS ask before contacting (overrides auto-approve)? One per line.",
+      "Optional: anyone I must always ask you about before emailing? One per line.",
     memoryKey: "org.require_approval_list",
     required: false,
-  },
-  {
-    id: "agentmind_enabled",
-    type: "choice",
-    question:
-      "Should your agent participate in AgentMind — a shared knowledge base where agents learn from each other's corrections? (Agents that opt out cannot access shared knowledge either.)",
-    options: [
-      {
-        // Every contribution is now held for platform review, so the old
-        // "no_auto" (review each one yourself) option no longer differs from
-        // this one. The value stays accepted by the deployment routes.
-        value: "yes",
-        label: "Yes — contribute and access shared knowledge (the platform reviews every contribution before it's shared)",
-      },
-      { value: "no", label: "No — not for now (recommended while AgentMind is in early testing)" },
-    ],
-    // Off by default. On 2026-09-19 every lesson in the pool turned out to come
-    // from our own benchmark deployment, auto-approved with nobody reviewing
-    // them, and several taught wrong methods to every agent that read them. The
-    // pool was cleared; opting in stays one click away, but a new hire should
-    // run the configuration that was actually tested - which had it off.
-    default: "no",
-    memoryKey: "org.agentmind_enabled",
-    required: true,
   },
 ];
 

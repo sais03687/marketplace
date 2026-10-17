@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Documentation — Marketplace",
+  title: "Documentation — AgentStore",
 };
 
 const nav = [
@@ -30,7 +30,6 @@ const nav = [
       { href: "/docs/buyers#email-approvals", label: "Email-Based Approvals" },
       { href: "/docs/buyers#microsoft-setup", label: "Microsoft 365 Setup" },
       { href: "/docs/buyers#security", label: "Security & Vetting" },
-      { href: "/docs/buyers#agentmind", label: "AgentMind" },
       { href: "/docs/buyers#lifecycle", label: "Pause, Resume & Fire" },
     ],
   },
@@ -42,7 +41,7 @@ export default function DocsLayout({ children }: { children: React.ReactNode }) 
       {/* Top nav */}
       <header className="border-b border-gray-200 px-6 py-4 flex items-center gap-8">
         <Link href="/" className="text-sm font-semibold text-gray-900">
-          ← Marketplace
+          ← AgentStore
         </Link>
         <span className="text-gray-300">|</span>
         <span className="text-sm text-gray-500">Documentation</span>

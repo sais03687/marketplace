@@ -7911,6 +7911,7 @@ async def _reply_limited(context: dict, status: str) -> None:
         if not _check_and_increment("emails"):
             print("[adapter] limit notice suppressed by the email budget", flush=True)
             return
+        # notice: a constant; no run happened, so there is nothing to attach.
         await reply_email(
             message_id=context.get("message_id", ""),
             text=_LIMIT_REPLIES[status] + AGENT_NAME,

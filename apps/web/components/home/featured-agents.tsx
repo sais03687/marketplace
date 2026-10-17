@@ -45,10 +45,10 @@ export async function FeaturedAgents() {
     <section className="px-6 py-20 lg:px-8">
       <div className="mx-auto max-w-6xl">
         <h2 className="text-center text-3xl font-bold tracking-tight">
-          Featured AI Employees
+          Ready-made agents
         </h2>
         <p className="mt-3 text-center text-muted-foreground">
-          Ready to hire today. No training required.
+          Hire one today, or tell us the job and we will build one for you.
         </p>
         <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {featured.map((agent) => (

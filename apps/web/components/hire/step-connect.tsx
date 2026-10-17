@@ -302,7 +302,7 @@ function LicensingSummary({
 
         <p className="text-[11px] text-muted-foreground border-t pt-2">
           {name} keeps this seat for as long as it works for you, and releases it when you
-          fire it. SharePoint access comes from the Marketplace app rather than this
+          fire it. SharePoint access comes from the AgentStore app rather than this
           licence, so it works on any plan.
         </p>
       </div>

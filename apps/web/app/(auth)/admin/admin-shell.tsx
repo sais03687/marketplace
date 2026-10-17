@@ -20,7 +20,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <aside className="hidden w-60 shrink-0 border-r bg-muted/30 lg:block">
         <div className="flex h-14 items-center border-b px-4">
           <Link href="/" className="text-lg font-bold text-primary">
-            Marketplace
+            AgentStore
           </Link>
         </div>
         <div className="px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -51,7 +51,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         <header className="flex h-14 items-center justify-between border-b px-6">
           <div className="flex items-center gap-4 lg:hidden">
             <Link href="/" className="text-lg font-bold text-primary">
-              Marketplace
+              AgentStore
             </Link>
           </div>
           <div className="ml-auto">

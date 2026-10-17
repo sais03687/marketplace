@@ -52,11 +52,6 @@ export function AgentCard({ agent, onHire }: AgentCardProps) {
             )}
           </div>
           <div className="flex shrink-0 gap-1">
-            {agent.runtime === "CUSTOM" && (
-              <Badge variant="outline" className="text-[10px] border-violet-300 text-violet-600">
-                Custom
-              </Badge>
-            )}
             <Badge variant="secondary" className="text-[10px]">
               {CATEGORY_LABELS[agent.category] || agent.category}
             </Badge>
@@ -85,10 +80,12 @@ export function AgentCard({ agent, onHire }: AgentCardProps) {
               {agent.averageRating.toFixed(1)}
             </span>
           )}
-          <span className="flex items-center gap-1">
-            <Users className="h-3 w-3" />
-            {agent.totalDeployments} hired
-          </span>
+          {agent.totalDeployments > 0 && (
+            <span className="flex items-center gap-1">
+              <Users className="h-3 w-3" />
+              {agent.totalDeployments} hired
+            </span>
+          )}
         </div>
       </CardContent>
 

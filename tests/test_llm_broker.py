@@ -29,7 +29,10 @@ def test_broker_endpoint_exists_and_injects_the_real_key():
     block = _broker_block()
     # The real key is read from the platform env, never from the request.
     assert "process.env.LLM_BROKER_KEY || process.env.OPENROUTER_API_KEY" in block
-    assert "Authorization: `Bearer ${realKey}`" in block
+    # Since A4 the call goes out on the hire's own key when one exists, with the
+    # platform key as the fallback; either way it is chosen server-side.
+    assert "let upstreamKey = realKey;" in block
+    assert "Authorization: `Bearer ${upstreamKey}`" in block
 
 
 def test_broker_authenticates_the_deployment_token():

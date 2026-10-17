@@ -4,21 +4,14 @@ import { CapabilityBadge } from "@/components/marketplace/capability-badge";
 import { HireButton } from "@/components/hire/hire-button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import { Star, Users, Shield, Mail, MessageSquare, Lightbulb, ArrowUpRight, MessageCircle, KeyRound, Globe } from "lucide-react";
+import { Star, Users, Shield, Mail, MessageSquare, KeyRound, Globe } from "lucide-react";
 import { GRAPH_SCOPE_LABELS, type GraphScope } from "@marketplace/agent-package-schema";
 import { formatPrice } from "@/lib/utils";
 import { hostsOfVersion } from "@/lib/connects-to";
 import { tierOfVersion } from "@/lib/agent-tier";
-import Link from "next/link";
 
 
 export const dynamic = "force-dynamic";
-
-const MODEL_LABELS: Record<string, string> = {
-  HAIKU: "Fast & Efficient",
-  SONNET: "Balanced",
-  OPUS: "Most Capable",
-};
 
 export default async function AgentListingPage({
   params,
@@ -36,22 +29,8 @@ export default async function AgentListingPage({
         orderBy: { createdAt: "desc" },
         take: 10,
       },
-      contributions: {
-        where: { status: "APPROVED" },
-        orderBy: { usageCount: "desc" },
-        take: 5,
-        select: {
-          id: true,
-          type: true,
-          title: true,
-          usageCount: true,
-          upvotes: true,
-          commentCount: true,
-        },
-      },
       _count: {
         select: {
-          contributions: { where: { status: "APPROVED" } },
           // Live count — see the note in app/api/agents/route.ts. The stored
           // column this used to read was never incremented by anything.
           deployments: { where: { status: { not: "FIRED" } } },
@@ -84,12 +63,6 @@ export default async function AgentListingPage({
           <div>
             <div className="flex items-center gap-2">
               <Badge variant="secondary">{agent.category.replace(/_/g, " ")}</Badge>
-              <Badge variant="outline">{MODEL_LABELS[agent.modelTier] || agent.modelTier}</Badge>
-              {agent.runtime === "CUSTOM" && (
-                <Badge variant="outline" className="border-violet-300 text-violet-600">
-                  Custom Runtime
-                </Badge>
-              )}
             </div>
             <h1 className="mt-3 text-3xl font-bold">{agent.name}</h1>
             {agent.creator && (
@@ -132,87 +105,15 @@ export default async function AgentListingPage({
             </div>
           </div>
 
-          {/* Trust & Autonomy */}
+          {/* Control */}
           <div>
-            <h2 className="text-xl font-semibold">Trust & Autonomy</h2>
+            <h2 className="text-xl font-semibold">You stay in control</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Every action starts with your approval. As you approve more tasks,
-              your AI employee earns more autonomy through a transparent trust
-              score system.
+              You choose whether it asks you before it sends anything, and who is
+              allowed to email it. You can pause or stop it at any time from your
+              dashboard.
             </p>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <Mail className="h-4 w-4 text-primary" />
-                  Approval via Email
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Review drafts and approve actions directly from your inbox.
-                </p>
-              </div>
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <MessageSquare className="h-4 w-4 text-primary" />
-                  Approval in Teams
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Approvals arrive as cards in Microsoft Teams and resolve in place.
-                </p>
-              </div>
-            </div>
           </div>
-
-          {/* Insights from the Field */}
-          {agent.contributions.length > 0 && (
-            <div>
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold">Insights from the Field</h2>
-                <Link
-                  href={`/agents/${slug}/insights`}
-                  className="flex items-center gap-1 text-sm text-primary hover:underline"
-                >
-                  View all insights
-                  <ArrowUpRight className="h-3 w-3" />
-                </Link>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {agent._count.contributions} insight{agent._count.contributions !== 1 ? "s" : ""} shared
-              </p>
-              <div className="mt-4 space-y-3">
-                {agent.contributions.map((c) => (
-                  <Card key={c.id}>
-                    <CardContent className="p-4">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <p className="font-medium text-sm">{c.title}</p>
-                          <div className="mt-1 flex items-center gap-2">
-                            <Badge
-                              variant="secondary"
-                              className="text-[10px]"
-                            >
-                              {c.type.replace(/_/g, " ")}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">
-                              Used by {c.usageCount} agent{c.usageCount !== 1 ? "s" : ""}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className="flex items-center gap-0.5">▲ {c.upvotes}</span>
-                          {c.commentCount > 0 && (
-                            <span className="flex items-center gap-0.5">
-                              <MessageCircle className="h-3 w-3" />
-                              {c.commentCount}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* Reviews */}
           {agent.reviews.length > 0 && (
@@ -266,20 +167,16 @@ export default async function AgentListingPage({
                 </div>
 
                 <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <Users className="h-4 w-4" />
-                    {agent._count.deployments} companies use this agent
-                  </div>
+                  {agent._count.deployments > 0 && (
+                    <div className="flex items-center gap-2">
+                      <Users className="h-4 w-4" />
+                      {agent._count.deployments} {agent._count.deployments === 1 ? "company uses" : "companies use"} this agent
+                    </div>
+                  )}
                   {agent.averageRating && (
                     <div className="flex items-center gap-2">
                       <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
                       {agent.averageRating.toFixed(1)} average rating
-                    </div>
-                  )}
-                  {agent._count.contributions > 0 && (
-                    <div className="flex items-center gap-2">
-                      <Lightbulb className="h-4 w-4" />
-                      {agent._count.contributions} insight{agent._count.contributions !== 1 ? "s" : ""} shared
                     </div>
                   )}
                 </div>
