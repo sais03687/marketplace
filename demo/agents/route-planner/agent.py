@@ -141,6 +141,22 @@ def _listed_points(text: str) -> list[dict]:
     return points
 
 
+RUNS_PER_WEEK = re.compile(r"\b(\d{1,2}|one|two|three|four|five|six|seven)\s+(?:days?|times|runs?|deliveries)\s+"
+                           r"(?:a|per|each|every)\s+week\b", re.I)
+WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
+
+
+def _runs_per_week(text: str) -> float:
+    """'5 days a week', 'three times per week'. Read from the email directly: on
+    2026-10-16 the model returned 0 for 'We run this 5 days a week'."""
+    m = RUNS_PER_WEEK.search(text or "")
+    if not m:
+        return 0.0
+    n = m.group(1).lower()
+    n = WORD_NUMBERS.get(n) or int(n)
+    return float(n) if 1 <= n <= 14 else 0.0
+
+
 def _clock_text(value) -> int | None:
     m = CLOCK.match(str(value or ""))
     return _minutes(m.group(1), m.group(2), None) if m else None
@@ -417,7 +433,7 @@ async def run_agent(content: str, context: dict, attach_fn=None) -> dict:
     speeds = (main_pct, max(main_pct, PEAK_MINOR_PCT)) if rush else (BASE_SPEED_PCT, BASE_SPEED_PCT)
     fuel_price = float(req.get("fuel_price_per_gallon") or 0) or FUEL_PRICE_PER_GALLON
     driver_rate = float(req.get("driver_cost_per_hour") or 0) or DRIVER_COST_PER_HOUR
-    per_week = float(req.get("deliveries_per_week") or 0)
+    per_week = float(req.get("deliveries_per_week") or 0) or _runs_per_week(content)
     current, current_note = _match_current(req.get("current_routes"), points)
 
     closed_before = [points[i]["name"] for i, (o, c) in windows.items() if c < 0]
